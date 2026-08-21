@@ -1,0 +1,8 @@
+{
+  "id": "stub-status",
+  "ok": true,
+  "result": {
+    "app": { "running": false },
+    "runtime": { "state": "stopped", "reachable": false }
+  }
+}

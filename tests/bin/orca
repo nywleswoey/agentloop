@@ -1,0 +1,110 @@
+#!/bin/bash
+#
+# Stub `orca` for the agent-loop test suite.
+#
+# Records its argv in $STUB_CALLS and answers from $STUB_FIXTURES.
+# $STUB_ORCA_STATUS (ready|down) picks which runtime status is reported;
+# `orca open` flips a down runtime to ready by leaving a marker in $STUB_STATE.
+# $STUB_ORCA_PS picks the worktree inventory (default: idle).
+# $STUB_ORCA_FAIL makes one call fail: create, rm, ps, terminal-create or
+# terminal-send.
+
+set -uo pipefail
+
+printf 'orca %s\n' "$*" >> "$STUB_CALLS"
+
+cmd="${1:-}"
+shift || true
+
+case "$cmd" in
+  status)
+    if [[ "${STUB_ORCA_STATUS:-ready}" == "ready" || -f "$STUB_STATE/orca-opened" ]]; then
+      cat "$STUB_FIXTURES/orca-status-ready.json"
+    else
+      cat "$STUB_FIXTURES/orca-status-down.json"
+    fi
+    ;;
+  open)
+    touch "$STUB_STATE/orca-opened"
+    cat "$STUB_FIXTURES/orca-status-ready.json"
+    ;;
+  repo)
+    if [[ "${1:-}" == "list" ]]; then
+      # A down runtime answers nothing, so anything that reads Orca state must
+      # come after the daemon has brought the runtime up.
+      if [[ "${STUB_ORCA_STATUS:-ready}" != "ready" && ! -f "$STUB_STATE/orca-opened" ]]; then
+        echo "error: orca runtime not reachable" >&2
+        exit 1
+      fi
+      cat "$STUB_FIXTURES/orca-repos.json"
+    else
+      echo "stub orca: unhandled repo subcommand: ${1:-}" >&2
+      exit 1
+    fi
+    ;;
+  worktree)
+    case "${1:-}" in
+      ps)
+        if [[ "${STUB_ORCA_FAIL:-}" == "ps" ]]; then
+          echo "error: worktree ps failed" >&2
+          exit 1
+        fi
+        cat "$STUB_FIXTURES/orca-ps-${STUB_ORCA_PS:-idle}.json"
+        ;;
+      create)
+        if [[ "${STUB_ORCA_FAIL:-}" == "create" ]]; then
+          echo "error: worktree create failed" >&2
+          exit 1
+        fi
+        # The requested name is slugified and a collision yields <name>-2, so
+        # the issue fixture deliberately answers with a name the caller did not
+        # ask for.
+        if [[ "$*" == *"agent-loop-mr-"* ]]; then
+          cat "$STUB_FIXTURES/orca-worktree-create-mr.json"
+        else
+          cat "$STUB_FIXTURES/orca-worktree-create.json"
+        fi
+        ;;
+      rm)
+        if [[ "${STUB_ORCA_FAIL:-}" == "rm" ]]; then
+          echo "error: worktree rm failed" >&2
+          exit 1
+        fi
+        printf '{"id":"stub-worktree-rm","ok":true,"result":{"removed":true}}\n'
+        ;;
+      *)
+        echo "stub orca: unhandled worktree subcommand: ${1:-}" >&2
+        exit 1
+        ;;
+    esac
+    ;;
+  terminal)
+    case "${1:-}" in
+      create)
+        if [[ "${STUB_ORCA_FAIL:-}" == "terminal-create" ]]; then
+          echo "error: terminal create failed" >&2
+          exit 1
+        fi
+        cat "$STUB_FIXTURES/orca-terminal-create.json"
+        ;;
+      wait)
+        printf '{"ok":true,"result":{"condition":"tui-idle"}}\n'
+        ;;
+      send)
+        if [[ "${STUB_ORCA_FAIL:-}" == "terminal-send" ]]; then
+          echo "error: terminal send failed" >&2
+          exit 1
+        fi
+        printf '{"ok":true,"result":{"sent":true}}\n'
+        ;;
+      *)
+        echo "stub orca: unhandled terminal subcommand: ${1:-}" >&2
+        exit 1
+        ;;
+    esac
+    ;;
+  *)
+    echo "stub orca: unhandled command: $cmd" >&2
+    exit 1
+    ;;
+esac

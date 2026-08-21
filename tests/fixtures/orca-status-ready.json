@@ -1,0 +1,8 @@
+{
+  "id": "stub-status",
+  "ok": true,
+  "result": {
+    "app": { "running": true, "pid": 1234 },
+    "runtime": { "state": "ready", "reachable": true, "runtimeId": "stub-runtime" }
+  }
+}

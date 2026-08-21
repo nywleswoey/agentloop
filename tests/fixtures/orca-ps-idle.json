@@ -1,0 +1,12 @@
+{
+  "id": "stub-worktree-ps",
+  "ok": true,
+  "result": {
+    "worktrees": [
+      { "worktreeId": "repo-aaa::/tmp/stub/automation/main", "path": "/tmp/stub/automation/main", "agents": [] },
+      { "worktreeId": "repo-aaa::/tmp/stub/automation/my-own-checkout", "path": "/tmp/stub/automation/my-own-checkout", "agents": [ { "state": "working", "agentType": "claude" } ] },
+      { "worktreeId": "repo-aaa::/tmp/stub/automation/agent-loop-issue-11", "path": "/tmp/stub/automation/agent-loop-issue-11", "agents": [ { "state": "done", "agentType": "claude" } ] },
+      { "worktreeId": "repo-bbb::", "path": null, "agents": [] }
+    ]
+  }
+}

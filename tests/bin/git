@@ -1,0 +1,125 @@
+#!/bin/bash
+#
+# Stub `git` for the agent-loop test suite.
+#
+# Records its argv in $STUB_CALLS and answers the reads and writes the daemon's
+# worktree inventory and mr-writeback.sh make:
+#   -C <repo> worktree list --porcelain   from worktrees-$STUB_WORKTREES.txt
+#                                         (default: none)
+#   -C <path> status --porcelain          dirty when <path> appears in
+#                                         $STUB_DIRTY (space separated), clean
+#                                         otherwise
+#   -C <path> rev-list --count ...        2 unpushed commits when <path> appears
+#                                         in $STUB_UNPUSHED (space separated),
+#                                         0 otherwise
+#   rev-list --reverse <range>            $STUB_REVLIST, one sha per line
+#   rev-parse --verify <sha>              fails for shas in $STUB_UNKNOWN_SHA
+#   rev-parse HEAD                        the stub's current head, moved by
+#                                         reset and cherry-pick
+#   merge-base --is-ancestor <a> <b>      fails when <a> is in
+#                                         $STUB_NOT_ANCESTOR
+#   reset --hard <sha>                    moves the stub's head to <sha>
+#   cherry-pick <sha>                     fails for shas in $STUB_CONFLICT,
+#                                         otherwise moves head to picked<n>
+#   push ...                              fails when $STUB_PUSH_FAIL is set
+#
+# $STUB_GIT_FAIL names a command that must fail: "rev-list".
+
+set -uo pipefail
+
+printf 'git %s\n' "$*" >> "$STUB_CALLS"
+
+target=""
+if [[ "${1:-}" == "-C" ]]; then
+  target="${2:-}"
+  shift 2
+fi
+
+HEAD_FILE="$STUB_STATE/git-head"
+PICK_FILE="$STUB_STATE/git-picks"
+
+head_sha() {
+  if [[ -f "$HEAD_FILE" ]]; then cat "$HEAD_FILE"; else printf 'headsha0'; fi
+}
+
+# in_list <needle> <space separated haystack>
+in_list() {
+  local item
+  for item in ${2:-}; do
+    [[ "$item" == "$1" ]] && return 0
+  done
+  return 1
+}
+
+case "${1:-}" in
+  worktree)
+    cat "$STUB_FIXTURES/worktrees-${STUB_WORKTREES:-none}.txt"
+    ;;
+  status)
+    for dirty in ${STUB_DIRTY:-}; do
+      if [[ "$dirty" == "$target" ]]; then
+        printf ' M src/file.txt\n'
+      fi
+    done
+    ;;
+  rev-parse)
+    if [[ "${2:-}" == "--verify" ]]; then
+      in_list "${3:-}" "${STUB_UNKNOWN_SHA:-}" && exit 1
+      printf '%s\n' "${3:-}"
+    else
+      head_sha
+      printf '\n'
+    fi
+    ;;
+  merge-base)
+    if [[ "${2:-}" == "--is-ancestor" ]]; then
+      in_list "${3:-}" "${STUB_NOT_ANCESTOR:-}" && exit 1
+      exit 0
+    fi
+    echo "stub git: unhandled merge-base form: $*" >&2
+    exit 1
+    ;;
+  rev-list)
+    if [[ "${2:-}" == "--count" ]]; then
+      if [[ "${STUB_GIT_FAIL:-}" == "rev-list" ]]; then
+        echo "fatal: bad revision" >&2
+        exit 128
+      fi
+      count=0
+      for unpushed in ${STUB_UNPUSHED:-}; do
+        if [[ "$unpushed" == "$target" ]]; then
+          count=2
+        fi
+      done
+      printf '%s\n' "$count"
+    else
+      for sha in ${STUB_REVLIST:-}; do
+        printf '%s\n' "$sha"
+      done
+    fi
+    ;;
+  reset)
+    printf '%s' "${3:-}" > "$HEAD_FILE"
+    ;;
+  cherry-pick)
+    if [[ "${2:-}" == "--abort" ]]; then
+      exit 0
+    fi
+    in_list "${2:-}" "${STUB_CONFLICT:-}" && exit 1
+    picks=$(( $(cat "$PICK_FILE" 2>/dev/null || echo 0) + 1 ))
+    printf '%s' "$picks" > "$PICK_FILE"
+    printf 'picked%s' "$picks" > "$HEAD_FILE"
+    ;;
+  push)
+    if [[ -n "${STUB_PUSH_FAIL:-}" ]]; then
+      echo "error: failed to push" >&2
+      exit 1
+    fi
+    ;;
+  *)
+    echo "stub git: unhandled command: $*" >&2
+    exit 1
+    ;;
+esac
+
+exit 0

@@ -1,0 +1,21 @@
+[
+  { "project_id": 57981, "iid": 101, "state": "opened", "draft": true,  "source_branch": "mr-free",
+    "title": "Agent loop: MR phase",
+    "web_url": "https://gitlab.example/selwyn_yeow/automation/-/merge_requests/101" },
+  { "project_id": 57981, "iid": 102, "state": "opened", "draft": false, "source_branch": "mr-live",
+    "web_url": "https://gitlab.example/selwyn_yeow/automation/-/merge_requests/102" },
+  { "project_id": 57981, "iid": 103, "state": "opened", "draft": false, "source_branch": "mr-done",
+    "web_url": "https://gitlab.example/selwyn_yeow/automation/-/merge_requests/103" },
+  { "project_id": 57981, "iid": 104, "state": "opened", "draft": false, "source_branch": "my-branch",
+    "web_url": "https://gitlab.example/selwyn_yeow/automation/-/merge_requests/104" },
+  { "project_id": 57981, "iid": 105, "state": "opened", "draft": false, "source_branch": "mr-quiet",
+    "web_url": "https://gitlab.example/selwyn_yeow/automation/-/merge_requests/105" },
+  { "project_id": 57981, "iid": 106, "state": "opened", "draft": false, "source_branch": "mr-waiting",
+    "web_url": "https://gitlab.example/selwyn_yeow/automation/-/merge_requests/106" },
+  { "project_id": 57981, "iid": 107, "state": "opened", "draft": false, "source_branch": "hotfix",
+    "web_url": "https://gitlab.example/selwyn_yeow/automation/-/merge_requests/107" },
+  { "project_id": 57981, "iid": 108, "state": "opened", "draft": false, "source_branch": "mr-lost",
+    "web_url": "https://gitlab.example/selwyn_yeow/automation/-/merge_requests/108" },
+  { "project_id": 99999, "iid": 900, "state": "opened", "draft": false, "source_branch": "elsewhere",
+    "web_url": "https://gitlab.example/someone_else/unconfigured/-/merge_requests/900" }
+]

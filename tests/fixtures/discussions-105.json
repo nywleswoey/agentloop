@@ -1,0 +1,32 @@
+[
+  {
+    "id": "d000000000000000000000000000000000000101",
+    "individual_note": false,
+    "notes": [
+      { "id": 900101, "author": { "username": "service_account_review_bot" },
+        "body": "Unresolved, but I have already answered it.",
+        "resolvable": true, "resolved": false },
+      { "id": 900102, "author": { "username": "selwyn_yeow" },
+        "body": "Leaving this as is for now.",
+        "resolvable": true, "resolved": false }
+    ]
+  },
+  {
+    "id": "d000000000000000000000000000000000000102",
+    "individual_note": true,
+    "notes": [
+      { "id": 900103, "author": { "username": "service_account_review_bot" },
+        "body": "A standalone comment, not a thread.",
+        "resolvable": false, "resolved": null }
+    ]
+  },
+  {
+    "id": "d000000000000000000000000000000000000103",
+    "individual_note": false,
+    "notes": [
+      { "id": 900104, "author": { "username": "other_reviewer" },
+        "body": "Every resolvable note here is resolved.",
+        "resolvable": true, "resolved": true }
+    ]
+  }
+]

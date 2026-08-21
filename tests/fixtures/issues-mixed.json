@@ -1,0 +1,5 @@
+{ "data": { "project": { "issues": { "nodes": [
+  { "iid": "18", "title": "Agent loop: worktree inventory", "webUrl": "https://gitlab.example/selwyn_yeow/automation/-/work_items/18", "blocked": true, "blockedByCount": 1 },
+  { "iid": "17", "title": "Agent loop: issue phase", "webUrl": "https://gitlab.example/selwyn_yeow/automation/-/work_items/17", "blocked": false, "blockedByCount": 0 },
+  { "iid": "19", "title": "Agent loop: MR phase", "webUrl": "https://gitlab.example/selwyn_yeow/automation/-/work_items/19", "blocked": false, "blockedByCount": 0 }
+] } } } }

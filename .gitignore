@@ -1,0 +1,6 @@
+.DS_Store
+.claude/
+
+# Real config: contains private GitLab project paths and Orca repo IDs.
+# Copy agent-loop.config.example.json to create your own.
+agent-loop.config.json

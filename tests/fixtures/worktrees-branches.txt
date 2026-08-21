@@ -1,0 +1,32 @@
+worktree /tmp/stub/automation/main
+HEAD 1111111111111111111111111111111111111111
+branch refs/heads/main
+
+worktree /tmp/stub/automation/agent-loop-mr-13
+HEAD 2222222222222222222222222222222222222222
+branch refs/heads/mr-live
+
+worktree /tmp/stub/automation/agent-loop-mr-14
+HEAD 3333333333333333333333333333333333333333
+branch refs/heads/mr-done
+
+worktree /tmp/stub/automation/agent-loop-mr-15
+HEAD 7777777777777777777777777777777777777777
+branch refs/heads/mr-waiting
+
+worktree /tmp/stub/automation/agent-loop-mr-16
+HEAD 8888888888888888888888888888888888888888
+branch refs/heads/mr-lost
+
+worktree /tmp/stub/automation/my-own-checkout
+HEAD 4444444444444444444444444444444444444444
+branch refs/heads/my-branch
+
+worktree /Users/stub/dev/automation-hotfix
+HEAD 5555555555555555555555555555555555555555
+branch refs/heads/hotfix
+
+worktree /tmp/stub/automation/spike
+HEAD 6666666666666666666666666666666666666666
+detached
+

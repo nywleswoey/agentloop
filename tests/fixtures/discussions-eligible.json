@@ -1,0 +1,32 @@
+[
+  {
+    "id": "d000000000000000000000000000000000000001",
+    "individual_note": false,
+    "notes": [
+      { "id": 900001, "author": { "username": "service_account_review_bot" },
+        "body": "This branch is compared with `main` but the target is `develop`.",
+        "resolvable": true, "resolved": false }
+    ]
+  },
+  {
+    "id": "d000000000000000000000000000000000000002",
+    "individual_note": false,
+    "notes": [
+      { "id": 900002, "author": { "username": "service_account_review_bot" },
+        "body": "`parseInt` without a radix.",
+        "resolvable": true, "resolved": false },
+      { "id": 900003, "author": { "username": "other_reviewer" },
+        "body": "Agreed.",
+        "resolvable": true, "resolved": false }
+    ]
+  },
+  {
+    "id": "d000000000000000000000000000000000000003",
+    "individual_note": false,
+    "notes": [
+      { "id": 900004, "author": { "username": "service_account_review_bot" },
+        "body": "Already dealt with.",
+        "resolvable": true, "resolved": true }
+    ]
+  }
+]

@@ -1,0 +1,11 @@
+{
+  "id": "stub-terminal-create",
+  "ok": true,
+  "result": {
+    "terminal": {
+      "handle": "term_stub_0001",
+      "worktreeId": "repo-aaa::/tmp/stub/automation/agent-loop-mr-14",
+      "title": "claude"
+    }
+  }
+}

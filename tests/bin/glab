@@ -1,0 +1,9 @@
+#!/bin/bash
+#
+# Stub `glab` for the agent-loop test suite. The daemon skeleton makes no raw
+# `glab` calls yet, so this only records its argv for the phases that will.
+
+set -uo pipefail
+
+printf 'glab %s\n' "$*" >> "$STUB_CALLS"
+exit 0

@@ -1,0 +1,156 @@
+#!/bin/bash
+#
+# Stub `glab-axi` for the agent-loop test suite.
+#
+# Records its argv in $STUB_CALLS and answers from $STUB_FIXTURES:
+#   api graphql ...          the ready-issue query, answered from
+#                            issues-$STUB_ISSUES.json (default: none), or the
+#                            claimed-issue query the startup reclaim makes,
+#                            answered from claimed-$STUB_CLAIMED.json
+#                            (default: none)
+#   api user                 the identity behind the token
+#   api merge_requests?...   the global open-MR query, answered from
+#                            mrs-$STUB_MRS.json (default: none), or the
+#                            merged-MR query the close-out phase makes,
+#                            answered from merged-$STUB_MERGED.json
+#                            (default: none)
+#   api projects/.../issues/<iid>
+#                            one issue, answered from issue-<iid>.json — but
+#                            reported closed once a close PUT has landed on it,
+#                            so a second pass sees what the first one did
+#   api projects/<pid>/merge_requests/<iid>/discussions?...
+#                            the thread list, answered from discussions-<iid>.json
+#                            when that fixture exists and from
+#                            discussions-$STUB_DISCUSSIONS.json (default:
+#                            eligible) otherwise
+#   api POST .../discussions/<did>/notes
+#                            a reply, answered with a note body
+#   api PUT .../discussions/<did>
+#                            a resolve, answered with a discussion body
+#   api PUT projects/.../issues/<iid>
+#                            the claim or reclaim label swap, answered with the
+#                            issue JSON
+#   api projects/<encoded>   project resolution, only for paths listed in
+#                            projects.txt; anything else 404s like the real CLI
+#
+# $STUB_GLAB_FAIL names a command that must fail: "graphql", "claim", "mrs",
+# "merged", "issue", "description", "close", "discussions", "note" or "resolve".
+
+set -uo pipefail
+
+printf 'glab-axi %s\n' "$*" >> "$STUB_CALLS"
+
+fail_if() {
+  [[ "${STUB_GLAB_FAIL:-}" == "$1" ]] || return 0
+  echo "error: 500 Internal Server Error" >&2
+  exit 1
+}
+
+if [[ "${1:-}" == "api" ]]; then
+  if [[ "${2:-}" == "graphql" ]]; then
+    fail_if graphql
+    # The two queries differ only in the label they select on.
+    if [[ "$*" == *'labelName: ["agent-in-progress"]'* ]]; then
+      cat "$STUB_FIXTURES/claimed-${STUB_CLAIMED:-none}.json"
+    else
+      cat "$STUB_FIXTURES/issues-${STUB_ISSUES:-none}.json"
+    fi
+    exit 0
+  fi
+
+  if [[ "${2:-}" == "user" ]]; then
+    printf 'selwyn_yeow\n'
+    exit 0
+  fi
+
+  if [[ "${2:-}" == POST ]]; then
+    fail_if note
+    printf '{"id":990001,"body":"stub note"}\n'
+    exit 0
+  fi
+
+  if [[ "${2:-}" == "PUT" ]]; then
+    if [[ "${3:-}" == *"/discussions/"* ]]; then
+      fail_if resolve
+      printf '{"id":"stub-discussion","resolved":true}\n'
+      exit 0
+    fi
+    iid="${3##*/}"
+    if [[ "$*" == *"state_event=close"* ]]; then
+      fail_if close
+      # Recorded, so a later read of the same issue sees it closed rather than
+      # handing the loop the open fixture over and over.
+      : > "$STUB_STATE/closed-$iid"
+      printf '{"iid":%s,"state":"closed","labels":[]}\n' "$iid"
+      exit 0
+    fi
+    # A description rewrite: the value is dumped whole so a test can compare it
+    # byte for byte rather than grepping the flattened argv.
+    for arg in "$@"; do
+      [[ "$arg" == description=* ]] || continue
+      fail_if description
+      printf '%s' "${arg#description=}" > "$STUB_STATE/description-$iid.txt"
+      printf '{"iid":%s}\n' "$iid"
+      exit 0
+    done
+    fail_if claim
+    printf '{"iid":1,"labels":["agent-in-progress"]}\n'
+    exit 0
+  fi
+
+  path="${2:-}"
+
+  if [[ "$path" == *"state=merged"* ]]; then
+    fail_if merged
+    cat "$STUB_FIXTURES/merged-${STUB_MERGED:-none}.json"
+    exit 0
+  fi
+
+  if [[ "$path" == merge_requests\?* ]]; then
+    fail_if mrs
+    cat "$STUB_FIXTURES/mrs-${STUB_MRS:-none}.json"
+    exit 0
+  fi
+
+  if [[ "$path" == *"/merge_requests/"*"/discussions"* ]]; then
+    fail_if discussions
+    iid="${path#*/merge_requests/}"
+    iid="${iid%%/*}"
+    if [[ -f "$STUB_FIXTURES/discussions-$iid.json" ]]; then
+      cat "$STUB_FIXTURES/discussions-$iid.json"
+    else
+      cat "$STUB_FIXTURES/discussions-${STUB_DISCUSSIONS:-eligible}.json"
+    fi
+    exit 0
+  fi
+
+  if [[ "$path" == projects/*/issues/* ]]; then
+    fail_if issue
+    iid="${path##*/}"
+    if [[ -f "$STUB_STATE/closed-$iid" ]]; then
+      printf '{"iid":%s,"state":"closed","labels":[],"description":""}\n' "$iid"
+    else
+      cat "$STUB_FIXTURES/issue-$iid.json"
+    fi
+    exit 0
+  fi
+
+  project="${path#projects/}"
+  project="${project//%2F//}"
+  # projects.txt is `<path>\t<numeric id>` — the loop resolves the id here, and
+  # the MR phase filters the global MR list on it.
+  if id=$(awk -F'\t' -v p="$project" '$1 == p { print $2; found = 1 } END { exit !found }' \
+            "$STUB_FIXTURES/projects.txt"); then
+    if [[ "$*" == *"--jq .id"* ]]; then
+      printf '%s\n' "$id"
+    else
+      printf '%s\n' "$project"
+    fi
+    exit 0
+  fi
+  echo "error: 404 Project Not Found" >&2
+  exit 1
+fi
+
+echo "stub glab-axi: unhandled command: $*" >&2
+exit 1

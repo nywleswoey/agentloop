@@ -1,0 +1,18 @@
+[
+  { "project_id": 57981, "iid": 201, "state": "merged", "source_branch": "agent-loop-issue-17",
+    "web_url": "https://gitlab.example/selwyn_yeow/automation/-/merge_requests/201" },
+  { "project_id": 57981, "iid": 202, "state": "merged", "source_branch": "agent-loop-issue-40",
+    "web_url": "https://gitlab.example/selwyn_yeow/automation/-/merge_requests/202" },
+  { "project_id": 57981, "iid": 203, "state": "merged", "source_branch": "agent-loop-issue-41",
+    "web_url": "https://gitlab.example/selwyn_yeow/automation/-/merge_requests/203" },
+  { "project_id": 57981, "iid": 204, "state": "merged", "source_branch": "agent-loop-issue-42",
+    "web_url": "https://gitlab.example/selwyn_yeow/automation/-/merge_requests/204" },
+  { "project_id": 57981, "iid": 205, "state": "merged", "source_branch": "agent-loop-issue-11",
+    "web_url": "https://gitlab.example/selwyn_yeow/automation/-/merge_requests/205" },
+  { "project_id": 57981, "iid": 206, "state": "merged", "source_branch": "agent-loop-issue-43-2",
+    "web_url": "https://gitlab.example/selwyn_yeow/automation/-/merge_requests/206" },
+  { "project_id": 57981, "iid": 207, "state": "merged", "source_branch": "hand-written-branch",
+    "web_url": "https://gitlab.example/selwyn_yeow/automation/-/merge_requests/207" },
+  { "project_id": 99999, "iid": 907, "state": "merged", "source_branch": "agent-loop-issue-99",
+    "web_url": "https://gitlab.example/someone_else/unconfigured/-/merge_requests/907" }
+]

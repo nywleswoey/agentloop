@@ -1,0 +1,16 @@
+{
+  "pollIntervalSeconds": 300,
+  "maxWorkers": 3,
+  "seenListPath": "~/.agent-loop/seen.jsonl",
+  "logPath": "~/.agent-loop/agent-loop.log",
+  "labels": {
+    "ready": "ready-for-agent",
+    "claimed": "agent-in-progress"
+  },
+  "projects": [
+    {
+      "gitlab": "selwyn_yeow/automation",
+      "orcaRepoId": "00000000-0000-0000-0000-000000000000"
+    }
+  ]
+}

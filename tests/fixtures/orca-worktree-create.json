@@ -1,0 +1,12 @@
+{
+  "id": "stub-worktree-create",
+  "ok": true,
+  "result": {
+    "worktree": {
+      "id": "repo-aaa::/tmp/stub/automation/agent-loop-issue-17-2",
+      "name": "agent-loop-issue-17-2",
+      "path": "/tmp/stub/automation/agent-loop-issue-17-2",
+      "repoId": "repo-aaa"
+    }
+  }
+}

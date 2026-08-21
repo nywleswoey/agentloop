@@ -1,0 +1,3 @@
+{ "data": { "project": { "issues": { "nodes": [
+  { "iid": "17", "title": "  Fix: LOGIN/timeout — retry (twice) on every single stale session  ", "webUrl": "https://gitlab.example/selwyn_yeow/automation/-/work_items/17", "blocked": false, "blockedByCount": 0, "labels": { "nodes": [ { "title": "ready-for-agent" }, { "title": "bug" } ] } }
+] } } } }

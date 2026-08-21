@@ -1,0 +1,8 @@
+{
+  "iid": 17,
+  "state": "opened",
+  "labels": [
+    "agent-in-progress"
+  ],
+  "description": "## Acceptance criteria\n\n- [ ] First\n  - [ ] Nested\n- [x] Second\n- [ ] Third\n\nThe phase turns `- [ ] ` into `- [x] ` and leaves everything else alone.\nnot boxes: -[ ] and - [X] stay.\n"
+}

@@ -1,0 +1,6 @@
+{ "data": { "project": { "issues": { "nodes": [
+  { "iid": "1", "title": "Agent loop map", "webUrl": "https://gitlab.example/selwyn_yeow/automation/-/work_items/1" },
+  { "iid": "11", "title": "A claim with a working worker", "webUrl": "https://gitlab.example/selwyn_yeow/automation/-/work_items/11" },
+  { "iid": "12", "title": "A claim with a waiting worker", "webUrl": "https://gitlab.example/selwyn_yeow/automation/-/work_items/12" },
+  { "iid": "21", "title": "An orphaned claim", "webUrl": "https://gitlab.example/selwyn_yeow/automation/-/work_items/21" }
+] } } } }

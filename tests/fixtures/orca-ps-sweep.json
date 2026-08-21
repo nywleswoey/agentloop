@@ -1,0 +1,15 @@
+{
+  "id": "stub-worktree-ps",
+  "ok": true,
+  "result": {
+    "worktrees": [
+      { "worktreeId": "repo-aaa::/tmp/stub/automation/main", "path": "/tmp/stub/automation/main", "agents": [] },
+      { "worktreeId": "repo-aaa::/tmp/stub/automation/my-own-checkout", "path": "/tmp/stub/automation/my-own-checkout", "agents": [ { "state": "done", "agentType": "claude" } ] },
+      { "worktreeId": "repo-aaa::/tmp/stub/automation/agent-loop-issue-31", "path": "/tmp/stub/automation/agent-loop-issue-31", "agents": [ { "state": "done", "agentType": "claude" } ] },
+      { "worktreeId": "repo-aaa::/tmp/stub/automation/agent-loop-issue-32", "path": "/tmp/stub/automation/agent-loop-issue-32", "agents": [ { "state": "done", "agentType": "claude" } ] },
+      { "worktreeId": "repo-aaa::/tmp/stub/automation/agent-loop-issue-33", "path": "/tmp/stub/automation/agent-loop-issue-33", "agents": [ { "state": "done", "agentType": "claude" } ] },
+      { "worktreeId": "repo-aaa::/tmp/stub/automation/agent-loop-mr-34", "path": "/tmp/stub/automation/agent-loop-mr-34", "agents": [ { "state": "waiting", "agentType": "claude" } ] },
+      { "worktreeId": "repo-aaa::/tmp/stub/automation/agent-loop-mr-35", "path": "/tmp/stub/automation/agent-loop-mr-35", "agents": [ { "state": "working", "agentType": "claude" } ] }
+    ]
+  }
+}

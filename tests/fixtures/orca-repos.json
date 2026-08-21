@@ -1,0 +1,20 @@
+{
+  "id": "stub-repo-list",
+  "ok": true,
+  "result": {
+    "repos": [
+      {
+        "id": "repo-aaa",
+        "path": "/tmp/stub/automation",
+        "displayName": "automation",
+        "kind": "git"
+      },
+      {
+        "id": "repo-bbb",
+        "path": "/tmp/stub/other",
+        "displayName": "other",
+        "kind": "git"
+      }
+    ]
+  }
+}
