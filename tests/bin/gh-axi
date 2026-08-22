@@ -1,0 +1,230 @@
+#!/bin/bash
+#
+# Stub `gh-axi` for the agent-loop test suite.
+#
+# Records its argv in $STUB_CALLS and answers from $STUB_FIXTURES. Every answer
+# goes out the way the real gh-axi answers a `--jq 'tojson|@base64' --full`
+# read — TOON, with the JSON body base64'd into it — because that round trip is
+# the seam the scripts are built on and a stub that skipped it would leave the
+# seam untested.
+#
+#   api /user                the identity behind the token
+#   api POST /graphql ...    dispatched on the query text:
+#                              issues(labels: ["ready-for-agent"])
+#                                the ready-issue query, answered from
+#                                issues-$STUB_ISSUES.json (default: none)
+#                              issues(labels: ["agent-in-progress"])
+#                                the claimed-issue query the startup reclaim
+#                                makes, from claimed-$STUB_CLAIMED.json
+#                                (default: none)
+#                              is:pr is:open
+#                                the global open-PR search, from
+#                                prs-$STUB_PRS.json (default: none)
+#                              is:pr is:merged
+#                                the close-out phase's search, from
+#                                merged-$STUB_MERGED.json (default: none)
+#                              reviewThreads
+#                                the thread list, from threads-<number>.json
+#                                when that fixture exists and from
+#                                threads-$STUB_THREADS.json (default: eligible)
+#                                otherwise
+#                              addPullRequestReviewThreadReply
+#                                a reply, answered with a comment body
+#                              resolveReviewThread
+#                                a resolve, answered with a thread body
+#   api /repos/<o>/<n>       repo resolution, only for repos listed in
+#                            repos.txt; anything else 404s like the real CLI
+#   api /repos/<o>/<n>/labels
+#                            the repo's labels, from repos.txt's second field
+#   api /repos/.../issues/<number>
+#                            one issue, answered from issue-<number>.json — but
+#                            reported closed once a close PATCH has landed on
+#                            it, so a second pass sees what the first one did
+#   api /repos/.../issues/<number>/dependencies/blocked_by
+#                            the issue's blockers, from blocked-<number>.json
+#                            when that fixture exists and `[]` otherwise
+#   issue edit <number> --add-label / --remove-label
+#                            a label swap, recorded by its argv
+#   issue edit <number> --body-file <path>
+#                            a body rewrite; the file is copied whole to
+#                            $STUB_STATE/body-<number>.txt so a test can compare
+#                            it byte for byte
+#   issue close <number>     a close, recorded so a later read of the same issue
+#                            reports it closed
+#   label create --name ...  the loop's own two labels
+#
+# $STUB_GH_FAIL names a command that must fail: "issues", "claim", "prs",
+# "merged", "issue", "body", "close", "threads", "reply", "resolve",
+# "blockers" or "labels".
+
+set -uo pipefail
+
+printf 'gh-axi %s\n' "$*" >> "$STUB_CALLS"
+
+fail_if() {
+  [[ "${STUB_GH_FAIL:-}" == "$1" ]] || return 0
+  printf 'error: "gh: HTTP 500"\ncode: HTTP_ERROR\n'
+  exit 1
+}
+
+# Every read comes back the way `--jq 'tojson|@base64' --full` renders one.
+emit() {
+  printf 'api_response:\n  body: %s\n  truncated: false\n' "$(base64 <<< "$1" | tr -d '\n')"
+}
+
+emit_file() { emit "$(cat "$1")"; }
+
+# The labels a repo already carries, from repos.txt's second field.
+repo_labels() {
+  awk -F'\t' -v r="$1" '$1 == r { print $2 }' "$STUB_FIXTURES/repos.txt"
+}
+
+if [[ "${1:-}" == "label" ]]; then
+  # Only `create` is reached: the loop reads the existing labels over the API.
+  [[ "${2:-}" == "create" ]] || { echo "stub gh-axi: unhandled label subcommand: ${2:-}" >&2; exit 1; }
+  printf 'label:\n  created: true\n'
+  exit 0
+fi
+
+if [[ "${1:-}" == "issue" ]]; then
+  number="${3:-}"
+  case "${2:-}" in
+    close)
+      fail_if close
+      # Recorded, so a later read of the same issue sees it closed rather than
+      # handing the loop the open fixture over and over.
+      : > "$STUB_STATE/closed-$number"
+      printf 'issue:\n  number: %s\n  state: closed\n' "$number"
+      exit 0
+      ;;
+    edit) ;;
+    *) echo "stub gh-axi: unhandled issue subcommand: ${2:-}" >&2; exit 1 ;;
+  esac
+
+  if [[ "$*" == *"--body-file"* ]]; then
+    fail_if body
+    file=""
+    for (( i = 1; i <= $#; i++ )); do
+      [[ "${!i}" == "--body-file" ]] || continue
+      j=$((i + 1))
+      file="${!j}"
+    done
+    # Copied whole so a test can compare it byte for byte rather than grepping
+    # the flattened argv.
+    [[ -n "$file" && -f "$file" ]] || { echo "stub gh-axi: no --body-file" >&2; exit 1; }
+    cp "$file" "$STUB_STATE/body-$number.txt"
+    printf 'issue:\n  number: %s\n' "$number"
+    exit 0
+  fi
+
+  # A label edit: the claim, the reclaim, or the unclaim that follows a close.
+  fail_if claim
+  printf 'issue:\n  number: %s\n' "$number"
+  exit 0
+fi
+
+if [[ "${1:-}" != "api" ]]; then
+  echo "stub gh-axi: unhandled command: $*" >&2
+  exit 1
+fi
+
+# `api [<method>] <path>` — the method is optional and defaults to GET.
+method=GET
+path="${2:-}"
+case "$path" in
+  GET|POST|PUT|PATCH|DELETE|HEAD) method="$path"; path="${3:-}" ;;
+esac
+
+if [[ "$path" == "/graphql" ]]; then
+  query="$*"
+  case "$query" in
+    *addPullRequestReviewThreadReply*)
+      fail_if reply
+      emit '{"data":{"addPullRequestReviewThreadReply":{"comment":{"databaseId":990001}}}}'
+      ;;
+    *resolveReviewThread*)
+      fail_if resolve
+      emit '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}'
+      ;;
+    *reviewThreads*)
+      fail_if threads
+      number=$(sed -n 's/.*pullRequest(number: \([0-9]*\)).*/\1/p' <<< "$query")
+      if [[ -f "$STUB_FIXTURES/threads-$number.json" ]]; then
+        emit_file "$STUB_FIXTURES/threads-$number.json"
+      else
+        emit_file "$STUB_FIXTURES/threads-${STUB_THREADS:-eligible}.json"
+      fi
+      ;;
+    *'is:pr is:merged'*)
+      fail_if merged
+      emit_file "$STUB_FIXTURES/merged-${STUB_MERGED:-none}.json"
+      ;;
+    *'is:pr is:open'*)
+      fail_if prs
+      emit_file "$STUB_FIXTURES/prs-${STUB_PRS:-none}.json"
+      ;;
+    *'labels: ["agent-in-progress"]'*)
+      fail_if issues
+      emit_file "$STUB_FIXTURES/claimed-${STUB_CLAIMED:-none}.json"
+      ;;
+    *'issues(labels:'*)
+      fail_if issues
+      emit_file "$STUB_FIXTURES/issues-${STUB_ISSUES:-none}.json"
+      ;;
+    *)
+      echo "stub gh-axi: unhandled graphql query: $query" >&2
+      exit 1
+      ;;
+  esac
+  exit 0
+fi
+
+if [[ "$path" == "/user" ]]; then
+  emit '{"login":"nywleswoey"}'
+  exit 0
+fi
+
+if [[ "$path" == *"/dependencies/blocked_by" ]]; then
+  fail_if blockers
+  number="${path%/dependencies/blocked_by}"
+  number="${number##*/}"
+  if [[ -f "$STUB_FIXTURES/blocked-$number.json" ]]; then
+    emit_file "$STUB_FIXTURES/blocked-$number.json"
+  else
+    emit '[]'
+  fi
+  exit 0
+fi
+
+if [[ "$path" == */labels ]]; then
+  fail_if labels
+  repo="${path#/repos/}"
+  repo="${repo%/labels}"
+  emit "$(tr ',' '\n' <<< "$(repo_labels "$repo")" | grep . | jq -R '{name: .}' | jq -s -c '.')"
+  exit 0
+fi
+
+if [[ "$path" == /repos/*/*/issues/* ]]; then
+  fail_if issue
+  number="${path##*/}"
+  if [[ -f "$STUB_STATE/closed-$number" ]]; then
+    emit "$(printf '{"number":%s,"state":"closed","labels":[],"body":""}' "$number")"
+  else
+    emit_file "$STUB_FIXTURES/issue-$number.json"
+  fi
+  exit 0
+fi
+
+if [[ "$path" == /repos/*/* ]]; then
+  repo="${path#/repos/}"
+  if awk -F'\t' -v r="$repo" '$1 == r { found = 1 } END { exit !found }' \
+       "$STUB_FIXTURES/repos.txt"; then
+    emit "$(jq -nc --arg r "$repo" '{full_name: $r}')"
+    exit 0
+  fi
+  printf 'error: "gh: Not Found (HTTP 404)"\ncode: NOT_FOUND\n'
+  exit 1
+fi
+
+echo "stub gh-axi: unhandled api path: $path" >&2
+exit 1

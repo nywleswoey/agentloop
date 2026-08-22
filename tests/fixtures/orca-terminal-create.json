@@ -4,7 +4,7 @@
   "result": {
     "terminal": {
       "handle": "term_stub_0001",
-      "worktreeId": "repo-aaa::/tmp/stub/automation/agent-loop-mr-14",
+      "worktreeId": "repo-aaa::/tmp/stub/automation/agent-loop-pr-14",
       "title": "claude"
     }
   }

@@ -2,21 +2,21 @@ worktree /tmp/stub/automation/main
 HEAD 1111111111111111111111111111111111111111
 branch refs/heads/main
 
-worktree /tmp/stub/automation/agent-loop-mr-13
+worktree /tmp/stub/automation/agent-loop-pr-13
 HEAD 2222222222222222222222222222222222222222
-branch refs/heads/mr-live
+branch refs/heads/pr-live
 
-worktree /tmp/stub/automation/agent-loop-mr-14
+worktree /tmp/stub/automation/agent-loop-pr-14
 HEAD 3333333333333333333333333333333333333333
-branch refs/heads/mr-done
+branch refs/heads/pr-done
 
-worktree /tmp/stub/automation/agent-loop-mr-15
+worktree /tmp/stub/automation/agent-loop-pr-15
 HEAD 7777777777777777777777777777777777777777
-branch refs/heads/mr-waiting
+branch refs/heads/pr-waiting
 
-worktree /tmp/stub/automation/agent-loop-mr-16
+worktree /tmp/stub/automation/agent-loop-pr-16
 HEAD 8888888888888888888888888888888888888888
-branch refs/heads/mr-lost
+branch refs/heads/pr-lost
 
 worktree /tmp/stub/automation/my-own-checkout
 HEAD 4444444444444444444444444444444444444444

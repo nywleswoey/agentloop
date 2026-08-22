@@ -1,3 +1,5 @@
-{ "data": { "project": { "issues": { "nodes": [
-  { "iid": "18", "title": "Agent loop: worktree inventory", "webUrl": "https://gitlab.example/selwyn_yeow/automation/-/work_items/18", "blocked": true, "blockedByCount": 1 }
+{ "data": { "repository": { "issues": { "nodes": [
+  { "number": 18, "title": "Agent loop: worktree inventory",
+    "url": "https://github.com/nywleswoey/automation/issues/18",
+    "labels": { "nodes": [ { "name": "ready-for-agent" } ] } }
 ] } } } }

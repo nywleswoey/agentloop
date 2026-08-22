@@ -1,8 +1,2 @@
-{
-  "iid": 42,
-  "state": "opened",
-  "labels": [
-    "ready-for-agent"
-  ],
-  "description": "- [ ] claimed by hand\n"
-}
+{ "number": 42, "state": "open", "labels": [ { "name": "ready-for-agent" } ],
+  "body": "- [ ] claimed by hand\n" }

@@ -4,7 +4,7 @@
   "result": {
     "worktrees": [
       { "worktreeId": "repo-aaa::/tmp/stub/automation/agent-loop-issue-11", "path": "/tmp/stub/automation/agent-loop-issue-11", "agents": [ { "state": "working", "agentType": "claude" } ] },
-      { "worktreeId": "repo-aaa::/tmp/stub/automation/agent-loop-mr-13", "path": "/tmp/stub/automation/agent-loop-mr-13", "agents": [ { "state": "waiting", "agentType": "claude" } ] }
+      { "worktreeId": "repo-aaa::/tmp/stub/automation/agent-loop-pr-13", "path": "/tmp/stub/automation/agent-loop-pr-13", "agents": [ { "state": "waiting", "agentType": "claude" } ] }
     ]
   }
 }

@@ -1,8 +1,2 @@
-{
-  "iid": 40,
-  "state": "opened",
-  "labels": [
-    "agent-in-progress"
-  ],
-  "description": "No checklist here at all.\n"
-}
+{ "number": 40, "state": "open", "labels": [ { "name": "agent-in-progress" } ],
+  "body": "No checklist here at all.\n" }

@@ -1,0 +1,2 @@
+nywleswoey/automation	ready-for-agent,agent-in-progress,bug
+nywleswoey/other	ready-for-agent,agent-in-progress
