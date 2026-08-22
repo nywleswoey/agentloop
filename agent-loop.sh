@@ -92,9 +92,13 @@ require_tools() {
 # When --paginate is used, gh-axi produces multiple TOON documents, one per
 # page. Each must be decoded separately and then combined into a single JSON
 # array before the caller consumes it.
+#
+# `--full` is not optional: gh-axi truncates a long response by default, and a
+# truncated base64 token decodes to a torn JSON document. A single repository
+# read is already past the cap, so without this every project fails to resolve.
 gh_json() {
   local response bodies page_count decoded_pages
-  response=$(gh-axi api "$@" --jq 'tojson|@base64' 2>/dev/null) || return 1
+  response=$(gh-axi api "$@" --full --jq 'tojson|@base64' 2>/dev/null) || return 1
   # A refusal is TOON as well and carries no body at all, so the shape of the
   # answer is checked rather than the exit status trusted on its own.
   [[ "$response" == error:* ]] && return 1
