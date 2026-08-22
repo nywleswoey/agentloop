@@ -9,7 +9,12 @@
 # seam untested.
 #
 #   api /user                the identity behind the token
-#   api POST /graphql ...    dispatched on the query text:
+#   api POST graphql ...     dispatched on the query text. Note the path has no
+#                            leading slash: that literal is what makes gh hoist
+#                            --field arguments into GraphQL variables. Called as
+#                            `/graphql` with variables, this stub answers with
+#                            the null-variable refusal real GitHub answers with.
+#                            Dispatched on:
 #                              issues(labels: ["ready-for-agent"])
 #                                the ready-issue query, answered from
 #                                issues-$STUB_ISSUES.json (default: none)
@@ -135,8 +140,28 @@ case "$path" in
   GET|POST|PUT|PATCH|DELETE|HEAD) method="$path"; path="${3:-}" ;;
 esac
 
-if [[ "$path" == "/graphql" ]]; then
+if [[ "$path" == "graphql" || "$path" == "/graphql" ]]; then
   query="$*"
+  # gh hoists --field arguments into GraphQL variables only when the path is
+  # the literal `graphql`. Spelled `/graphql` they are posted as ordinary body
+  # keys instead, so every declared variable reaches GitHub as null and the
+  # mutation is refused with a 200 and an `errors` block. Reproduced here so
+  # the seam is tested rather than assumed: a caller that passes variables down
+  # the slashed path gets the same refusal it would get from real GitHub.
+  if [[ "$path" == "/graphql" ]]; then
+    want_field=false
+    for arg in "$@"; do
+      if $want_field; then
+        want_field=false
+        if [[ "$arg" != query=* ]]; then
+          emit "{\"errors\":[{\"message\":\"Variable \$${arg%%=*} was provided invalid value\",\"extensions\":{\"value\":null}}]}"
+          exit 0
+        fi
+      elif [[ "$arg" == "--field" ]]; then
+        want_field=true
+      fi
+    done
+  fi
   case "$query" in
     *addPullRequestReviewThreadReply*)
       fail_if reply
