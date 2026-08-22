@@ -92,14 +92,14 @@ check "exactly one push" test "$(grep -cF ' push origin' "$STUB_CALLS")" -eq 1
 check "the branch was not rebuilt" test "$(grep -cF ' reset --hard' "$STUB_CALLS")" -eq 0
 check "nothing was cherry-picked" test "$(grep -cF ' cherry-pick' "$STUB_CALLS")" -eq 0
 # The reply cites the sha that is actually on the branch.
-# The reply text travels as a GraphQL variable rather than inside the query, so
-# it is asserted on the variables — which jq wrote as one compact line.
-check_grep 'variables={"thread":"PRRT_dfix","body":"Fixed in c1aaaaaa.' "$STUB_CALLS"
-check_grep 'variables={"thread":"PRRT_drefuse","body":"**Disagree** — the guard is three lines up."}' "$STUB_CALLS"
+# The reply text travels as a GraphQL variable passed via --field.
+check_grep 'gh-axi api POST /graphql --field query=mutation($thread: ID!, $body: String!) {' "$STUB_CALLS"
+check_grep '--field thread=PRRT_dfix --field body=Fixed in c1aaaaaa.' "$STUB_CALLS"
+check_grep '--field thread=PRRT_drefuse --field body=**Disagree** — the guard is three lines up.' "$STUB_CALLS"
 # Only a FIX resolves — the reviewer keeps the last word on a disagreement.
-check_grep 'variables={"thread":"PRRT_dfix"}' "$STUB_CALLS"
+check_grep '--field thread=PRRT_dfix' "$STUB_CALLS"
 check "exactly one thread was resolved" test "$(grep -cF 'resolveReviewThread(' "$STUB_CALLS")" -eq 1
-check_no_grep 'variables={"thread":"PRRT_drefuse"}' "$STUB_CALLS"
+check_no_grep '--field thread=PRRT_drefuse' "$STUB_CALLS"
 # An ANSWER and an ESCALATE are reported and nothing else.
 check_no_grep "PRRT_danswer" "$STUB_CALLS"
 check_no_grep "PRRT_descalate" "$STUB_CALLS"
@@ -139,10 +139,10 @@ check_grep "git -C $WORK cherry-pick c1aaaaaa" "$STUB_CALLS"
 check_no_grep "cherry-pick c2bbbbbb" "$STUB_CALLS"
 check "exactly one push" test "$(grep -cF ' push origin' "$STUB_CALLS")" -eq 1
 # The reply cites the sha as it landed, not the sha before the rebuild.
-check_grep 'variables={"thread":"PRRT_dkeep","body":"Fixed in picked1.' "$STUB_CALLS"
+check_grep '--field thread=PRRT_dkeep --field body=Fixed in picked1.' "$STUB_CALLS"
 check_grep "| PRRT_dkeep | FIX | picked1 | replied and resolved |" "$OUT"
 check "exactly one thread was resolved" test "$(grep -cF 'resolveReviewThread(' "$STUB_CALLS")" -eq 1
-check_grep 'variables={"thread":"PRRT_dkeep"}' "$STUB_CALLS"
+check_grep '--field thread=PRRT_dkeep' "$STUB_CALLS"
 # The rejected fix leaves no debris and comes back as an escalation.
 check_no_grep "PRRT_ddrop" "$STUB_CALLS"
 check_grep "| PRRT_ddrop | ESCALATE | — | rejected, commit dropped |" "$OUT"
@@ -161,7 +161,7 @@ run
 check_status 0 "$STATUS"
 check_grep "no fix confirmed, nothing pushed" "$OUT"
 check_no_grep "push origin" "$STUB_CALLS"
-check_grep 'variables={"thread":"PRRT_drefuse","body":' "$STUB_CALLS"
+check_grep '--field thread=PRRT_drefuse --field body=' "$STUB_CALLS"
 check_no_grep "resolveReviewThread(" "$STUB_CALLS"
 check_grep "| PRRT_dfix | ESCALATE | — | rejected, commit dropped |" "$OUT"
 
@@ -172,7 +172,7 @@ write_plan false true
 export STUB_REVLIST="c1aaaaaa" STUB_DIRTY="$WORK"
 run
 check_status 0 "$STATUS"
-check_grep 'variables={"thread":"PRRT_drefuse","body":' "$STUB_CALLS"
+check_grep '--field thread=PRRT_drefuse --field body=' "$STUB_CALLS"
 check_no_grep "reset --hard" "$STUB_CALLS"
 check_no_grep "push origin" "$STUB_CALLS"
 
@@ -203,6 +203,7 @@ check_grep "git -C $WORK cherry-pick --abort" "$STUB_CALLS"
 check_grep "| PRRT_dclash | ESCALATE | c1aaaaaa | would not replay, commit dropped |" "$OUT"
 check_no_grep "PRRT_dclash" "$STUB_CALLS"
 # The fix that did replay still lands.
+check_grep '--field thread=PRRT_dkeep --field body=Fixed in picked1.' "$STUB_CALLS"
 check_grep "| PRRT_dkeep | FIX | picked1 | replied and resolved |" "$OUT"
 check "exactly one push" test "$(grep -cF ' push origin' "$STUB_CALLS")" -eq 1
 

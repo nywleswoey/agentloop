@@ -310,7 +310,7 @@ check_no_grep "worktree create" "$STUB_CALLS"
 check_grep "pass end dispatches=0 skips=1 sweeps=0" "$OUT"
 
 setup "the budget counts loop workers across phases and spends the last slot once"
-# Two live loop workers, one of them an PR worker: the budget is one pool, so
+# Two live loop workers, one of them a PR worker: the budget is one pool, so
 # only one of the two workable issues gets the remaining slot.
 export STUB_ISSUES=mixed STUB_ORCA_PS=one-free
 run_once
@@ -672,8 +672,8 @@ check_no_grep "worktree create" "$STUB_CALLS"
 
 # --- seen-list ------------------------------------------------------------------
 
-# The eligible-thread fixture carries two threads: d...0001, whose newest note is
-# 900001, and d...0002, whose newest is 900003. A seen entry matching both is
+# The eligible-thread fixture carries two threads: PRRT_thread001, whose newest note is
+# 900001, and PRRT_thread002, whose newest is 900003. A seen entry matching both is
 # what a worker leaves behind after triaging PR 101 and getting no reply.
 SEEN_101_CURRENT='{"project":"nywleswoey/automation","pr":101,"thread":"PRRT_thread001","lastCommentId":900001,"verdict":"ANSWER"}
 {"project":"nywleswoey/automation","pr":101,"thread":"PRRT_thread002","lastCommentId":900003,"verdict":"ESCALATE"}'

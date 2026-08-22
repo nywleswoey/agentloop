@@ -89,18 +89,41 @@ require_tools() {
 # single opaque token. Decoding it hands the response back byte for byte, so
 # every read below is an ordinary jq over ordinary JSON again.
 #
-# --full is not optional. Without it a long body comes back truncated, and a
-# truncated answer is indistinguishable from a complete one.
+# When --paginate is used, gh-axi produces multiple TOON documents, one per
+# page. Each must be decoded separately and then combined into a single JSON
+# array before the caller consumes it.
 gh_json() {
-  local response body
-  response=$(gh-axi api "$@" --jq 'tojson|@base64' --full 2>/dev/null) || return 1
+  local response bodies page_count decoded_pages
+  response=$(gh-axi api "$@" --jq 'tojson|@base64' 2>/dev/null) || return 1
   # A refusal is TOON as well and carries no body at all, so the shape of the
   # answer is checked rather than the exit status trusted on its own.
   [[ "$response" == error:* ]] && return 1
   [[ "$response" == *"truncated: true"* ]] && return 1
-  body=$(sed -n 's/^  body: //p' <<< "$response")
-  [[ -n "$body" ]] || return 1
-  base64 -d <<< "$body" 2>/dev/null || return 1
+
+  # Extract all body fields (one per page if --paginate was used).
+  bodies=$(sed -n 's/^  body: //p' <<< "$response")
+  [[ -n "$bodies" ]] || return 1
+
+  # Decode each page, one base64 body per line.
+  decoded_pages=""
+  while IFS= read -r page_body; do
+    [[ -n "$page_body" ]] || continue
+    decoded=$(base64 -d <<< "$page_body" 2>/dev/null) || return 1
+    decoded_pages+="$decoded"$'\n'
+  done <<< "$bodies"
+
+  # Count how many pages we got (number of non-empty lines).
+  page_count=$(grep -c . <<< "$decoded_pages" || echo 0)
+
+  # Single page: return as-is (most common case, no jq needed).
+  if [[ "$page_count" -eq 1 ]]; then
+    printf '%s' "${decoded_pages%$'\n'}"
+    return 0
+  fi
+
+  # Multiple pages: combine into a single JSON array.
+  [[ "$page_count" -gt 0 ]] || return 1
+  printf '%s' "$decoded_pages" | jq -s 'add'
 }
 
 # One GraphQL document. GitHub answers a bad query with a 200 and an `errors`
@@ -266,9 +289,10 @@ repo_path() {
 # loop's own two labels are made to exist once, at startup, in every repo it
 # polls. Anything already there is left exactly as it is, colour included.
 ensure_labels() {
-  local repo="$1" existing label
-  existing=$(gh_json "/repos/$repo/labels" --paginate | jq -r '.[].name') \
+  local repo="$1" existing label response
+  response=$(gh_json "/repos/$repo/labels" --paginate) \
     || { log "could not list labels in $repo, assuming they exist"; return 0; }
+  existing=$(jq -r '.[].name' <<< "$response")
   for label in "$LABEL_READY" "$LABEL_CLAIMED"; do
     grep -qxF "$label" <<< "$existing" && continue
     if gh-axi label create --name "$label" --color ededed \

@@ -238,14 +238,14 @@ push_branch() {
 # replied to would report as replied — which is the one thing this script must
 # never get wrong.
 gh_graphql() {
-  local query="$1" variables="$2" response body
+  local query="$1" thread="$2" body_arg="$3" response body_val
   response=$(gh-axi api POST /graphql \
-    --field query="$query" --field variables="$variables" \
-    --jq 'tojson|@base64' --full 2>/dev/null) || return 1
+    --field query="$query" --field thread="$thread" ${body_arg:+--field body="$body_arg"} \
+    --jq 'tojson|@base64' 2>/dev/null) || return 1
   [[ "$response" == error:* ]] && return 1
-  body=$(sed -n 's/^  body: //p' <<< "$response")
-  [[ -n "$body" ]] || return 1
-  response=$(base64 -d <<< "$body" 2>/dev/null) || return 1
+  body_val=$(sed -n 's/^  body: //p' <<< "$response")
+  [[ -n "$body_val" ]] || return 1
+  response=$(base64 -d <<< "$body_val" 2>/dev/null) || return 1
   jq -e 'has("errors") | not' <<< "$response" >/dev/null 2>&1
 }
 
@@ -254,17 +254,14 @@ gh_graphql() {
 # reply route would need the thread's first comment id instead.
 #
 # The reply text travels as a GraphQL variable rather than inside the query, so
-# a reviewer's own words can never be read as part of the document — and it is
-# built with jq, so gh-axi is handed JSON rather than something it has to guess
-# the shape of.
+# a reviewer's own words can never be read as part of the document.
 post_comment() {
   local thread="$1" body="$2"
   gh_graphql 'mutation($thread: ID!, $body: String!) {
       addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $thread, body: $body}) {
         comment { databaseId }
       }
-    }' \
-    "$(jq -nc --arg thread "$thread" --arg body "$body" '{thread: $thread, body: $body}')"
+    }' "$thread" "$body"
 }
 
 resolve_thread() {
@@ -273,8 +270,7 @@ resolve_thread() {
       resolveReviewThread(input: {threadId: $thread}) {
         thread { isResolved }
       }
-    }' \
-    "$(jq -nc --arg thread "$thread" '{thread: $thread}')"
+    }' "$thread"
 }
 
 # --- seen-list -----------------------------------------------------------------
