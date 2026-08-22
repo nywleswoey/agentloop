@@ -241,7 +241,7 @@ gh_graphql() {
   local query="$1" thread="$2" body_arg="$3" response body_val
   response=$(gh-axi api POST /graphql \
     --field query="$query" --field thread="$thread" ${body_arg:+--field body="$body_arg"} \
-    --jq 'tojson|@base64' 2>/dev/null) || return 1
+    --full --jq 'tojson|@base64' 2>/dev/null) || return 1
   [[ "$response" == error:* ]] && return 1
   body_val=$(sed -n 's/^  body: //p' <<< "$response")
   [[ -n "$body_val" ]] || return 1
