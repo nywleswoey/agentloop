@@ -93,13 +93,16 @@ check "the branch was not rebuilt" test "$(grep -cF ' reset --hard' "$STUB_CALLS
 check "nothing was cherry-picked" test "$(grep -cF ' cherry-pick' "$STUB_CALLS")" -eq 0
 # The reply cites the sha that is actually on the branch.
 # The reply text travels as a GraphQL variable passed via --field.
-check_grep 'gh-axi api POST /graphql --field query=mutation($thread: ID!, $body: String!) {' "$STUB_CALLS"
+check_grep 'gh-axi api POST graphql --field query=mutation($thread: ID!, $body: String!) {' "$STUB_CALLS"
 check_grep '--field thread=PRRT_dfix --field body=Fixed in c1aaaaaa.' "$STUB_CALLS"
 check_grep '--field thread=PRRT_drefuse --field body=**Disagree** — the guard is three lines up.' "$STUB_CALLS"
 # Only a FIX resolves — the reviewer keeps the last word on a disagreement.
 check_grep '--field thread=PRRT_dfix' "$STUB_CALLS"
 check "exactly one thread was resolved" test "$(grep -cF 'resolveReviewThread(' "$STUB_CALLS")" -eq 1
-check_no_grep '--field thread=PRRT_drefuse' "$STUB_CALLS"
+# Scoped to the resolve mutation: the refusal above does post a reply naming
+# this same thread, so a bare search for the thread id cannot tell "replied to"
+# from "resolved" and would contradict that assertion.
+check "the refused thread was not resolved" test "$(grep -F 'resolveReviewThread(' "$STUB_CALLS" | grep -cF 'thread=PRRT_drefuse')" -eq 0
 # An ANSWER and an ESCALATE are reported and nothing else.
 check_no_grep "PRRT_danswer" "$STUB_CALLS"
 check_no_grep "PRRT_descalate" "$STUB_CALLS"

@@ -237,9 +237,16 @@ push_branch() {
 # `errors` block. Without reading the body back, a thread that was never
 # replied to would report as replied — which is the one thing this script must
 # never get wrong.
+#
+# The path is `graphql`, not `/graphql`. gh hoists --field arguments into
+# GraphQL variables only when the path matches that literal, so the leading
+# slash leaves $thread and $body arriving at GitHub as null and every mutation
+# below refused. Reads elsewhere pass no variables and so never noticed.
 gh_graphql() {
-  local query="$1" thread="$2" body_arg="$3" response body_val
-  response=$(gh-axi api POST /graphql \
+  # body_arg is optional: resolve_thread takes no reply text, and under
+  # `set -u` a bare $3 aborted the whole run before the mutation was sent.
+  local query="$1" thread="$2" body_arg="${3:-}" response body_val
+  response=$(gh-axi api POST graphql \
     --field query="$query" --field thread="$thread" ${body_arg:+--field body="$body_arg"} \
     --full --jq 'tojson|@base64' 2>/dev/null) || return 1
   [[ "$response" == error:* ]] && return 1
