@@ -2,25 +2,25 @@
 #
 # agent-loop.sh
 #
-# Polls a fixed list of GitLab projects and dispatches Orca workers at anything
-# workable. Started by hand, runs until Ctrl-C.
+# Polls a fixed list of GitHub repositories and dispatches Orca workers at
+# anything workable. Started by hand, runs until Ctrl-C.
 #
 # This build carries the daemon skeleton — config loading and validation, the
 # PID lock, Orca runtime readiness, logging, the pass loop — the issue phase,
 # which claims workable `ready-for-agent` issues and dispatches an Orca worker
 # at them, the worktree inventory, which answers who holds a branch and reclaims
-# stale claims at startup, the MR phase, which dispatches a thread-triage worker
-# at open merge requests carrying unresolved threads, the seen-list, which keeps
-# a thread I left silent out of eligibility until a new note lands on it, the
-# close-out phase, which ticks, closes and unclaims an issue once its merge
-# request has merged, and the sweep, which removes the loop's own finished
+# stale claims at startup, the PR phase, which dispatches a thread-triage worker
+# at open pull requests carrying unresolved review threads, the seen-list, which
+# keeps a thread I left silent out of eligibility until a new comment lands on
+# it, the close-out phase, which ticks, closes and unclaims an issue once its
+# pull request has merged, and the sweep, which removes the loop's own finished
 # worktrees at the end of every pass.
 #
 # Usage:
 #   ./agent-loop.sh [--once] [--config <path>]
 #   ./agent-loop.sh --branch-report <branch> [--config <path>]
 #
-# Requires: jq, git, orca, glab-axi (authenticated against the GitLab host)
+# Requires: jq, git, orca, gh-axi (authenticated against github.com)
 
 set -euo pipefail
 
@@ -35,10 +35,7 @@ TUI_WAIT_MS="${AGENT_LOOP_TUI_WAIT_MS:-60000}"
 ONCE=false
 BRANCH_REPORT=""
 LOG_PATH=""
-# Resolved numeric GitLab project id per configured project, filled by
-# validate_config. The MR phase filters one global MR list on it.
-PROJECT_IDS=()
-# The seen-list as a JSON array, refilled at the top of every MR phase. Empty
+# The seen-list as a JSON array, refilled at the top of every PR phase. Empty
 # until then, so a thread eligibility check that runs before it is loaded
 # filters nothing rather than dying on an unbound variable.
 SEEN_JSON='[]'
@@ -53,8 +50,8 @@ usage() {
 Usage: agent-loop.sh [--once] [--config <path>]
        agent-loop.sh --branch-report <branch> [--config <path>]
 
-Polls the GitLab projects in the config and dispatches Orca workers at anything
-workable. Started by hand, runs until Ctrl-C.
+Polls the GitHub repositories in the config and dispatches Orca workers at
+anything workable. Started by hand, runs until Ctrl-C.
 
 Options:
   --once              Run exactly one pass and exit instead of looping.
@@ -72,15 +69,71 @@ Environment overrides (for tests and troubleshooting):
   AGENT_LOOP_TUI_WAIT_MS            how long a reused terminal gets to boot its
                                     agent before the prompt is typed (default 60000)
 
-Requires: jq, git, orca, glab-axi
+Requires: jq, git, orca, gh-axi
 EOF
 }
 
 require_tools() {
   local tool
-  for tool in jq git orca glab-axi; do
+  for tool in jq git orca gh-axi; do
     command -v "$tool" >/dev/null 2>&1 || die "required command not found on PATH: $tool"
   done
+}
+
+# --- gh-axi ------------------------------------------------------------------
+
+# gh-axi renders every answer as TOON and has no JSON output mode, so a script
+# cannot read what it prints the way it would read `gh`'s. What it will do is
+# run a jq expression against the response before rendering it, and
+# `tojson | @base64` is the one shape TOON has nothing left to restructure: a
+# single opaque token. Decoding it hands the response back byte for byte, so
+# every read below is an ordinary jq over ordinary JSON again.
+#
+# When --paginate is used, gh-axi produces multiple TOON documents, one per
+# page. Each must be decoded separately and then combined into a single JSON
+# array before the caller consumes it.
+gh_json() {
+  local response bodies page_count decoded_pages
+  response=$(gh-axi api "$@" --jq 'tojson|@base64' 2>/dev/null) || return 1
+  # A refusal is TOON as well and carries no body at all, so the shape of the
+  # answer is checked rather than the exit status trusted on its own.
+  [[ "$response" == error:* ]] && return 1
+  [[ "$response" == *"truncated: true"* ]] && return 1
+
+  # Extract all body fields (one per page if --paginate was used).
+  bodies=$(sed -n 's/^  body: //p' <<< "$response")
+  [[ -n "$bodies" ]] || return 1
+
+  # Decode each page, one base64 body per line.
+  decoded_pages=""
+  while IFS= read -r page_body; do
+    [[ -n "$page_body" ]] || continue
+    decoded=$(base64 -d <<< "$page_body" 2>/dev/null) || return 1
+    decoded_pages+="$decoded"$'\n'
+  done <<< "$bodies"
+
+  # Count how many pages we got (number of non-empty lines).
+  page_count=$(grep -c . <<< "$decoded_pages" || echo 0)
+
+  # Single page: return as-is (most common case, no jq needed).
+  if [[ "$page_count" -eq 1 ]]; then
+    printf '%s' "${decoded_pages%$'\n'}"
+    return 0
+  fi
+
+  # Multiple pages: combine into a single JSON array.
+  [[ "$page_count" -gt 0 ]] || return 1
+  printf '%s' "$decoded_pages" | jq -s 'add'
+}
+
+# One GraphQL document. GitHub answers a bad query with a 200 and an `errors`
+# block, which would otherwise reach the caller looking like a response, so it
+# is turned back into a failure here — once, rather than at every call site.
+gh_graphql() {
+  local response
+  response=$(gh_json POST /graphql --field query="$1") || return 1
+  jq -e 'has("errors") | not' <<< "$response" >/dev/null 2>&1 || return 1
+  printf '%s' "$response"
 }
 
 # --- logging -----------------------------------------------------------------
@@ -231,6 +284,26 @@ repo_path() {
   jq -r --arg id "$1" '.result.repos[]? | select(.id == $id) | .path' <<< "$ORCA_REPOS"
 }
 
+# GitHub resolves an issue's labels by name, and a name that does not exist yet
+# is not created for you — unlike GitLab, where first use was enough. So the
+# loop's own two labels are made to exist once, at startup, in every repo it
+# polls. Anything already there is left exactly as it is, colour included.
+ensure_labels() {
+  local repo="$1" existing label response
+  response=$(gh_json "/repos/$repo/labels" --paginate) \
+    || { log "could not list labels in $repo, assuming they exist"; return 0; }
+  existing=$(jq -r '.[].name' <<< "$response")
+  for label in "$LABEL_READY" "$LABEL_CLAIMED"; do
+    grep -qxF "$label" <<< "$existing" && continue
+    if gh-axi label create --name "$label" --color ededed \
+         --description "agent-loop" --repo "$repo" >/dev/null 2>&1; then
+      log "created label $label in $repo"
+    else
+      log "could not create label $label in $repo"
+    fi
+  done
+}
+
 # A typo must fail at second zero rather than silently narrowing what gets
 # polled, so every project and every Orca repo id is resolved before the first
 # pass runs.
@@ -238,48 +311,49 @@ validate_config() {
   local repo_ids
   repo_ids=$(jq -r '.result.repos[].id' <<< "$ORCA_REPOS")
 
-  local i gitlab orca_id pid
+  local i github orca_id
   for (( i = 0; i < PROJECT_COUNT; i++ )); do
-    gitlab=$(jq -r ".projects[$i].gitlab // empty" "$CONFIG_PATH")
+    github=$(jq -r ".projects[$i].github // empty" "$CONFIG_PATH")
     orca_id=$(jq -r ".projects[$i].orcaRepoId // empty" "$CONFIG_PATH")
-    [[ -n "$gitlab" ]] || die "projects[$i] has no gitlab path"
-    [[ -n "$orca_id" ]] || die "projects[$i] ($gitlab) has no orcaRepoId"
+    [[ -n "$github" ]] || die "projects[$i] has no github path"
+    [[ -n "$orca_id" ]] || die "projects[$i] ($github) has no orcaRepoId"
 
-    # The numeric id is kept, not thrown away: MR discovery is one global call
-    # that names projects by id, and `glab-axi api` paths take the id while
-    # `-R` takes the path. Both identifiers are free, so both are resolved once.
-    if ! pid=$(glab-axi api "projects/${gitlab//\//%2F}" --jq .id 2>/dev/null) || [[ -z "$pid" ]]; then
-      die "project does not resolve: $gitlab"
-    fi
+    # GitHub names a repository by `<owner>/<name>` everywhere — in the REST
+    # path, in the GraphQL query and on the command line — so unlike GitLab
+    # there is no second numeric identifier to resolve and carry around. The
+    # read is still made, because a typo must fail here and not on the first
+    # query of the first pass.
+    gh_json "/repos/$github" >/dev/null 2>&1 \
+      || die "project does not resolve: $github"
     grep -qxF "$orca_id" <<< "$repo_ids" \
-      || die "orcaRepoId does not resolve: $orca_id ($gitlab)"
+      || die "orcaRepoId does not resolve: $orca_id ($github)"
 
-    PROJECT_IDS[i]="$pid"
-    log "validated $gitlab -> orca repo $orca_id"
+    ensure_labels "$github"
+    log "validated $github -> orca repo $orca_id"
   done
 }
 
-# The configured project a numeric GitLab id belongs to, as `<gitlab>\t<orcaRepoId>`.
-# Both global merge-request reads name projects by id and nothing else, so both
-# come back through here — and a project the config does not list prints
-# nothing, which is how "not this loop's business" is said.
-project_for_id() {
+# The Orca repo id a configured GitHub repository maps to, or nothing when the
+# config does not list it — which is how "not this loop's business" is said.
+# Both global pull-request reads name repositories by `<owner>/<name>` and
+# nothing else, so both come back through here.
+orca_id_for_project() {
   local i
   for (( i = 0; i < PROJECT_COUNT; i++ )); do
-    if [[ "${PROJECT_IDS[i]:-}" == "$1" ]]; then
-      jq -r ".projects[$i] | [.gitlab, .orcaRepoId] | @tsv" "$CONFIG_PATH"
+    if [[ "$(jq -r ".projects[$i].github" "$CONFIG_PATH")" == "$1" ]]; then
+      jq -r ".projects[$i].orcaRepoId" "$CONFIG_PATH"
       return 0
     fi
   done
 }
 
-# "My" merge requests come from `scope=created_by_me`, so no identity lives in
-# the config — but the thread rule does need a name to compare note authors
-# against, and it is the same identity the token already carries.
+# "My" pull requests come from `author:<me>`, so no identity lives in the config
+# — but the thread rule does need a name to compare comment authors against, and
+# it is the same identity the token already carries.
 load_identity() {
-  ME=$(glab-axi api user --jq .username 2>/dev/null) \
-    || die "could not resolve the GitLab identity behind this token"
-  [[ -n "$ME" ]] || die "could not resolve the GitLab identity behind this token"
+  ME=$(gh_json /user | jq -r '.login // empty') \
+    || die "could not resolve the GitHub identity behind this token"
+  [[ -n "$ME" ]] || die "could not resolve the GitHub identity behind this token"
   log "acting as $ME"
 }
 
@@ -374,7 +448,7 @@ count_live_workers() {
 }
 
 # maxWorkers is one budget for the whole loop rather than a quota per phase, so
-# a quiet issue backlog leaves the capacity free for MR work. A worker is a
+# a quiet issue backlog leaves the capacity free for PR work. A worker is a
 # worktree the loop created (`agent-loop-` prefix) whose agent is still going;
 # `done` agents are finished work waiting to be swept, not spent budget.
 count_active_workers() {
@@ -405,7 +479,7 @@ worktree_for_branch() {
 #   foreign-dirty  a checkout the loop did not create, tree not clean
 #   unknown        the question could not be answered — see below
 #
-# Cleanliness is part of the answer because the MR phase reuses a clean foreign
+# Cleanliness is part of the answer because the PR phase reuses a clean foreign
 # worktree in place — normally my own checkout of a branch I was developing —
 # and must never drop an agent on top of edits in progress. `unknown` exists so
 # that a git that would not answer, or a loop worktree Orca has lost and can
@@ -445,27 +519,27 @@ branch_state() {
 # every configured project. It is a read, so it takes no lock and runs no pass,
 # and it prints its answer rather than logging a decision.
 branch_report() {
-  local branch="$1" i gitlab orca_id repo state path
+  local branch="$1" i github orca_id repo state path
   for (( i = 0; i < PROJECT_COUNT; i++ )); do
-    gitlab=$(jq -r ".projects[$i].gitlab" "$CONFIG_PATH")
+    github=$(jq -r ".projects[$i].github" "$CONFIG_PATH")
     orca_id=$(jq -r ".projects[$i].orcaRepoId" "$CONFIG_PATH")
     repo=$(repo_path "$orca_id")
     if [[ -z "$repo" ]]; then
-      printf 'branch %s %s: unknown, orcaRepoId does not resolve: %s\n' "$branch" "$gitlab" "$orca_id"
+      printf 'branch %s %s: unknown, orcaRepoId does not resolve: %s\n' "$branch" "$github" "$orca_id"
       continue
     fi
     IFS=$'\t' read -r state path < <(branch_state "$repo" "$branch")
-    printf 'branch %s %s: %s%s\n' "$branch" "$gitlab" "$state" "${path:+ $path}"
+    printf 'branch %s %s: %s%s\n' "$branch" "$github" "$state" "${path:+ $path}"
   done
 }
 
 # --- startup reclaim ---------------------------------------------------------
 
-# The worktree a dispatch asked for is `agent-loop-<type>-<iid>-<title-slug>`,
-# and a name collision appends `-2` — so the iid is anchored on both sides, or
+# The worktree a dispatch asked for is `agent-loop-<type>-<number>-<title-slug>`,
+# and a name collision appends `-2` — so the number is anchored on both sides, or
 # issue 1 would find issue 11's worker and stay claimed forever. The types are
-# spelled out rather than matched as `[a-z]+`, which would let the MR phase's
-# own `agent-loop-mr-17` answer for issue 17. `issue` is the name dispatches
+# spelled out rather than matched as `[a-z]+`, which would let the PR phase's
+# own `agent-loop-pr-17` answer for issue 17. `issue` is the name dispatches
 # used before the type was part of it, and still names live workers.
 ISSUE_BRANCH_TYPES='feat|fix|chore|docs|refactor|test|perf|build|ci|issue'
 
@@ -485,78 +559,86 @@ reclaim_stale_claims() {
     return 0
   fi
 
-  local i gitlab iids iid
+  local i github numbers number
   for (( i = 0; i < PROJECT_COUNT; i++ )); do
-    gitlab=$(jq -r ".projects[$i].gitlab" "$CONFIG_PATH")
-    if ! iids=$(query_claimed_issues "$gitlab"); then
-      log "claimed-issue query failed: $gitlab"
+    github=$(jq -r ".projects[$i].github" "$CONFIG_PATH")
+    if ! numbers=$(query_claimed_issues "$github"); then
+      log "claimed-issue query failed: $github"
       continue
     fi
-    # stdin is closed for the body: glab-axi must not swallow the iid list.
-    while IFS= read -r iid; do
-      [[ -n "$iid" ]] || continue
-      if issue_has_live_worker "$iid"; then
-        log "left claimed $gitlab#$iid: a live worker holds it"
-      elif release_issue "$gitlab" "$iid" < /dev/null; then
-        log "reclaimed $gitlab#$iid: no live worker, returned to $LABEL_READY"
+    # stdin is closed for the body: gh-axi must not swallow the issue list.
+    while IFS= read -r number; do
+      [[ -n "$number" ]] || continue
+      if issue_has_live_worker "$number"; then
+        log "left claimed $github#$number: a live worker holds it"
+      elif release_issue "$github" "$number" < /dev/null; then
+        log "reclaimed $github#$number: no live worker, returned to $LABEL_READY"
       else
-        log "reclaim failed for $gitlab#$iid, leaving it claimed"
+        log "reclaim failed for $github#$number, leaving it claimed"
       fi
-    done <<< "$iids"
+    done <<< "$numbers"
   done
 }
 
-# --- gitlab issues -----------------------------------------------------------
+# --- github issues -----------------------------------------------------------
 
-# One GraphQL call per project and label. `blocked` counts only open blockers,
-# so a closed blocker does not block. REST blocking_issues_count is a trap: it
-# counts the other direction and would select the wrong issues.
+# One GraphQL call per repository and label.
 query_issues_by_label() {
-  local gitlab="$1" label="$2" response
-  response=$(glab-axi api graphql --raw-field query="{ project(fullPath: \"$gitlab\") { issues(labelName: [\"$label\"], state: opened) { nodes { iid title webUrl blocked blockedByCount labels { nodes { title } } } } } }" --raw) || return 1
-  # GraphQL answers an error with 200 and a null project, which would otherwise
-  # read as "this project has no matching issues".
-  jq -e '.data.project != null' <<< "$response" >/dev/null || return 1
+  local github="$1" label="$2" owner="${1%%/*}" name="${1##*/}" response
+  response=$(gh_graphql "{ repository(owner: \"$owner\", name: \"$name\") { issues(labels: [\"$label\"], states: OPEN, first: 100) { nodes { number title url labels(first: 20) { nodes { name } } } } } }") || return 1
+  # A GraphQL error can come back as a 200 with a null repository, which would
+  # otherwise read as "this repository has no matching issues".
+  jq -e '.data.repository != null' <<< "$response" >/dev/null || return 1
   printf '%s' "$response"
 }
 
 # The change type is read off the issue's own labels, so the branch says what
 # kind of change it is without anyone writing it twice. A scoped label counts by
-# its last segment (`type::fix`), GitLab's own defaults are mapped onto the
-# conventional-commit words, and an issue that says nothing is a `feat` — the
-# type is a reading aid on a branch name, not a decision anything depends on.
+# its last segment (`type::fix`), GitHub's own default labels are mapped onto
+# the conventional-commit words, and an issue that says nothing is a `feat` —
+# the type is a reading aid on a branch name, not a decision anything depends on.
 #
 # The title comes last: it is the only field that can carry whitespace, so the
 # reader can take it as the remainder of the line.
 query_ready_issues() {
   query_issues_by_label "$1" "$LABEL_READY" | jq -r '
     def change_type:
-      [.labels.nodes[]?.title | ascii_downcase | sub("^.*::"; "")]
+      [.labels.nodes[]?.name | ascii_downcase | sub("^.*::"; "")]
       | map(if . == "bug" then "fix"
             elif . == "feature" or . == "enhancement" then "feat"
+            elif . == "documentation" then "docs"
             else . end)
       | map(select(IN("feat","fix","chore","docs","refactor","test","perf","build","ci")))
       | first // "feat";
-    .data.project.issues.nodes[]?
-    | [.iid, .blocked, .blockedByCount, .webUrl, change_type, (.title // "")] | @tsv'
+    .data.repository.issues.nodes[]?
+    | [.number, .url, change_type, (.title // "")] | @tsv'
 }
 
 query_claimed_issues() {
-  query_issues_by_label "$1" "$LABEL_CLAIMED" | jq -r '.data.project.issues.nodes[]?.iid'
+  query_issues_by_label "$1" "$LABEL_CLAIMED" | jq -r '.data.repository.issues.nodes[]?.number'
 }
 
-# Every issue write goes through here, so the path encoding lives in one place
-# and each caller is left saying only what it is changing.
-issue_put() {
-  local gitlab="$1" iid="$2"
-  shift 2
-  glab-axi api PUT "projects/${gitlab//\//%2F}/issues/$iid" "$@" >/dev/null 2>&1
+# GitHub has no "these issues block this one" field on the issue itself, so the
+# blockers are a second read. It answers with the blocking issues themselves,
+# which is what makes "still open" answerable — a closed blocker does not block.
+#
+# Prints the number of open blockers, and fails if the question could not be put
+# at all. The caller treats that as a skip: dispatching at an issue that may be
+# blocked is worse than looking again next pass.
+count_open_blockers() {
+  local response
+  response=$(gh_json "/repos/$1/issues/$2/dependencies/blocked_by" --paginate) || return 1
+  jq -e 'type == "array"' <<< "$response" >/dev/null 2>&1 || return 1
+  jq -r '[.[] | select(.state == "open")] | length' <<< "$response"
 }
 
-# GitLab creates a label on first use, so a project that has never seen the
-# claimed label needs no setup.
+# gh-axi changes labels as a delta — an add and a remove in one call — which is
+# the same shape GitLab's add_labels/remove_labels had. So the swap stays a
+# single atomic write, and neither the claim nor the reclaim has to know what
+# else the issue is wearing. The raw REST route would not do: its PATCH replaces
+# the label set outright, and it has no way to send an empty one.
 swap_labels() {
-  issue_put "$1" "$2" --raw-field add_labels="$3" --raw-field remove_labels="$4"
+  gh-axi issue edit "$2" --repo "$1" --add-label "$3" --remove-label "$4" >/dev/null 2>&1
 }
 
 # The label swap is the claim: it is what tells the next pass, and any second
@@ -568,7 +650,7 @@ release_issue() { swap_labels "$1" "$2" "$LABEL_READY" "$LABEL_CLAIMED"; }
 
 # The change type and title become the readable half of the worktree — and
 # therefore branch — name: `agent-loop-fix-17-login-timeout-retry` says what the
-# branch is for in every `git branch` listing and merge request. Kept short so
+# branch is for in every `git branch` listing and pull request. Kept short so
 # the branch stays typeable, and lowercase alphanumerics only so it survives
 # Orca's own slugify unchanged — Orca turns anything else, `/` included, into a
 # dash, so a `fix/17-...` name is not on offer.
@@ -584,11 +666,11 @@ issue_slug() {
 # The prompt is the issue URL and nothing else — the issue stays the single
 # source of what to build.
 dispatch_issue() {
-  local orca_id="$1" iid="$2" weburl="$3" type="$4" title="$5" slug response
+  local orca_id="$1" number="$2" weburl="$3" type="$4" title="$5" slug response
   slug=$(issue_slug "$title")
   response=$(orca worktree create \
     --repo "id:$orca_id" \
-    --name "agent-loop-$type-$iid${slug:+-$slug}" \
+    --name "agent-loop-$type-$number${slug:+-$slug}" \
     --no-parent \
     --agent claude \
     --prompt "/implement $weburl" \
@@ -599,31 +681,37 @@ dispatch_issue() {
 }
 
 issue_phase() {
-  local i gitlab orca_id
+  local i github orca_id
   for (( i = 0; i < PROJECT_COUNT; i++ )); do
-    gitlab=$(jq -r ".projects[$i].gitlab" "$CONFIG_PATH")
+    github=$(jq -r ".projects[$i].github" "$CONFIG_PATH")
     orca_id=$(jq -r ".projects[$i].orcaRepoId" "$CONFIG_PATH")
-    issue_phase_project "$gitlab" "$orca_id"
+    issue_phase_project "$github" "$orca_id"
   done
 }
 
 issue_phase_project() {
-  local gitlab="$1" orca_id="$2" issues iid blocked blocked_by weburl type title worktree_id
+  local github="$1" orca_id="$2" issues number weburl type title blockers worktree_id
 
   # ponytail: the CLI's own error text goes to stderr, so it reaches the
   # terminal but not the log file. Capture it into the log line if reading the
   # log alone ever has to be enough.
-  if ! issues=$(query_ready_issues "$gitlab"); then
-    log "issue query failed: $gitlab"
+  if ! issues=$(query_ready_issues "$github"); then
+    log "issue query failed: $github"
     SKIPS=$((SKIPS + 1))
     return 0
   fi
 
-  while IFS=$'\t' read -r iid blocked blocked_by weburl type title; do
-    [[ -n "$iid" ]] || continue
+  # stdin is closed for the body: gh-axi must not swallow the issue list.
+  while IFS=$'\t' read -r number weburl type title; do
+    [[ -n "$number" ]] || continue
 
-    if [[ "$blocked" == "true" ]]; then
-      log "issue $gitlab#$iid skipped: blocked by $blocked_by open blocker"
+    if ! blockers=$(count_open_blockers "$github" "$number" < /dev/null); then
+      log "issue $github#$number skipped: could not read its blockers"
+      SKIPS=$((SKIPS + 1))
+      continue
+    fi
+    if (( blockers > 0 )); then
+      log "issue $github#$number skipped: blocked by $blockers open blocker"
       SKIPS=$((SKIPS + 1))
       continue
     fi
@@ -632,27 +720,27 @@ issue_phase_project() {
     # slot, and a candidate that arrives at a full budget waits for a later pass
     # rather than being dropped.
     if (( ACTIVE_WORKERS >= MAX_WORKERS )); then
-      log "issue $gitlab#$iid deferred: worker budget full ($ACTIVE_WORKERS/$MAX_WORKERS)"
+      log "issue $github#$number deferred: worker budget full ($ACTIVE_WORKERS/$MAX_WORKERS)"
       SKIPS=$((SKIPS + 1))
       continue
     fi
 
-    if ! claim_issue "$gitlab" "$iid"; then
-      log "claim failed for $gitlab#$iid, leaving it ready"
+    if ! claim_issue "$github" "$number" < /dev/null; then
+      log "claim failed for $github#$number, leaving it ready"
       SKIPS=$((SKIPS + 1))
       continue
     fi
-    log "claimed $gitlab#$iid"
+    log "claimed $github#$number"
 
     # The claim is already written, so a failed dispatch leaves the issue
     # claimed with no worker. Startup reclaim hands it back.
-    if ! worktree_id=$(dispatch_issue "$orca_id" "$iid" "$weburl" "$type" "$title"); then
-      log "dispatch failed for $gitlab#$iid, issue left claimed"
+    if ! worktree_id=$(dispatch_issue "$orca_id" "$number" "$weburl" "$type" "$title" < /dev/null); then
+      log "dispatch failed for $github#$number, issue left claimed"
       SKIPS=$((SKIPS + 1))
       continue
     fi
 
-    log "dispatched $gitlab#$iid -> worktree $worktree_id"
+    log "dispatched $github#$number -> worktree $worktree_id"
     ACTIVE_WORKERS=$((ACTIVE_WORKERS + 1))
     DISPATCHES=$((DISPATCHES + 1))
   done <<< "$issues"
@@ -660,7 +748,7 @@ issue_phase_project() {
 
 # --- worktree sweep ----------------------------------------------------------
 
-# Worktrees the MR phase dropped a fresh worker into this pass. The sweep reads
+# Worktrees the PR phase dropped a fresh worker into this pass. The sweep reads
 # the snapshot the pass opened with, where such a worktree is still the `done`
 # one it was a moment ago — without this it would remove a checkout that has a
 # worker in it, which is the one thing the sweep must never do.
@@ -731,29 +819,31 @@ sweep_worktrees() {
   done < <(orca_worktrees)
 }
 
-# --- mr phase ----------------------------------------------------------------
+# --- pr phase ----------------------------------------------------------------
 
-# One global read. `scope=created_by_me` resolves "mine" from the token, so no
-# project needs a local checkout and adding a project costs a config line —
-# the list is narrowed to the configured projects by `project_id` afterwards.
-query_open_mrs() {
+# One global read. `author:<me>` resolves "mine" from the identity behind the
+# token, so no repository needs a local checkout and adding a project costs a
+# config line — the list is narrowed to the configured repositories by
+# `nameWithOwner` afterwards.
+query_open_prs() {
   local response
-  # --raw, because glab-axi reformats a response into its compact display form
-  # unless asked for the JSON the API actually sent.
-  response=$(glab-axi api "merge_requests?scope=created_by_me&state=opened&per_page=100" --raw) || return 1
-  jq -e 'type == "array"' <<< "$response" >/dev/null 2>&1 || return 1
+  response=$(gh_graphql "{ search(query: \"is:pr is:open author:$ME sort:updated-desc\", type: ISSUE, first: 100) { nodes { ... on PullRequest { number title url headRefName repository { nameWithOwner } } } } }") || return 1
+  jq -e '.data.search.nodes | type == "array"' <<< "$response" >/dev/null 2>&1 || return 1
   # The title comes last: it is the only field that can carry whitespace, so the
   # reader can take it as the remainder of the line.
-  jq -r '.[] | [.project_id, .iid, .source_branch, .web_url, (.title // "")] | @tsv' <<< "$response"
+  jq -r '.data.search.nodes[]
+    | select(.number != null)
+    | [.repository.nameWithOwner, .number, .headRefName, .url, (.title // "")]
+    | @tsv' <<< "$response"
 }
 
-# The seen-list as one JSON array, read fresh at the top of every MR phase: the
+# The seen-list as one JSON array, read fresh at the top of every PR phase: the
 # workers dispatched by earlier passes append to it while the loop sleeps.
 #
 # It is disposable by design, so every way of failing to read it lands in the
 # same place — an empty array, a line saying so, and a pass that filters nothing.
 # A single malformed line costs the whole file, which is one repeated sweep of
-# merge requests that were already triaged and nothing worse.
+# pull requests that were already triaged and nothing worse.
 load_seen_list() {
   SEEN_JSON='[]'
   [[ -e "$SEEN_LIST_PATH" ]] || return 0
@@ -762,75 +852,82 @@ load_seen_list() {
   log "seen-list unreadable, filtering nothing this pass: $SEEN_LIST_PATH"
 }
 
-# A thread is eligible when it is a real thread (`individual_note == false`),
-# something in it is still resolvable and unresolved, I have never spoken in
-# it — once I have replied it is a human conversation and permanently
-# off-limits — and no seen entry says a worker already triaged it and left it
-# silent. Draft MRs are not filtered anywhere: draft is a merge gate, not a
-# review gate.
+# A thread is eligible when it is still unresolved, I have never spoken in it —
+# once I have replied it is a human conversation and permanently off-limits —
+# and no seen entry says a worker already triaged it and left it silent. Draft
+# pull requests are not filtered anywhere: draft is a merge gate, not a review
+# gate.
 #
-# The seen entry has to name the thread's newest note as well as the thread, so
-# the filter lapses the moment a reviewer replies: new information reopens the
-# case.
+# GitHub's review threads need no `individual_note` test the way GitLab's
+# discussions did: a plain PR comment is not a review thread at all and never
+# appears here.
+#
+# The seen entry has to name the thread's newest comment as well as the thread,
+# so the filter lapses the moment a reviewer replies: new information reopens
+# the case.
 count_eligible_threads() {
-  local pid="$1" iid="$2" gitlab="$3" response
-  response=$(glab-axi api "projects/$pid/merge_requests/$iid/discussions?per_page=100" --raw) || return 1
-  jq -e 'type == "array"' <<< "$response" >/dev/null 2>&1 || return 1
-  jq --arg me "$ME" --arg project "$gitlab" --argjson mr "$iid" --argjson seen "$SEEN_JSON" '
-    [ .[]
-      | select(.individual_note == false)
-      | select(any(.notes[]?; .resolvable == true and .resolved != true))
-      | select(all(.notes[]?; .author.username != $me))
+  local github="$1" number="$2" owner="${1%%/*}" name="${1##*/}" response
+  response=$(gh_graphql "{ repository(owner: \"$owner\", name: \"$name\") { pullRequest(number: $number) { reviewThreads(first: 100) { nodes { id isResolved comments(first: 100) { nodes { databaseId author { login } } } } } } } }") || return 1
+  jq -e '.data.repository.pullRequest.reviewThreads.nodes | type == "array"' <<< "$response" \
+    >/dev/null 2>&1 || return 1
+  jq --arg me "$ME" --arg project "$github" --argjson pr "$number" --argjson seen "$SEEN_JSON" '
+    [ .data.repository.pullRequest.reviewThreads.nodes[]
+      | select(.isResolved != true)
+      | select(all(.comments.nodes[]?; .author.login != $me))
       | . as $thread
-      | ([$thread.notes[]?.id] | max) as $last
+      | ([$thread.comments.nodes[]?.databaseId] | max) as $last
       | select(
           $seen
           | any(.project == $project
-                and .mr == $mr
-                and .discussion == $thread.id
-                and .lastNoteId == $last)
+                and .pr == $pr
+                and .thread == $thread.id
+                and .lastCommentId == $last)
           | not)
     ] | length' <<< "$response"
 }
 
-# Everything the loop leaves on disk for one MR worker — its brief and, later,
+# Everything the loop leaves on disk for one PR worker — its brief and, later,
 # the plan the worker writes — lives beside the log rather than in the checkout.
 # A linked worktree's `.git` is a file, not a directory, so there is nowhere
 # inside the checkout to put them that git will not notice.
-mr_work_path() {
-  printf '%s/agent-loop-mr-%s-%s' "$(dirname "$LOG_PATH")" "$1" "$2"
+pr_work_path() {
+  printf '%s/agent-loop-pr-%s-%s' "$(dirname "$LOG_PATH")" "$1" "$2"
 }
 
 # The worker's whole brief. Both dispatch paths deliver this same text: a fresh
 # worktree takes it as `--prompt`, a reused one reads it from a file.
 #
 # The rule it is built around is that the worker proposes and I dispose — so the
-# only thing here that may write to GitLab is mr-writeback.sh, run against a
+# only thing here that may write to GitHub is pr-writeback.sh, run against a
 # plan I have confirmed.
-mr_worker_prompt() {
-  local weburl="$1" branch="$2" pid="$3" iid="$4" gitlab="$5"
-  local plan
-  plan=$(mr_work_path "$iid" plan.json)
+pr_worker_prompt() {
+  local weburl="$1" branch="$2" github="$3" number="$4"
+  local owner="${3%%/*}" name="${3##*/}" plan
+  plan=$(pr_work_path "$number" plan.json)
   cat <<EOF
-Triage the review threads on merge request $weburl.
+Triage the review threads on pull request $weburl.
 
-Its source branch \`$branch\` is already checked out in this worktree. The
-project id is $pid and the merge request iid is $iid.
+Its head branch \`$branch\` is already checked out in this worktree. The
+repository is $github and the pull request number is $number.
 
 List the threads with:
 
-    glab-axi api "projects/$pid/merge_requests/$iid/discussions?per_page=100"
+    gh-axi api POST /graphql --field query='{ repository(owner: "$owner", name: "$name") { pullRequest(number: $number) { reviewThreads(first: 100) { nodes { id isResolved isOutdated path line comments(first: 100) { nodes { databaseId author { login } body diffHunk } } } } } } }'
 
-A thread is eligible when \`individual_note\` is false, at least one of its notes
-has \`resolvable: true\` and \`resolved\` not true, and **no note in it was
+A readable summary of the same review, if you want the diff alongside it:
+
+    gh-axi pr view $number --repo $github --reviews
+
+A thread is eligible when \`isResolved\` is false and **no comment in it was
 authored by \`$ME\`** — once $ME has spoken in a thread it is a human
 conversation and is permanently off-limits to you. Work every eligible thread,
-oldest first. Draft merge requests are in scope.
+oldest first. Draft pull requests are in scope.
 
 Record \`git rev-parse HEAD\` before you change anything; that is the plan's
-\`baseSha\`. For each thread, record the \`id\` of its newest note as that
-thread's \`lastNoteId\`; the loop uses it to notice when a reviewer has replied
-to a thread you left silent.
+\`baseSha\`. For each thread, record its node \`id\` as the plan's \`thread\`,
+and the \`databaseId\` of its newest comment as that thread's
+\`lastCommentId\`; the loop uses it to notice when a reviewer has replied to a
+thread you left silent.
 
 Give each eligible thread exactly one verdict:
 
@@ -851,27 +948,27 @@ Give each eligible thread exactly one verdict:
 
 While you prepare, these are absolute:
 
-- Push nothing. Write nothing to GitLab — no note, no resolve, no \`api POST\`
-  and no \`api PUT\` of any kind.
+- Push nothing. Write nothing to GitHub — no comment, no resolve, no
+  \`gh-axi api POST/PATCH/PUT/DELETE\`, no \`gh-axi pr/issue\` subcommand that
+  writes (\`comment\`, \`edit\`, \`review\`, \`merge\`, \`close\`), and no GraphQL
+  \`mutation\` of any kind.
 - Never force-push and never rebase.
-- Stay inside the merge request's diff unless a fix genuinely requires
-  otherwise.
+- Stay inside the pull request's diff unless a fix genuinely requires otherwise.
 - Leave the worktree clean: everything you change is committed.
 
 Then write your plan to \`$plan\`:
 
     {
-      "project": "$gitlab",
-      "projectId": $pid,
-      "mrIid": $iid,
+      "repo": "$github",
+      "prNumber": $number,
       "sourceBranch": "$branch",
       "baseSha": "<the sha you recorded>",
       "threads": [
-        { "discussion": "<id>", "verdict": "FIX", "lastNoteId": <newest note id>,
+        { "thread": "<node id>", "verdict": "FIX", "lastCommentId": <newest comment databaseId>,
           "commit": "<sha>", "summary": "<one sentence>", "confirmed": false },
-        { "discussion": "<id>", "verdict": "REFUSE", "lastNoteId": <newest note id>,
+        { "thread": "<node id>", "verdict": "REFUSE", "lastCommentId": <newest comment databaseId>,
           "reply": "**Disagree** — ...", "confirmed": false },
-        { "discussion": "<id>", "verdict": "ANSWER", "lastNoteId": <newest note id>,
+        { "thread": "<node id>", "verdict": "ANSWER", "lastCommentId": <newest comment databaseId>,
           "confirmed": false }
       ]
     }
@@ -883,15 +980,15 @@ nothing.
 
 Set \`"confirmed": true\` on exactly what I confirm and nothing else, then run:
 
-    "$SCRIPT_DIR/mr-writeback.sh" --plan "$plan" --seen-list "$SEEN_LIST_PATH"
+    "$SCRIPT_DIR/pr-writeback.sh" --plan "$plan" --seen-list "$SEEN_LIST_PATH"
 
-That script is the only thing that pushes or writes to GitLab. It replays only
+That script is the only thing that pushes or writes to GitHub. It replays only
 the confirmed fixes onto \`baseSha\`, pushes once to \`$branch\`, posts the
 confirmed replies, and resolves only the confirmed fixes — a rejected fix has
 its commit dropped and comes back as an escalation — so a fix's posted reply
 cites the sha as it landed, which differs from the local one only when something
 was rejected. If I confirm nothing, run it anyway with nothing marked confirmed;
-the merge request stays exactly as it is, and it still records the threads I left
+the pull request stays exactly as it is, and it still records the threads I left
 silent so the loop stops sending workers back at them until a reply lands.
 
 Report what it printed and stop. Do not push, reply or resolve by any other
@@ -904,16 +1001,16 @@ EOF
 # held elsewhere, Orca silently cuts a new branch named after the directory and
 # reports success.
 #
-# The name is the directory's alone — the checkout lands on the merge request's
+# The name is the directory's alone — the checkout lands on the pull request's
 # existing branch, so the title slug here buys a readable `orca worktree ps` and
-# changes no branch. `mr` stays where an issue dispatch puts its change type, so
+# changes no branch. `pr` stays where an issue dispatch puts its change type, so
 # a review worktree is never mistaken for the worker on the issue of that number.
-dispatch_mr_fresh() {
-  local orca_id="$1" iid="$2" branch="$3" prompt="$4" title="$5" slug response
+dispatch_pr_fresh() {
+  local orca_id="$1" number="$2" branch="$3" prompt="$4" title="$5" slug response
   slug=$(issue_slug "$title")
   response=$(orca worktree create \
     --repo "id:$orca_id" \
-    --name "agent-loop-mr-$iid${slug:+-$slug}" \
+    --name "agent-loop-pr-$number${slug:+-$slug}" \
     --no-parent \
     --base-branch "$branch" \
     --agent claude \
@@ -933,9 +1030,9 @@ dispatch_mr_fresh() {
 #
 # The terminal also gets a bounded moment to finish booting first, or the line
 # lands in a TUI that is not listening yet.
-dispatch_mr_reuse() {
-  local path="$1" iid="$2" prompt="$3" brief response handle
-  brief=$(mr_work_path "$iid" prompt.md)
+dispatch_pr_reuse() {
+  local path="$1" number="$2" prompt="$3" brief response handle
+  brief=$(pr_work_path "$number" prompt.md)
   printf '%s\n' "$prompt" > "$brief" || return 1
   response=$(orca terminal create --worktree "path:$path" --command claude --json) || return 1
   handle=$(jq -r '.result.terminal.handle // empty' <<< "$response")
@@ -947,44 +1044,44 @@ dispatch_mr_reuse() {
   printf '%s' "$handle"
 }
 
-mr_phase() {
-  local mrs pid iid branch weburl title
+pr_phase() {
+  local prs github number branch weburl title
   load_seen_list
-  if ! mrs=$(query_open_mrs); then
-    log "mr query failed"
+  if ! prs=$(query_open_prs); then
+    log "pr query failed"
     SKIPS=$((SKIPS + 1))
     return 0
   fi
-  # stdin is closed for the body: glab-axi and orca must not swallow the MR list.
-  while IFS=$'\t' read -r pid iid branch weburl title; do
-    [[ -n "$pid" && -n "$iid" ]] || continue
-    mr_phase_one "$pid" "$iid" "$branch" "$weburl" "$title" < /dev/null
-  done <<< "$mrs"
+  # stdin is closed for the body: gh-axi and orca must not swallow the PR list.
+  while IFS=$'\t' read -r github number branch weburl title; do
+    [[ -n "$github" && -n "$number" ]] || continue
+    pr_phase_one "$github" "$number" "$branch" "$weburl" "$title" < /dev/null
+  done <<< "$prs"
 }
 
-mr_phase_one() {
-  local pid="$1" iid="$2" branch="$3" weburl="$4" title="$5"
-  local gitlab="" orca_id="" repo eligible state path prompt handle worktree_id
+pr_phase_one() {
+  local github="$1" number="$2" branch="$3" weburl="$4" title="$5"
+  local orca_id="" repo eligible state path prompt handle worktree_id
 
-  # An MR in a project the config does not list is not this loop's business, and
-  # there is no Orca repo id to build a worktree from either.
-  IFS=$'\t' read -r gitlab orca_id < <(project_for_id "$pid") || true
-  [[ -n "$gitlab" ]] || return 0
+  # A pull request in a repository the config does not list is not this loop's
+  # business, and there is no Orca repo id to build a worktree from either.
+  orca_id=$(orca_id_for_project "$github")
+  [[ -n "$orca_id" ]] || return 0
 
-  if ! eligible=$(count_eligible_threads "$pid" "$iid" "$gitlab"); then
-    log "thread query failed: $gitlab!$iid"
+  if ! eligible=$(count_eligible_threads "$github" "$number"); then
+    log "thread query failed: $github#$number"
     SKIPS=$((SKIPS + 1))
     return 0
   fi
   if [[ "$eligible" == "0" ]]; then
-    log "mr $gitlab!$iid skipped: no eligible threads"
+    log "pr $github#$number skipped: no eligible threads"
     SKIPS=$((SKIPS + 1))
     return 0
   fi
 
   repo=$(repo_path "$orca_id")
   if [[ -z "$repo" ]]; then
-    log "mr $gitlab!$iid skipped: orcaRepoId does not resolve: $orca_id"
+    log "pr $github#$number skipped: orcaRepoId does not resolve: $orca_id"
     SKIPS=$((SKIPS + 1))
     return 0
   fi
@@ -993,17 +1090,17 @@ mr_phase_one() {
   IFS=$'\t' read -r state path < <(branch_state "$repo" "$branch")
   case "$state" in
     loop-live)
-      log "mr $gitlab!$iid skipped: branch $branch held by a live worker ($path)"
+      log "pr $github#$number skipped: branch $branch held by a live worker ($path)"
       SKIPS=$((SKIPS + 1))
       return 0
       ;;
     foreign-dirty)
-      log "mr $gitlab!$iid skipped: branch $branch held by a worktree with uncommitted changes ($path)"
+      log "pr $github#$number skipped: branch $branch held by a worktree with uncommitted changes ($path)"
       SKIPS=$((SKIPS + 1))
       return 0
       ;;
     unknown)
-      log "mr $gitlab!$iid skipped: could not determine who holds branch $branch"
+      log "pr $github#$number skipped: could not determine who holds branch $branch"
       SKIPS=$((SKIPS + 1))
       return 0
       ;;
@@ -1012,27 +1109,27 @@ mr_phase_one() {
   # Checked here rather than once per pass: each dispatch spends a slot, and a
   # candidate arriving at a full budget waits for a later pass.
   if (( ACTIVE_WORKERS >= MAX_WORKERS )); then
-    log "mr $gitlab!$iid deferred: worker budget full ($ACTIVE_WORKERS/$MAX_WORKERS)"
+    log "pr $github#$number deferred: worker budget full ($ACTIVE_WORKERS/$MAX_WORKERS)"
     SKIPS=$((SKIPS + 1))
     return 0
   fi
 
-  prompt=$(mr_worker_prompt "$weburl" "$branch" "$pid" "$iid" "$gitlab")
+  prompt=$(pr_worker_prompt "$weburl" "$branch" "$github" "$number")
 
   if [[ "$state" == "free" ]]; then
-    if ! worktree_id=$(dispatch_mr_fresh "$orca_id" "$iid" "$branch" "$prompt" "$title"); then
-      log "dispatch failed for mr $gitlab!$iid"
+    if ! worktree_id=$(dispatch_pr_fresh "$orca_id" "$number" "$branch" "$prompt" "$title"); then
+      log "dispatch failed for pr $github#$number"
       SKIPS=$((SKIPS + 1))
       return 0
     fi
-    log "dispatched mr $gitlab!$iid ($eligible eligible threads) -> worktree $worktree_id"
+    log "dispatched pr $github#$number ($eligible eligible threads) -> worktree $worktree_id"
   else
-    if ! handle=$(dispatch_mr_reuse "$path" "$iid" "$prompt"); then
-      log "dispatch failed for mr $gitlab!$iid, reusing $path"
+    if ! handle=$(dispatch_pr_reuse "$path" "$number" "$prompt"); then
+      log "dispatch failed for pr $github#$number, reusing $path"
       SKIPS=$((SKIPS + 1))
       return 0
     fi
-    log "dispatched mr $gitlab!$iid ($eligible eligible threads) -> terminal $handle in $path"
+    log "dispatched pr $github#$number ($eligible eligible threads) -> terminal $handle in $path"
     SWEEP_EXEMPT+="$(resolve_path "$path")"$'\n'
   fi
 
@@ -1042,56 +1139,88 @@ mr_phase_one() {
 
 # --- close-out phase ---------------------------------------------------------
 
-# Merged merge requests, the same one global read as the open-MR query: no
-# project needs a local checkout, and the list is narrowed to the configured
-# projects by `project_id` afterwards.
+# Merged pull requests, the same one global read as the open-PR query: no
+# repository needs a local checkout, and the list is narrowed to the configured
+# repositories by `nameWithOwner` afterwards.
 #
-# ponytail: one page, so an issue whose merge request has fallen past the 100
-# most recent merges is never closed out. Page, or filter on `updated_after`,
-# if a loop ever falls that far behind.
-query_merged_mrs() {
+# ponytail: one page, so an issue whose pull request has fallen past the 100
+# most recently updated merges is never closed out. Page, or filter on
+# `updated:>`, if a loop ever falls that far behind.
+query_merged_prs() {
   local response
-  response=$(glab-axi api "merge_requests?scope=created_by_me&state=merged&per_page=100" --raw) || return 1
-  jq -e 'type == "array"' <<< "$response" >/dev/null 2>&1 || return 1
-  jq -r '.[] | [.project_id, .iid, .source_branch] | @tsv' <<< "$response"
+  response=$(gh_graphql "{ search(query: \"is:pr is:merged author:$ME sort:updated-desc\", type: ISSUE, first: 100) { nodes { ... on PullRequest { number headRefName repository { nameWithOwner } } } } }") || return 1
+  jq -e '.data.search.nodes | type == "array"' <<< "$response" >/dev/null 2>&1 || return 1
+  jq -r '.data.search.nodes[]
+    | select(.number != null)
+    | [.repository.nameWithOwner, .number, .headRefName] | @tsv' <<< "$response"
 }
 
-# The branch is the link between a merge request and the issue it came from:
-# the description is the worker's to write and carries no reliable trailer, but
-# a dispatch at issue 17 works in `agent-loop-fix-17-<title-slug>` and the
-# branch keeps that name long after the worktree is swept. The iid is anchored
-# on both sides — a known type before it, `-` or end of name after it — or issue
-# 11's merge request would close issue 1. Everything past the iid is the title
+# The branch is the link between a pull request and the issue it came from: the
+# description is the worker's to write and carries no reliable trailer, but a
+# dispatch at issue 17 works in `agent-loop-fix-17-<title-slug>` and the branch
+# keeps that name long after the worktree is swept. The number is anchored on
+# both sides — a known type before it, `-` or end of name after it — or issue
+# 11's pull request would close issue 1. Everything past the number is the title
 # slug and the `-2` a name collision appends, and neither is read.
+# Orca namespaces the branches it cuts — a worktree named
+# `agent-loop-fix-17-login-timeout` lands on `<owner>/agent-loop-fix-17-login-timeout`
+# — so an optional leading path is allowed before the name the dispatch asked
+# for. Everything after the last `/` is anchored exactly as before, and a branch
+# whose *last* segment does not carry the name still matches nothing.
 issue_for_branch() {
-  [[ "$1" =~ ^agent-loop-($ISSUE_BRANCH_TYPES)-([0-9]+)(-.*)?$ ]] || return 1
-  printf '%s' "${BASH_REMATCH[2]}"
+  [[ "$1" =~ ^([^/]+/)*agent-loop-($ISSUE_BRANCH_TYPES)-([0-9]+)(-.*)?$ ]] || return 1
+  printf '%s' "${BASH_REMATCH[3]}"
 }
 
-# One REST read: state, labels and description in a single call, because all
-# three are needed and each one alone decides nothing.
+# One REST read: state, labels and body in a single call, because all three are
+# needed and each one alone decides nothing.
+#
+# GitHub numbers issues and pull requests out of one sequence and answers both
+# on the issues endpoint, so a `pull_request` key means the number names a pull
+# request rather than the issue the branch claimed — and nothing on it is the
+# loop's to touch.
 query_issue() {
-  local gitlab="$1" iid="$2" response
-  response=$(glab-axi api "projects/${gitlab//\//%2F}/issues/$iid" --raw) || return 1
-  jq -e 'type == "object" and has("state")' <<< "$response" >/dev/null 2>&1 || return 1
+  local github="$1" number="$2" response
+  response=$(gh_json "/repos/$github/issues/$number") || return 1
+  jq -e 'type == "object" and has("state") and (has("pull_request") | not)' <<< "$response" \
+    >/dev/null 2>&1 || return 1
   printf '%s' "$response"
 }
 
-# GitLab has no per-checkbox API, so ticking one box means rewriting the whole
-# description. Nothing else in it is the loop's to touch.
+# GitHub has no per-checkbox API, so ticking one box means rewriting the whole
+# body. Nothing else in it is the loop's to touch.
+# The body is the one thing that goes over as a file rather than as a --field:
+# it is free text, and gh-axi would reinterpret a body that happened to look
+# like JSON as JSON. A file has nothing left to reinterpret.
+#
+# ponytail: `issue edit --body-file` may normalise the file's trailing newline.
+# It costs one cosmetic byte on an issue that is closed in the same breath and
+# never read again; revisit if a body write ever has to survive a re-read.
 update_description() {
-  issue_put "$1" "$2" --raw-field description="$3"
+  local github="$1" number="$2" file status
+  file="$(dirname "$LOG_PATH")/agent-loop-body-$number.md"
+  printf '%s' "$3" > "$file" || return 1
+  gh-axi issue edit "$number" --repo "$github" --body-file "$file" >/dev/null 2>&1
+  status=$?
+  rm -f "$file"
+  return "$status"
 }
 
-# The close and the unclaim are one call: they are one decision, and splitting
-# them would leave a closed issue still wearing the claim label whenever the
-# second call failed.
+# The close and the unclaim are two calls, because gh-axi closes an issue and
+# edits its labels through different subcommands. So the order is the whole
+# guarantee. Closing first means a failed unclaim leaves a closed issue still
+# wearing the claim label: untidy, and inert, because every query the loop makes
+# asks for open issues alone. Unclaiming first would mean a failed close leaves
+# an open issue wearing neither label — work the loop has quietly forgotten.
 close_issue() {
-  issue_put "$1" "$2" --raw-field state_event=close --raw-field remove_labels="$LABEL_CLAIMED"
+  local github="$1" number="$2"
+  gh-axi issue close "$number" --repo "$github" >/dev/null 2>&1 || return 1
+  gh-axi issue edit "$number" --repo "$github" --remove-label "$LABEL_CLAIMED" >/dev/null 2>&1 \
+    || log "unclaim failed for $github#$number, leaving the label on a closed issue"
 }
 
 # Every checkbox on the checklist, ticked. Anchored at the start of its line,
-# because that is the only place GitLab counts one — a `- [ ]` inside a code
+# because that is the only place GitHub counts one — a `- [ ]` inside a code
 # span or mid-sentence is prose, and rewriting it would change a byte that is
 # not the loop's to change.
 tick_checklist() {
@@ -1099,47 +1228,48 @@ tick_checklist() {
 }
 
 closeout_phase() {
-  local mrs pid mriid branch
-  if ! mrs=$(query_merged_mrs); then
-    log "merged-mr query failed"
+  local prs github prnumber branch
+  if ! prs=$(query_merged_prs); then
+    log "merged-pr query failed"
     SKIPS=$((SKIPS + 1))
     return 0
   fi
-  # stdin is closed for the body: glab-axi must not swallow the MR list.
-  while IFS=$'\t' read -r pid mriid branch; do
-    [[ -n "$pid" && -n "$branch" ]] || continue
-    closeout_one "$pid" "$mriid" "$branch" < /dev/null
-  done <<< "$mrs"
+  # stdin is closed for the body: gh-axi must not swallow the PR list.
+  while IFS=$'\t' read -r github prnumber branch; do
+    [[ -n "$github" && -n "$branch" ]] || continue
+    closeout_one "$github" "$prnumber" "$branch" < /dev/null
+  done <<< "$prs"
 }
 
 closeout_one() {
-  local pid="$1" mriid="$2" branch="$3"
-  local gitlab="" iid issue description ticked
+  local github="$1" prnumber="$2" branch="$3"
+  local number issue description ticked
 
-  # A branch that names no issue is a merge request I opened by hand.
-  iid=$(issue_for_branch "$branch") || return 0
+  # A branch that names no issue is a pull request I opened by hand.
+  number=$(issue_for_branch "$branch") || return 0
 
-  # A merge request in a project the config does not list is not the loop's
+  # A pull request in a repository the config does not list is not the loop's
   # business.
-  IFS=$'\t' read -r gitlab _ < <(project_for_id "$pid") || true
-  [[ -n "$gitlab" ]] || return 0
+  [[ -n "$(orca_id_for_project "$github")" ]] || return 0
 
-  if ! issue=$(query_issue "$gitlab" "$iid"); then
-    log "close-out query failed: $gitlab#$iid"
+  if ! issue=$(query_issue "$github" "$number"); then
+    log "close-out query failed: $github#$number"
     SKIPS=$((SKIPS + 1))
     return 0
   fi
 
   # An issue that is already closed, or one I claimed by hand, is not the
-  # loop's to touch — and every merged merge request is read again on every
+  # loop's to touch — and every merged pull request is read again on every
   # pass, so saying so would be the same line forever. Both leave silently.
-  [[ "$(jq -r '.state' <<< "$issue")" == "opened" ]] || return 0
-  jq -e --arg label "$LABEL_CLAIMED" 'any(.labels[]?; . == $label)' <<< "$issue" >/dev/null || return 0
+  [[ "$(jq -r '.state' <<< "$issue")" == "open" ]] || return 0
+  # `$label` would be a jq keyword, so the claim label rides in as `$claimed`.
+  jq -e --arg claimed "$LABEL_CLAIMED" 'any(.labels[]?.name; . == $claimed)' <<< "$issue" \
+    >/dev/null || return 0
 
-  # The trailing newlines a description ends with are part of it: `-j` stops jq
-  # adding one of its own, and the sentinel stops command substitution eating
-  # the ones that were already there.
-  description=$(jq -j '.description // ""' <<< "$issue"; printf x)
+  # The trailing newlines a body ends with are part of it: `-j` stops jq adding
+  # one of its own, and the sentinel stops command substitution eating the ones
+  # that were already there.
+  description=$(jq -j '.body // ""' <<< "$issue"; printf x)
   description="${description%x}"
   # The merge is the acceptance: what review took is what gets ticked.
   ticked=$(printf '%s' "$description" | tick_checklist; printf x)
@@ -1147,17 +1277,17 @@ closeout_one() {
   # Nothing left to tick is no write at all, rather than an identical rewrite
   # every pass.
   if [[ "$ticked" != "$description" ]]; then
-    update_description "$gitlab" "$iid" "$ticked" \
-      || log "checklist update failed for $gitlab#$iid, closing it anyway"
+    update_description "$github" "$number" "$ticked" \
+      || log "checklist update failed for $github#$number, closing it anyway"
   fi
 
   # The close is what stops the re-dispatch, so it happens whatever the
   # description write did: a lost tick costs a wrong-looking checklist, a lost
   # close costs a duplicate worker.
-  if close_issue "$gitlab" "$iid"; then
-    log "closed out $gitlab#$iid: merge request !$mriid merged"
+  if close_issue "$github" "$number"; then
+    log "closed out $github#$number: pull request #$prnumber merged"
   else
-    log "close failed for $gitlab#$iid, leaving it claimed"
+    log "close failed for $github#$number, leaving it claimed"
     SKIPS=$((SKIPS + 1))
   fi
 }
@@ -1180,11 +1310,11 @@ run_pass() {
     log "worker inventory unreadable, treating the budget as full for this pass"
     ACTIVE_WORKERS="$MAX_WORKERS"
   fi
-  # Close-out first: an issue whose merge request has merged must be off the
+  # Close-out first: an issue whose pull request has merged must be off the
   # board before the issue phase looks at the backlog again.
   closeout_phase
   issue_phase
-  mr_phase
+  pr_phase
   if $inventory; then
     # The snapshot is the one the pass opened with, so a worker that finished
     # mid-pass is swept by the next pass rather than this one.

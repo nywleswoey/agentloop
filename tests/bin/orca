@@ -59,8 +59,8 @@ case "$cmd" in
         # The requested name is slugified and a collision yields <name>-2, so
         # the issue fixture deliberately answers with a name the caller did not
         # ask for.
-        if [[ "$*" == *"agent-loop-mr-"* ]]; then
-          cat "$STUB_FIXTURES/orca-worktree-create-mr.json"
+        if [[ "$*" == *"agent-loop-pr-"* ]]; then
+          cat "$STUB_FIXTURES/orca-worktree-create-pr.json"
         else
           cat "$STUB_FIXTURES/orca-worktree-create.json"
         fi

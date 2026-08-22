@@ -1,0 +1,15 @@
+{ "data": { "repository": { "pullRequest": { "reviewThreads": { "nodes": [
+  { "id": "PRRT_thread001", "isResolved": false,
+    "comments": { "nodes": [
+      { "databaseId": 900001, "author": { "login": "review-bot" } }
+    ] } },
+  { "id": "PRRT_thread002", "isResolved": false,
+    "comments": { "nodes": [
+      { "databaseId": 900002, "author": { "login": "review-bot" } },
+      { "databaseId": 900003, "author": { "login": "other-reviewer" } }
+    ] } },
+  { "id": "PRRT_thread003", "isResolved": true,
+    "comments": { "nodes": [
+      { "databaseId": 900004, "author": { "login": "review-bot" } }
+    ] } }
+] } } } } }

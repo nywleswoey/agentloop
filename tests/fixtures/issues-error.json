@@ -1,1 +1,2 @@
-{ "data": { "project": null }, "errors": [ { "message": "Field 'blocked' doesn't exist on type 'Issue'" } ] }
+{ "data": { "repository": null },
+  "errors": [ { "message": "Could not resolve to a Repository with the name 'nywleswoey/automation'." } ] }

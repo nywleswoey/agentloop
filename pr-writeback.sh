@@ -1,46 +1,44 @@
 #!/bin/bash
 #
-# mr-writeback.sh
+# pr-writeback.sh
 #
-# The only thing that pushes a merge-request worker's fixes or writes to a
-# review thread. The worker triages threads, prepares a local commit per fix,
-# writes a plan, and asks the operator to confirm; nothing reaches GitLab until
-# this script is run against a plan whose entries the operator marked
-# `confirmed`.
+# The only thing that pushes a pull-request worker's fixes or writes to a review
+# thread. The worker triages threads, prepares a local commit per fix, writes a
+# plan, and asks the operator to confirm; nothing reaches GitHub until this
+# script is run against a plan whose entries the operator marked `confirmed`.
 #
 # Keeping every write in one script is what makes "nothing before confirmation"
 # checkable rather than a promise: the worker's own instructions forbid any
-# other push, note or resolve, and this issues no write for a thread that was
+# other push, comment or resolve, and this issues no write for a thread that was
 # not confirmed.
 #
 # It is also where the loop's seen-list is written. A thread this run leaves
 # silent — a question, an escalation, a proposal the operator declined — gets one
-# line appended naming the thread and its newest note, so the next pass can tell
-# "already triaged, nothing new" from "never looked at". Because only this script
-# appends, and only the operator's answer gets it run, a worker still parked for
-# confirmation records nothing at all.
+# line appended naming the thread and its newest comment, so the next pass can
+# tell "already triaged, nothing new" from "never looked at". Because only this
+# script appends, and only the operator's answer gets it run, a worker still
+# parked for confirmation records nothing at all.
 #
 # Usage:
-#   ./mr-writeback.sh --plan <plan.json> [--repo <path>] [--seen-list <path>]
+#   ./pr-writeback.sh --plan <plan.json> [--repo <path>] [--seen-list <path>]
 #
 # Plan shape:
 #   {
-#     "project": "selwyn_yeow/automation",
-#     "projectId": 57981,
-#     "mrIid": 517,
+#     "repo": "nywleswoey/automation",
+#     "prNumber": 517,
 #     "sourceBranch": "my-branch",
 #     "baseSha": "<the branch tip before the worker committed anything>",
 #     "threads": [
-#       { "discussion": "<id>", "verdict": "FIX", "lastNoteId": 900001,
+#       { "thread": "<node id>", "verdict": "FIX", "lastCommentId": 900001,
 #         "commit": "<local sha>", "summary": "<one sentence>",
 #         "confirmed": true },
-#       { "discussion": "<id>", "verdict": "REFUSE", "lastNoteId": 900002,
+#       { "thread": "<node id>", "verdict": "REFUSE", "lastCommentId": 900002,
 #         "reply": "**Disagree** — ...", "confirmed": false },
-#       { "discussion": "<id>", "verdict": "ANSWER", "lastNoteId": 900003 }
+#       { "thread": "<node id>", "verdict": "ANSWER", "lastCommentId": 900003 }
 #     ]
 #   }
 #
-# Requires: jq, git, glab-axi (authenticated against the GitLab host)
+# Requires: jq, git, gh-axi (authenticated against github.com)
 
 set -euo pipefail
 
@@ -50,22 +48,21 @@ SEEN_LIST=""
 DROPPED=0
 SURVIVING=0
 ORIGINAL_HEAD=""
-# `<discussion id>\t<sha as it landed on the branch>` per confirmed fix that
+# `<thread node id>\t<sha as it landed on the branch>` per confirmed fix that
 # survived. Keyed by the thread rather than by position, so the reply can never
 # cite another thread's commit.
 PUSHED_MAP=""
 
 usage() {
   cat <<'EOF'
-Usage: mr-writeback.sh --plan <plan.json> [--repo <path>] [--seen-list <path>]
+Usage: pr-writeback.sh --plan <plan.json> [--repo <path>] [--seen-list <path>]
 
-Pushes the confirmed fixes on a merge-request triage plan and posts the
-confirmed replies and resolves. Issues nothing at all for a thread that is not
-confirmed.
+Pushes the confirmed fixes on a pull-request triage plan and posts the confirmed
+replies and resolves. Issues nothing at all for a thread that is not confirmed.
 
 Options:
   --plan <path>        The triage plan the worker wrote and the operator confirmed.
-  --repo <path>        Worktree holding the MR's source branch (default: cwd).
+  --repo <path>        Worktree holding the PR's head branch (default: cwd).
   --seen-list <path>   Append one line per thread this run leaves silent, so the
                        loop stops re-dispatching at it until a reply lands.
                        Nothing is recorded when this is not given.
@@ -74,7 +71,7 @@ EOF
 }
 
 die() {
-  printf 'mr-writeback: %s\n' "$*" >&2
+  printf 'pr-writeback: %s\n' "$*" >&2
   exit 1
 }
 
@@ -88,16 +85,16 @@ load_plan() {
   [[ -f "$PLAN" ]] || die "plan not found: $PLAN"
   jq empty "$PLAN" 2>/dev/null || die "plan is not valid JSON: $PLAN"
 
-  PROJECT_ID=$(plan_get '.projectId // empty')
-  # The path form is carried alongside the numeric id purely for the seen-list,
-  # whose entries the daemon matches against the project paths in its config.
-  PROJECT_PATH=$(plan_get '.project // empty')
-  MR_IID=$(plan_get '.mrIid // empty')
+  # `<owner>/<name>` is the whole identifier on GitHub: it addresses the API and
+  # it is what the daemon matches seen-list entries against, so unlike GitLab
+  # there is no second numeric id riding alongside it.
+  PROJECT=$(plan_get '.repo // empty')
+  PR_NUMBER=$(plan_get '.prNumber // empty')
   SOURCE_BRANCH=$(plan_get '.sourceBranch // empty')
   BASE_SHA=$(plan_get '.baseSha // empty')
 
-  [[ -n "$PROJECT_ID" ]]    || die "plan is missing projectId"
-  [[ -n "$MR_IID" ]]        || die "plan is missing mrIid"
+  [[ -n "$PROJECT" ]]       || die "plan is missing repo"
+  [[ -n "$PR_NUMBER" ]]     || die "plan is missing prNumber"
   [[ -n "$SOURCE_BRANCH" ]] || die "plan is missing sourceBranch"
   [[ -n "$BASE_SHA" ]]      || die "plan is missing baseSha"
   [[ "$(plan_get '.threads | type')" == "array" ]] || die "plan is missing a threads array"
@@ -112,12 +109,12 @@ load_plan() {
     .threads[]
     | select(.confirmed == true)
     | select(
-        (.discussion // "") == ""
+        (.thread // "") == ""
         or (.verdict == "FIX"    and (((.commit // "") == "") or ((.summary // "") == "")))
         or (.verdict == "REFUSE" and ((.reply // "") == ""))
         or (([.verdict] | inside(["FIX", "REFUSE", "ANSWER", "ESCALATE"])) | not)
       )
-    | .discussion // "<no discussion id>"' "$PLAN") \
+    | .thread // "<no thread id>"' "$PLAN") \
     || die "plan could not be validated: $PLAN"
   [[ -z "$bad" ]] || die "confirmed thread is incomplete: $(tr '\n' ' ' <<< "$bad")"
 }
@@ -132,7 +129,7 @@ confirmed_fixes() {
 confirmed_fix_rows() {
   jq -r '.threads[]
     | select(.verdict == "FIX" and .confirmed == true)
-    | [.discussion, .commit] | @tsv' "$PLAN"
+    | [.thread, .commit] | @tsv' "$PLAN"
 }
 
 confirmed_count() {
@@ -217,7 +214,7 @@ rebuild_branch() {
   done < <(confirmed_fix_rows)
 }
 
-# One push, explicitly onto the MR's source branch: an Orca checkout has no
+# One push, explicitly onto the PR's head branch: an Orca checkout has no
 # upstream, so a bare `git push` has nothing to push to. Never --force.
 push_branch() {
   if git_repo push origin "HEAD:$SOURCE_BRANCH"; then
@@ -226,48 +223,81 @@ push_branch() {
   if [[ -n "$ORIGINAL_HEAD" ]] && git_repo reset --hard "$ORIGINAL_HEAD" >/dev/null 2>&1; then
     say "branch restored to $ORIGINAL_HEAD"
   fi
-  die "push to $SOURCE_BRANCH failed; nothing was written to GitLab"
+  die "push to $SOURCE_BRANCH failed; nothing was written to GitHub"
 }
 
-# --- gitlab ------------------------------------------------------------------
+# --- github ------------------------------------------------------------------
 
-post_note() {
-  local did="$1" body="$2"
-  glab-axi api POST "projects/$PROJECT_ID/merge_requests/$MR_IID/discussions/$did/notes" \
-    --raw-field body="$body" >/dev/null
+# gh-axi renders every answer as TOON and has no JSON output mode, so what a
+# mutation replied cannot be read back as JSON directly. `tojson | @base64` is
+# the one shape TOON has nothing left to restructure: a single opaque token that
+# decodes to the response byte for byte.
+#
+# It matters here because GitHub answers a refused mutation with a 200 and an
+# `errors` block. Without reading the body back, a thread that was never
+# replied to would report as replied — which is the one thing this script must
+# never get wrong.
+gh_graphql() {
+  local query="$1" thread="$2" body_arg="$3" response body_val
+  response=$(gh-axi api POST /graphql \
+    --field query="$query" --field thread="$thread" ${body_arg:+--field body="$body_arg"} \
+    --jq 'tojson|@base64' 2>/dev/null) || return 1
+  [[ "$response" == error:* ]] && return 1
+  body_val=$(sed -n 's/^  body: //p' <<< "$response")
+  [[ -n "$body_val" ]] || return 1
+  response=$(base64 -d <<< "$body_val" 2>/dev/null) || return 1
+  jq -e 'has("errors") | not' <<< "$response" >/dev/null 2>&1
+}
+
+# Both writes are GraphQL mutations, because a review thread is a GraphQL object
+# on GitHub: the node id the worker recorded is the whole address, and the REST
+# reply route would need the thread's first comment id instead.
+#
+# The reply text travels as a GraphQL variable rather than inside the query, so
+# a reviewer's own words can never be read as part of the document.
+post_comment() {
+  local thread="$1" body="$2"
+  gh_graphql 'mutation($thread: ID!, $body: String!) {
+      addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $thread, body: $body}) {
+        comment { databaseId }
+      }
+    }' "$thread" "$body"
 }
 
 resolve_thread() {
-  local did="$1"
-  glab-axi api PUT "projects/$PROJECT_ID/merge_requests/$MR_IID/discussions/$did" \
-    --field resolved=true >/dev/null
+  local thread="$1"
+  gh_graphql 'mutation($thread: ID!) {
+      resolveReviewThread(input: {threadId: $thread}) {
+        thread { isResolved }
+      }
+    }' "$thread"
 }
 
 # --- seen-list -----------------------------------------------------------------
 
 # One line per thread this run leaves silent, naming the thread and the newest
-# note on it. The entry stops matching the moment a reviewer replies, so new
+# comment on it. The entry stops matching the moment a reviewer replies, so new
 # information reopens the case rather than sealing it.
 #
 # The file is append-only and disposable: losing it costs one repeated sweep of
-# merge requests that were already triaged, and nothing worse. A run given no
-# --seen-list, a plan carrying no project path, or a thread whose newest note
-# the worker did not record, all record nothing and say so rather than write a
-# line the daemon could never match.
+# pull requests that were already triaged, and nothing worse. A run given no
+# --seen-list, or a thread whose newest comment the worker did not record,
+# records nothing and says so rather than write a line the daemon could never
+# match.
 record_seen() {
   local index="$1" verdict="$2" line
-  [[ -n "$SEEN_LIST" && -n "$PROJECT_PATH" ]] || return 0
-  # lastNoteId is read out of the plan rather than passed in, so a note id that
-  # is not a number stays the plan's problem instead of becoming a shell one.
-  line=$(jq -c --arg project "$PROJECT_PATH" --argjson mr "$MR_IID" --arg verdict "$verdict" \
-    ".threads[$index] | select(.lastNoteId != null) | {
+  [[ -n "$SEEN_LIST" ]] || return 0
+  # lastCommentId is read out of the plan rather than passed in, so a comment id
+  # that is not a number stays the plan's problem instead of becoming a shell one.
+  line=$(jq -c --arg project "$PROJECT" --argjson pr "$PR_NUMBER" --arg verdict "$verdict" \
+    ".threads[$index] | select(.lastCommentId != null) | {
        project: \$project,
-       mr: \$mr,
-       discussion: .discussion,
-       lastNoteId: .lastNoteId,
+       pr: \$pr,
+       thread: .thread,
+       lastCommentId: .lastCommentId,
        verdict: \$verdict
      }" "$PLAN") && [[ -n "$line" ]] \
-    || { say "nothing recorded in the seen-list for thread $index: no lastNoteId"; return 0; }
+    || { say "nothing recorded in the seen-list for thread $index: no lastCommentId"; return 0; }
   printf '%s\n' "$line" >> "$SEEN_LIST" \
     || say "seen-list append failed for thread $index: $SEEN_LIST"
 }
@@ -282,7 +312,7 @@ write_back() {
 
   printf '\n| thread | verdict | commit | outcome |\n|---|---|---|---|\n'
   for (( t = 0; t < THREAD_COUNT; t++ )); do
-    did=$(plan_get ".threads[$t].discussion // empty")
+    did=$(plan_get ".threads[$t].thread // empty")
     verdict=$(plan_get ".threads[$t].verdict // empty")
     # The same predicate jq selected on, so the two can never disagree about
     # what "confirmed" means.
@@ -312,7 +342,7 @@ write_back() {
 
     if [[ "$verdict" == "REFUSE" ]]; then
       reply=$(plan_get ".threads[$t].reply")
-      if post_note "$did" "$reply"; then
+      if post_comment "$did" "$reply"; then
         printf '| %s | REFUSE | — | replied, left unresolved |\n' "$did"
       else
         printf '| %s | REFUSE | — | reply FAILED |\n' "$did"
@@ -332,7 +362,7 @@ write_back() {
 
     short="${pushed:0:8}"
     summary=$(plan_get ".threads[$t].summary")
-    if ! post_note "$did" "Fixed in $short.
+    if ! post_comment "$did" "Fixed in $short.
 
 $summary"; then
       printf '| %s | FIX | %s | reply FAILED, left unresolved |\n' "$did" "$short"
@@ -359,32 +389,28 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -n "$PLAN" ]] || { usage >&2; exit 1; }
-for tool in jq git glab-axi; do
+for tool in jq git gh-axi; do
   command -v "$tool" >/dev/null 2>&1 || die "required command not found on PATH: $tool"
 done
 
 load_plan
 
-if [[ -n "$SEEN_LIST" && -z "$PROJECT_PATH" ]]; then
-  say "plan has no project path, nothing will be recorded in the seen-list"
-fi
-
-# Confirming nothing is a valid answer, and it must cost the MR nothing at all —
-# no push, no note, no resolve, not even a git read. The run still goes through
-# write_back, which issues no command either when nothing is confirmed, and which
-# is where the threads I left silent reach the seen-list.
+# Confirming nothing is a valid answer, and it must cost the PR nothing at all —
+# no push, no comment, no resolve, not even a git read. The run still goes
+# through write_back, which issues no command either when nothing is confirmed,
+# and which is where the threads I left silent reach the seen-list.
 #
 # git is touched only when a fix is actually going to be pushed. A run that only
 # carries confirmed refusals writes replies and nothing else, so it must not be
 # blocked by the state of the worktree it happens to be run in.
 if [[ "$(confirmed_count)" == "0" ]]; then
-  say "nothing confirmed — merge request $MR_IID is left exactly as it was"
+  say "nothing confirmed — pull request #$PR_NUMBER is left exactly as it was"
 elif [[ "$(confirmed_fix_count)" != "0" ]]; then
   check_git_preconditions
   rebuild_branch
 
-  # The push comes before any note, so a reply never cites a commit that is not
-  # on the branch, and a failed push exits without writing to GitLab at all.
+  # The push comes before any comment, so a reply never cites a commit that is
+  # not on the branch, and a failed push exits without writing to GitHub at all.
   if (( SURVIVING > 0 )); then
     push_branch
     say "pushed $SURVIVING commit(s) to $SOURCE_BRANCH"

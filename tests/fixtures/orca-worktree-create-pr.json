@@ -1,0 +1,12 @@
+{
+  "id": "stub-worktree-create-pr",
+  "ok": true,
+  "result": {
+    "worktree": {
+      "id": "repo-aaa::/tmp/stub/automation/agent-loop-pr-101",
+      "name": "agent-loop-pr-101",
+      "path": "/tmp/stub/automation/agent-loop-pr-101",
+      "repoId": "repo-aaa"
+    }
+  }
+}

@@ -1,8 +1,2 @@
-{
-  "iid": 11,
-  "state": "opened",
-  "labels": [
-    "agent-in-progress"
-  ],
-  "description": "- [ ] eleven\n"
-}
+{ "number": 11, "state": "open", "labels": [ { "name": "agent-in-progress" } ],
+  "body": "- [ ] eleven\n" }

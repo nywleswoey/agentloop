@@ -43,15 +43,15 @@ setup() {
   : > "$STUB_CALLS"
   export STUB_ORCA_STATUS=ready STUB_ISSUES=none STUB_ORCA_PS=idle
   export STUB_CLAIMED=none STUB_WORKTREES=none STUB_DIRTY="" STUB_UNPUSHED=""
-  export STUB_MRS=none STUB_DISCUSSIONS=eligible STUB_MERGED=none
-  unset AGENT_LOOP_LOG_MAX_BYTES STUB_GLAB_FAIL STUB_ORCA_FAIL STUB_GIT_FAIL
+  export STUB_PRS=none STUB_THREADS=eligible STUB_MERGED=none
+  unset AGENT_LOOP_LOG_MAX_BYTES STUB_GH_FAIL STUB_ORCA_FAIL STUB_GIT_FAIL
   CONFIG="$WORK/config.json"
   LOG="$WORK/agent-loop.log"
   LOCK="$WORK/agent-loop.pid"
-  write_config "selwyn_yeow/automation" "repo-aaa"
+  write_config "nywleswoey/automation" "repo-aaa"
 }
 
-# write_config <gitlab-full-path> <orca-repo-id> [poll-interval-seconds] [max-workers]
+# write_config <github-full-name> <orca-repo-id> [poll-interval-seconds] [max-workers]
 write_config() {
   cat > "$CONFIG" <<JSON
 {
@@ -61,7 +61,7 @@ write_config() {
   "logPath": "$LOG",
   "labels": { "ready": "ready-for-agent", "claimed": "agent-in-progress" },
   "projects": [
-    { "gitlab": "$1", "orcaRepoId": "$2" }
+    { "github": "$1", "orcaRepoId": "$2" }
   ]
 }
 JSON
@@ -153,20 +153,20 @@ check_grep "pass start" "$OUT"
 # --- unresolvable project ----------------------------------------------------
 
 setup "an unresolvable project fails startup"
-write_config "selwyn_yeow/typo-project" "repo-aaa"
+write_config "nywleswoey/typo-project" "repo-aaa"
 run_once
 check_status nonzero "$STATUS"
-check_grep "project does not resolve: selwyn_yeow/typo-project" "$OUT"
+check_grep "project does not resolve: nywleswoey/typo-project" "$OUT"
 check "no pass ran" test "$(grep -cF 'pass start' "$OUT")" -eq 0
 check "lockfile released" test ! -f "$LOCK"
 
 # --- unresolvable orcaRepoId -------------------------------------------------
 
 setup "an unresolvable orcaRepoId fails startup"
-write_config "selwyn_yeow/automation" "repo-stale"
+write_config "nywleswoey/automation" "repo-stale"
 run_once
 check_status nonzero "$STATUS"
-check_grep "orcaRepoId does not resolve: repo-stale (selwyn_yeow/automation)" "$OUT"
+check_grep "orcaRepoId does not resolve: repo-stale (nywleswoey/automation)" "$OUT"
 check "no pass ran" test "$(grep -cF 'pass start' "$OUT")" -eq 0
 
 # --- malformed config --------------------------------------------------------
@@ -194,7 +194,7 @@ check_grep "orca runtime ready" "$OUT"
 check_grep "orca open --json" "$STUB_CALLS"
 # The stub refuses `repo list` until the runtime is up, so this only passes if
 # the daemon starts Orca before it validates orcaRepoIds against it.
-check_grep "validated selwyn_yeow/automation -> orca repo repo-aaa" "$OUT"
+check_grep "validated nywleswoey/automation -> orca repo repo-aaa" "$OUT"
 check_grep "pass start" "$OUT"
 
 # --- log rotation ------------------------------------------------------------
@@ -214,7 +214,7 @@ check_grep "pass start" "$LOG"
 # --- the loop keeps passing ---------------------------------------------------
 
 setup "without --once the loop sleeps and passes again"
-write_config "selwyn_yeow/automation" "repo-aaa" 1
+write_config "nywleswoey/automation" "repo-aaa" 1
 start_loop
 for _ in $(seq 1 100); do
   [[ "$(grep -cF 'pass start' "$OUT")" -ge 2 ]] && break
@@ -228,7 +228,7 @@ check_status 0 "$STATUS"
 # --- SIGINT releases the lock ------------------------------------------------
 
 setup "SIGINT releases the lockfile and exits cleanly"
-write_config "selwyn_yeow/automation" "repo-aaa" 60
+write_config "nywleswoey/automation" "repo-aaa" 60
 start_loop
 await "sleeping 60s"
 check "lockfile taken while running" test -f "$LOCK"
@@ -239,21 +239,24 @@ check "lockfile released" test ! -f "$LOCK"
 
 # --- issue phase: a workable issue is claimed and dispatched -------------------
 
-CLAIM_CALL="glab-axi api PUT projects/selwyn_yeow%2Fautomation/issues/17 --raw-field add_labels=agent-in-progress --raw-field remove_labels=ready-for-agent"
-CREATE_CALL="orca worktree create --repo id:repo-aaa --name agent-loop-feat-17-agent-loop-issue-phase --no-parent --agent claude --prompt /implement https://gitlab.example/selwyn_yeow/automation/-/work_items/17 --json"
+# gh-axi edits labels as a delta, so the claim stays the one atomic call it was
+# on GitLab — an add and a remove together, with the issue's other labels none
+# of the loop's business.
+CLAIM_CALL="gh-axi issue edit 17 --repo nywleswoey/automation --add-label agent-in-progress --remove-label ready-for-agent"
+CREATE_CALL="orca worktree create --repo id:repo-aaa --name agent-loop-feat-17-agent-loop-issue-phase --no-parent --agent claude --prompt /implement https://github.com/nywleswoey/automation/issues/17 --json"
 
 setup "a workable issue is claimed and dispatched"
 export STUB_ISSUES=workable
 run_once
 check_status 0 "$STATUS"
-check_grep 'glab-axi api graphql --raw-field query={ project(fullPath: "selwyn_yeow/automation") { issues(labelName: ["ready-for-agent"], state: opened)' "$STUB_CALLS"
+check_grep 'gh-axi api POST /graphql --field query={ repository(owner: "nywleswoey", name: "automation") { issues(labels: ["ready-for-agent"], states: OPEN, first: 100)' "$STUB_CALLS"
 check_grep "$CLAIM_CALL" "$STUB_CALLS"
 check_grep "$CREATE_CALL" "$STUB_CALLS"
 check "the claim precedes the dispatch" test "$(call_line "$CLAIM_CALL")" -lt "$(call_line "$CREATE_CALL")"
-check_grep "claimed selwyn_yeow/automation#17" "$OUT"
+check_grep "claimed nywleswoey/automation#17" "$OUT"
 # The stub answers with a collision-renamed worktree, so this only passes if the
 # handle is read back from the response rather than assumed from the name.
-check_grep "dispatched selwyn_yeow/automation#17 -> worktree repo-aaa::/tmp/stub/automation/agent-loop-issue-17-2" "$OUT"
+check_grep "dispatched nywleswoey/automation#17 -> worktree repo-aaa::/tmp/stub/automation/agent-loop-issue-17-2" "$OUT"
 check_grep "pass end dispatches=1 skips=0 sweeps=1" "$OUT"
 
 setup "the change type and title become the readable half of the name"
@@ -279,19 +282,20 @@ setup "a blocked issue is neither claimed nor dispatched"
 export STUB_ISSUES=blocked
 run_once
 check_status 0 "$STATUS"
-check_grep "issue selwyn_yeow/automation#18 skipped: blocked by 1 open blocker" "$OUT"
-check_no_grep "api PUT" "$STUB_CALLS"
+check_grep "issue nywleswoey/automation#18 skipped: blocked by 1 open blocker" "$OUT"
+check_grep "gh-axi api /repos/nywleswoey/automation/issues/18/dependencies/blocked_by --paginate" "$STUB_CALLS"
+check_no_grep "issue edit" "$STUB_CALLS"
 check_no_grep "worktree create" "$STUB_CALLS"
 check_grep "pass end dispatches=0 skips=1 sweeps=1" "$OUT"
 
 setup "an issue whose only blocker is closed is workable"
-# GitLab's `blocked` counts open blockers only, so blockedByCount 1 with
-# blocked false is a blocker that has since been closed.
+# The blockers endpoint answers with the blocking issues themselves, so a
+# blocker that has since been closed is visible as one and does not block.
 export STUB_ISSUES=closed-blocker
 run_once
 check_status 0 "$STATUS"
-check_grep "claimed selwyn_yeow/automation#17" "$OUT"
-check_grep "dispatched selwyn_yeow/automation#17" "$OUT"
+check_grep "claimed nywleswoey/automation#17" "$OUT"
+check_grep "dispatched nywleswoey/automation#17" "$OUT"
 check_grep "pass end dispatches=1 skips=0 sweeps=1" "$OUT"
 
 # --- issue phase: the worker budget is global ----------------------------------
@@ -300,45 +304,53 @@ setup "a candidate arriving at a full budget is deferred, not dispatched"
 export STUB_ISSUES=workable STUB_ORCA_PS=busy
 run_once
 check_status 0 "$STATUS"
-check_grep "issue selwyn_yeow/automation#17 deferred: worker budget full (3/3)" "$OUT"
-check_no_grep "api PUT" "$STUB_CALLS"
+check_grep "issue nywleswoey/automation#17 deferred: worker budget full (3/3)" "$OUT"
+check_no_grep "issue edit" "$STUB_CALLS"
 check_no_grep "worktree create" "$STUB_CALLS"
 check_grep "pass end dispatches=0 skips=1 sweeps=0" "$OUT"
 
 setup "the budget counts loop workers across phases and spends the last slot once"
-# Two live loop workers, one of them an MR worker: the budget is one pool, so
+# Two live loop workers, one of them a PR worker: the budget is one pool, so
 # only one of the two workable issues gets the remaining slot.
 export STUB_ISSUES=mixed STUB_ORCA_PS=one-free
 run_once
 check_status 0 "$STATUS"
-check_grep "issue selwyn_yeow/automation#18 skipped: blocked by 1 open blocker" "$OUT"
-check_grep "dispatched selwyn_yeow/automation#17" "$OUT"
-check_grep "issue selwyn_yeow/automation#19 deferred: worker budget full (3/3)" "$OUT"
+check_grep "issue nywleswoey/automation#18 skipped: blocked by 1 open blocker" "$OUT"
+check_grep "dispatched nywleswoey/automation#17" "$OUT"
+check_grep "issue nywleswoey/automation#19 deferred: worker budget full (3/3)" "$OUT"
 check "exactly one worktree was created" test "$(grep -cF 'worktree create' "$STUB_CALLS")" -eq 1
 check_grep "pass end dispatches=1 skips=2 sweeps=0" "$OUT"
 
 # --- issue phase: failures are logged, the pass survives -----------------------
 
 setup "a failed issue query is logged and the pass continues"
-export STUB_ISSUES=workable STUB_GLAB_FAIL=graphql
+export STUB_ISSUES=workable STUB_GH_FAIL=issues
 run_once
 check_status 0 "$STATUS"
-check_grep "issue query failed: selwyn_yeow/automation" "$OUT"
+check_grep "issue query failed: nywleswoey/automation" "$OUT"
 check_grep "pass end" "$OUT"
 
 setup "a GraphQL error body is a failed query, not an empty backlog"
 export STUB_ISSUES=error
 run_once
 check_status 0 "$STATUS"
-check_grep "issue query failed: selwyn_yeow/automation" "$OUT"
+check_grep "issue query failed: nywleswoey/automation" "$OUT"
 check_grep "pass end dispatches=0 skips=1 sweeps=1" "$OUT"
+
+setup "a blocker read that will not answer skips the issue rather than guessing"
+export STUB_ISSUES=workable STUB_GH_FAIL=blockers
+run_once
+check_status 0 "$STATUS"
+check_grep "issue nywleswoey/automation#17 skipped: could not read its blockers" "$OUT"
+check_no_grep "issue edit" "$STUB_CALLS"
+check_no_grep "worktree create" "$STUB_CALLS"
 
 setup "an unreadable worker inventory fails the budget closed"
 export STUB_ISSUES=workable STUB_ORCA_FAIL=ps
 run_once
 check_status 0 "$STATUS"
 check_grep "worker inventory unreadable, treating the budget as full for this pass" "$OUT"
-check_grep "issue selwyn_yeow/automation#17 deferred: worker budget full (3/3)" "$OUT"
+check_grep "issue nywleswoey/automation#17 deferred: worker budget full (3/3)" "$OUT"
 check_no_grep "worktree create" "$STUB_CALLS"
 
 setup "a failed dispatch is logged and the pass continues"
@@ -346,7 +358,7 @@ export STUB_ISSUES=workable STUB_ORCA_FAIL=create
 run_once
 check_status 0 "$STATUS"
 check_grep "$CLAIM_CALL" "$STUB_CALLS"
-check_grep "dispatch failed for selwyn_yeow/automation#17" "$OUT"
+check_grep "dispatch failed for nywleswoey/automation#17" "$OUT"
 check_grep "pass end dispatches=0 skips=1 sweeps=1" "$OUT"
 
 # --- worktree inventory: the branch report -------------------------------------
@@ -355,38 +367,38 @@ setup "a branch nobody has checked out is free"
 export STUB_WORKTREES=branches STUB_ORCA_PS=branches
 run_report never-checked-out
 check_status 0 "$STATUS"
-check_grep "branch never-checked-out selwyn_yeow/automation: free" "$OUT"
+check_grep "branch never-checked-out nywleswoey/automation: free" "$OUT"
 # git, not Orca, is what the check reads the checkout from.
 check_grep "git -C /tmp/stub/automation worktree list --porcelain" "$STUB_CALLS"
 
 setup "a branch held by a live loop worker is reported live, by worktree"
 export STUB_WORKTREES=branches STUB_ORCA_PS=branches
-run_report mr-live
+run_report pr-live
 check_status 0 "$STATUS"
-check_grep "branch mr-live selwyn_yeow/automation: loop-live /tmp/stub/automation/agent-loop-mr-13" "$OUT"
+check_grep "branch pr-live nywleswoey/automation: loop-live /tmp/stub/automation/agent-loop-pr-13" "$OUT"
 # Liveness is the agent's state, not whether a terminal or a worktree exists.
 check_grep "orca worktree ps --json" "$STUB_CALLS"
 
 setup "a loop worker parked waiting for my confirmation still counts as live"
 export STUB_WORKTREES=branches STUB_ORCA_PS=branches
-run_report mr-waiting
+run_report pr-waiting
 check_status 0 "$STATUS"
-check_grep "branch mr-waiting selwyn_yeow/automation: loop-live /tmp/stub/automation/agent-loop-mr-15" "$OUT"
+check_grep "branch pr-waiting nywleswoey/automation: loop-live /tmp/stub/automation/agent-loop-pr-15" "$OUT"
 
 setup "a branch held by a finished loop worker is reported done"
 export STUB_WORKTREES=branches STUB_ORCA_PS=branches
-run_report mr-done
+run_report pr-done
 check_status 0 "$STATUS"
-check_grep "branch mr-done selwyn_yeow/automation: loop-done /tmp/stub/automation/agent-loop-mr-14" "$OUT"
+check_grep "branch pr-done nywleswoey/automation: loop-done /tmp/stub/automation/agent-loop-pr-14" "$OUT"
 
 setup "a loop worktree Orca has lost is not reported as reusable"
 export STUB_WORKTREES=branches STUB_ORCA_PS=branches
-# agent-loop-mr-16 is in git's worktree list and in no Orca inventory, so there
-# is no worktree id left to reuse it by — reporting it done would send the MR
+# agent-loop-pr-16 is in git's worktree list and in no Orca inventory, so there
+# is no worktree id left to reuse it by — reporting it done would send the PR
 # phase after a handle that does not exist.
-run_report mr-lost
+run_report pr-lost
 check_status 0 "$STATUS"
-check_grep "branch mr-lost selwyn_yeow/automation: unknown /tmp/stub/automation/agent-loop-mr-16" "$OUT"
+check_grep "branch pr-lost nywleswoey/automation: unknown /tmp/stub/automation/agent-loop-pr-16" "$OUT"
 
 setup "a worktree the loop did not create is foreign, and clean when its tree is"
 export STUB_WORKTREES=branches STUB_ORCA_PS=branches
@@ -394,7 +406,7 @@ run_report my-branch
 check_status 0 "$STATUS"
 # The worktree carries a `working` agent, so this only passes if foreignness is
 # decided by the name rather than by the agent state.
-check_grep "branch my-branch selwyn_yeow/automation: foreign-clean /tmp/stub/automation/my-own-checkout" "$OUT"
+check_grep "branch my-branch nywleswoey/automation: foreign-clean /tmp/stub/automation/my-own-checkout" "$OUT"
 check_grep "git -C /tmp/stub/automation/my-own-checkout status --porcelain" "$STUB_CALLS"
 
 setup "a foreign worktree with a dirty tree is reported dirty"
@@ -402,7 +414,7 @@ export STUB_WORKTREES=branches STUB_ORCA_PS=branches
 export STUB_DIRTY="/tmp/stub/automation/my-own-checkout"
 run_report my-branch
 check_status 0 "$STATUS"
-check_grep "branch my-branch selwyn_yeow/automation: foreign-dirty /tmp/stub/automation/my-own-checkout" "$OUT"
+check_grep "branch my-branch nywleswoey/automation: foreign-dirty /tmp/stub/automation/my-own-checkout" "$OUT"
 
 setup "a worktree Orca does not manage is still visible to the check"
 export STUB_WORKTREES=branches STUB_ORCA_PS=branches
@@ -410,7 +422,7 @@ export STUB_WORKTREES=branches STUB_ORCA_PS=branches
 # Orca inventory at all.
 run_report hotfix
 check_status 0 "$STATUS"
-check_grep "branch hotfix selwyn_yeow/automation: foreign-clean /Users/stub/dev/automation-hotfix" "$OUT"
+check_grep "branch hotfix nywleswoey/automation: foreign-clean /Users/stub/dev/automation-hotfix" "$OUT"
 
 # --- startup reclaim -----------------------------------------------------------
 
@@ -418,24 +430,25 @@ setup "startup returns a claimed issue with no live worker to the ready label"
 export STUB_CLAIMED=mixed STUB_ORCA_PS=busy
 run_once
 check_status 0 "$STATUS"
-check_grep "reclaimed selwyn_yeow/automation#21" "$OUT"
-check_grep "glab-axi api PUT projects/selwyn_yeow%2Fautomation/issues/21 --raw-field add_labels=ready-for-agent --raw-field remove_labels=agent-in-progress" "$STUB_CALLS"
+check_grep "reclaimed nywleswoey/automation#21" "$OUT"
+check_grep "gh-axi issue edit 21 --repo nywleswoey/automation --add-label ready-for-agent --remove-label agent-in-progress" "$STUB_CALLS"
 # #1 has no worktree either — and must not be matched by agent-loop-issue-11.
-check_grep "reclaimed selwyn_yeow/automation#1:" "$OUT"
-check_grep "glab-axi api PUT projects/selwyn_yeow%2Fautomation/issues/1 --raw-field add_labels=ready-for-agent" "$STUB_CALLS"
+check_grep "reclaimed nywleswoey/automation#1:" "$OUT"
+check_grep "gh-axi issue edit 1 --repo nywleswoey/automation --add-label ready-for-agent --remove-label agent-in-progress" "$STUB_CALLS"
 # #11 has a `working` worker, #12 a `waiting` one parked for my confirmation.
-check_grep "left claimed selwyn_yeow/automation#11" "$OUT"
-check_grep "left claimed selwyn_yeow/automation#12" "$OUT"
-check_no_grep "issues/11 --raw-field add_labels=ready-for-agent" "$STUB_CALLS"
-check_no_grep "issues/12 --raw-field add_labels=ready-for-agent" "$STUB_CALLS"
-check "exactly two issues were reclaimed" test "$(grep -cF 'add_labels=ready-for-agent' "$STUB_CALLS")" -eq 2
+check_grep "left claimed nywleswoey/automation#11" "$OUT"
+check_grep "left claimed nywleswoey/automation#12" "$OUT"
+check_no_grep "issue edit 11 " "$STUB_CALLS"
+check_no_grep "issue edit 12 " "$STUB_CALLS"
+check "exactly two issues were reclaimed" \
+  test "$(grep -c -- '--add-label ready-for-agent' "$STUB_CALLS")" -eq 2
 # Reclaim runs once at startup, not once per pass.
-check "one reclaim line per issue" test "$(grep -cF 'reclaimed selwyn_yeow/automation#21' "$OUT")" -eq 1
+check "one reclaim line per issue" test "$(grep -cF 'reclaimed nywleswoey/automation#21' "$OUT")" -eq 1
 
 setup "no claimed issues means no reclaim traffic"
 run_once
 check_status 0 "$STATUS"
-check_no_grep "add_labels=ready-for-agent" "$STUB_CALLS"
+check_no_grep "--add-label ready-for-agent" "$STUB_CALLS"
 check_no_grep "reclaimed" "$OUT"
 
 setup "an unreadable inventory skips the reclaim rather than reclaiming blindly"
@@ -443,13 +456,13 @@ export STUB_CLAIMED=mixed STUB_ORCA_FAIL=ps
 run_once
 check_status 0 "$STATUS"
 check_grep "worker inventory unreadable, skipping startup reclaim" "$OUT"
-check_no_grep "add_labels=ready-for-agent" "$STUB_CALLS"
+check_no_grep "--add-label ready-for-agent" "$STUB_CALLS"
 
 setup "a failed claimed-issue query is logged and startup continues"
-export STUB_CLAIMED=mixed STUB_GLAB_FAIL=graphql
+export STUB_CLAIMED=mixed STUB_GH_FAIL=issues
 run_once
 check_status 0 "$STATUS"
-check_grep "claimed-issue query failed: selwyn_yeow/automation" "$OUT"
+check_grep "claimed-issue query failed: nywleswoey/automation" "$OUT"
 check_grep "pass start" "$OUT"
 
 # --- worktree sweep -------------------------------------------------------------
@@ -498,10 +511,10 @@ setup "a loop worker parked waiting for my confirmation is left alone and logged
 export STUB_ORCA_PS=sweep STUB_DIRTY="$SWEEP_DIRTY" STUB_UNPUSHED="$SWEEP_UNPUSHED"
 run_once
 check_status 0 "$STATUS"
-check_grep "sweep skipped /tmp/stub/automation/agent-loop-mr-34: its agent is still going" "$OUT"
-check_no_grep "path:/tmp/stub/automation/agent-loop-mr-34" "$STUB_CALLS"
-check_grep "sweep skipped /tmp/stub/automation/agent-loop-mr-35: its agent is still going" "$OUT"
-check_no_grep "path:/tmp/stub/automation/agent-loop-mr-35" "$STUB_CALLS"
+check_grep "sweep skipped /tmp/stub/automation/agent-loop-pr-34: its agent is still going" "$OUT"
+check_no_grep "path:/tmp/stub/automation/agent-loop-pr-34" "$STUB_CALLS"
+check_grep "sweep skipped /tmp/stub/automation/agent-loop-pr-35: its agent is still going" "$OUT"
+check_no_grep "path:/tmp/stub/automation/agent-loop-pr-35" "$STUB_CALLS"
 
 setup "a worktree the loop did not create is never removed"
 export STUB_ORCA_PS=sweep STUB_DIRTY="$SWEEP_DIRTY" STUB_UNPUSHED="$SWEEP_UNPUSHED"
@@ -537,52 +550,52 @@ check_status 0 "$STATUS"
 check_grep "worker inventory unreadable, skipping the sweep" "$OUT"
 check_no_grep "worktree rm" "$STUB_CALLS"
 
-# --- mr phase ------------------------------------------------------------------
+# --- pr phase ------------------------------------------------------------------
 
 # One pass over a fixture where every branch state in the claim table is
 # represented at once, so the phase is asserted as a whole rather than one
 # hand-picked case at a time. maxWorkers is raised out of the way — the budget
 # has its own case below.
-setup "the MR phase dispatches, reuses or skips by who holds the source branch"
-write_config "selwyn_yeow/automation" "repo-aaa" 300 9
-export STUB_MRS=branches STUB_WORKTREES=branches STUB_ORCA_PS=branches
+setup "the PR phase dispatches, reuses or skips by who holds the source branch"
+write_config "nywleswoey/automation" "repo-aaa" 300 9
+export STUB_PRS=branches STUB_WORKTREES=branches STUB_ORCA_PS=branches
 run_once
 check_status 0 "$STATUS"
 
-# 101 — nobody holds mr-free, and the MR is a Draft: a fresh worktree, checked
-# out at the MR's own source branch. The MR title slugs onto the directory name,
-# which is the worktree's alone — the branch is the MR's and does not change.
-check_grep "orca worktree create --repo id:repo-aaa --name agent-loop-mr-101-agent-loop-mr-phase --no-parent --base-branch mr-free --agent claude --prompt " "$STUB_CALLS"
-check_grep "dispatched mr selwyn_yeow/automation!101 (2 eligible threads) -> worktree repo-aaa::/tmp/stub/automation/agent-loop-mr-101" "$OUT"
+# 101 — nobody holds pr-free: a fresh worktree, checked out at the PR's own
+# head branch. The PR title slugs onto the directory name, which is the
+# worktree's alone — the branch is the PR's and does not change.
+check_grep "orca worktree create --repo id:repo-aaa --name agent-loop-pr-101-agent-loop-pr-phase --no-parent --base-branch pr-free --agent claude --prompt " "$STUB_CALLS"
+check_grep "dispatched pr nywleswoey/automation#101 (2 eligible threads) -> worktree repo-aaa::/tmp/stub/automation/agent-loop-pr-101" "$OUT"
 
-# 102 — a loop worker is working on mr-live.
-check_grep "mr selwyn_yeow/automation!102 skipped: branch mr-live held by a live worker (/tmp/stub/automation/agent-loop-mr-13)" "$OUT"
+# 102 — a loop worker is working on pr-live.
+check_grep "pr nywleswoey/automation#102 skipped: branch pr-live held by a live worker (/tmp/stub/automation/agent-loop-pr-13)" "$OUT"
 
-# 103 — a finished loop worktree holds mr-done: a new terminal in it, never a
+# 103 — a finished loop worktree holds pr-done: a new terminal in it, never a
 # second checkout of the branch.
-check_grep "orca terminal create --worktree path:/tmp/stub/automation/agent-loop-mr-14 --command claude --json" "$STUB_CALLS"
-check_grep "dispatched mr selwyn_yeow/automation!103 (2 eligible threads) -> terminal term_stub_0001 in /tmp/stub/automation/agent-loop-mr-14" "$OUT"
+check_grep "orca terminal create --worktree path:/tmp/stub/automation/agent-loop-pr-14 --command claude --json" "$STUB_CALLS"
+check_grep "dispatched pr nywleswoey/automation#103 (2 eligible threads) -> terminal term_stub_0001 in /tmp/stub/automation/agent-loop-pr-14" "$OUT"
 
 # 104 — my own clean checkout of my-branch is reused in place.
 check_grep "orca terminal create --worktree path:/tmp/stub/automation/my-own-checkout --command claude --json" "$STUB_CALLS"
-check_grep "dispatched mr selwyn_yeow/automation!104 (2 eligible threads) -> terminal term_stub_0001 in /tmp/stub/automation/my-own-checkout" "$OUT"
+check_grep "dispatched pr nywleswoey/automation#104 (2 eligible threads) -> terminal term_stub_0001 in /tmp/stub/automation/my-own-checkout" "$OUT"
 
 # 105 — every thread on it is resolved, an individual note, or one I have spoken
 # in, so there is nothing to dispatch a worker at.
-check_grep "mr selwyn_yeow/automation!105 skipped: no eligible threads" "$OUT"
+check_grep "pr nywleswoey/automation#105 skipped: no eligible threads" "$OUT"
 
-# 106 — a worker parked waiting for my confirmation still holds mr-waiting.
-check_grep "mr selwyn_yeow/automation!106 skipped: branch mr-waiting held by a live worker (/tmp/stub/automation/agent-loop-mr-15)" "$OUT"
+# 106 — a worker parked waiting for my confirmation still holds pr-waiting.
+check_grep "pr nywleswoey/automation#106 skipped: branch pr-waiting held by a live worker (/tmp/stub/automation/agent-loop-pr-15)" "$OUT"
 
 # 107 — a clean checkout Orca does not manage at all is still reused in place.
 check_grep "orca terminal create --worktree path:/Users/stub/dev/automation-hotfix --command claude --json" "$STUB_CALLS"
 
 # 108 — a loop worktree Orca has lost is not guessed at.
-check_grep "mr selwyn_yeow/automation!108 skipped: could not determine who holds branch mr-lost" "$OUT"
+check_grep "pr nywleswoey/automation#108 skipped: could not determine who holds branch pr-lost" "$OUT"
 
-# 900 lives in a project the config does not list.
-check_no_grep "!900" "$OUT"
-check_no_grep "merge_requests/900" "$STUB_CALLS"
+# 900 lives in a repository the config does not list.
+check_no_grep "#900" "$OUT"
+check_no_grep "pullRequest(number: 900)" "$STUB_CALLS"
 
 # Reuse never cuts a second checkout of a branch that is already out.
 check "exactly one worktree was created" test "$(grep -cF 'worktree create' "$STUB_CALLS")" -eq 1
@@ -592,142 +605,142 @@ check_grep "orca terminal wait --terminal term_stub_0001 --for tui-idle --timeou
 check "each reused terminal was sent one line" test "$(grep -cF 'orca terminal send --terminal term_stub_0001' "$STUB_CALLS")" -eq 3
 # `terminal send` writes raw to the pty, so every newline in its text is a press
 # of Enter — the brief goes to a file and the terminal is sent one line.
-check_grep "orca terminal send --terminal term_stub_0001 --text Read $WORK/agent-loop-mr-103-prompt.md and do exactly what it says. --enter --json" "$STUB_CALLS"
-check "the brief was written for the reused worktree" test -s "$WORK/agent-loop-mr-103-prompt.md"
-check_grep "Triage the review threads on merge request https://gitlab.example/selwyn_yeow/automation/-/merge_requests/103" "$WORK/agent-loop-mr-103-prompt.md"
-# The prompt carries the MR, its branch, and the write-back script that is the
-# only thing allowed to write to GitLab.
-check_grep "https://gitlab.example/selwyn_yeow/automation/-/merge_requests/101" "$STUB_CALLS"
-check_grep "mr-writeback.sh\" --plan \"$WORK/agent-loop-mr-101-plan.json\" --seen-list \"$WORK/seen.jsonl\"" "$STUB_CALLS"
-# The daemon itself writes nothing to any MR — it dispatches and walks away.
-check_no_grep "glab-axi api POST" "$STUB_CALLS"
-check_no_grep "resolved=true" "$STUB_CALLS"
+check_grep "orca terminal send --terminal term_stub_0001 --text Read $WORK/agent-loop-pr-103-prompt.md and do exactly what it says. --enter --json" "$STUB_CALLS"
+check "the brief was written for the reused worktree" test -s "$WORK/agent-loop-pr-103-prompt.md"
+check_grep "Triage the review threads on pull request https://github.com/nywleswoey/automation/pull/103" "$WORK/agent-loop-pr-103-prompt.md"
+# The prompt carries the PR, its branch, and the write-back script that is the
+# only thing allowed to write to GitHub.
+check_grep "https://github.com/nywleswoey/automation/pull/101" "$STUB_CALLS"
+check_grep "pr-writeback.sh\" --plan \"$WORK/agent-loop-pr-101-plan.json\" --seen-list \"$WORK/seen.jsonl\"" "$STUB_CALLS"
+# The daemon itself writes nothing to any PR — it dispatches and walks away.
+check_no_grep "addPullRequestReviewThreadReply" "$STUB_CALLS"
+check_no_grep "resolveReviewThread" "$STUB_CALLS"
 
-# agent-loop-mr-14 was reused a moment ago, so the sweep must leave it alone
+# agent-loop-pr-14 was reused a moment ago, so the sweep must leave it alone
 # even though the pass's snapshot still shows its old agent as finished.
-check_grep "sweep skipped /tmp/stub/automation/agent-loop-mr-14: a worker was dispatched into it this pass" "$OUT"
-check_no_grep "swept /tmp/stub/automation/agent-loop-mr-14" "$OUT"
+check_grep "sweep skipped /tmp/stub/automation/agent-loop-pr-14: a worker was dispatched into it this pass" "$OUT"
+check_no_grep "swept /tmp/stub/automation/agent-loop-pr-14" "$OUT"
 check_grep "pass end dispatches=4 skips=4 sweeps=0" "$OUT"
 
-setup "an MR whose branch is held by a dirty foreign worktree is skipped and logged"
-write_config "selwyn_yeow/automation" "repo-aaa" 300 9
-export STUB_MRS=branches STUB_WORKTREES=branches STUB_ORCA_PS=branches
+setup "a PR whose branch is held by a dirty foreign worktree is skipped and logged"
+write_config "nywleswoey/automation" "repo-aaa" 300 9
+export STUB_PRS=branches STUB_WORKTREES=branches STUB_ORCA_PS=branches
 export STUB_DIRTY="/tmp/stub/automation/my-own-checkout"
 run_once
 check_status 0 "$STATUS"
-check_grep "mr selwyn_yeow/automation!104 skipped: branch my-branch held by a worktree with uncommitted changes (/tmp/stub/automation/my-own-checkout)" "$OUT"
+check_grep "pr nywleswoey/automation#104 skipped: branch my-branch held by a worktree with uncommitted changes (/tmp/stub/automation/my-own-checkout)" "$OUT"
 check_no_grep "orca terminal create --worktree path:/tmp/stub/automation/my-own-checkout" "$STUB_CALLS"
 check_grep "pass end dispatches=3 skips=5 sweeps=0" "$OUT"
 
-setup "an MR whose every thread already has a note from me is not dispatched"
-export STUB_MRS=branches STUB_WORKTREES=branches STUB_ORCA_PS=branches
-export STUB_DISCUSSIONS=105
-write_config "selwyn_yeow/automation" "repo-aaa" 300 9
+setup "a PR whose every thread already has a note from me is not dispatched"
+export STUB_PRS=branches STUB_WORKTREES=branches STUB_ORCA_PS=branches
+export STUB_THREADS=105
+write_config "nywleswoey/automation" "repo-aaa" 300 9
 run_once
 check_status 0 "$STATUS"
-check_grep "mr selwyn_yeow/automation!101 skipped: no eligible threads" "$OUT"
+check_grep "pr nywleswoey/automation#101 skipped: no eligible threads" "$OUT"
 check_no_grep "worktree create" "$STUB_CALLS"
 check_no_grep "terminal create" "$STUB_CALLS"
 check_grep "pass end dispatches=0 skips=8 sweeps=1" "$OUT"
 
-setup "MR dispatch spends the same worker budget as the issue phase"
+setup "PR dispatch spends the same worker budget as the issue phase"
 # orca-ps-branches carries two live loop workers, so maxWorkers 3 leaves exactly
-# one slot for the four MRs that would otherwise be dispatched.
-export STUB_MRS=branches STUB_WORKTREES=branches STUB_ORCA_PS=branches
+# one slot for the four PRs that would otherwise be dispatched.
+export STUB_PRS=branches STUB_WORKTREES=branches STUB_ORCA_PS=branches
 run_once
 check_status 0 "$STATUS"
-check "exactly one MR worker was dispatched" test "$(grep -cF 'dispatched mr ' "$OUT")" -eq 1
-check_grep "mr selwyn_yeow/automation!103 deferred: worker budget full (3/3)" "$OUT"
-check_grep "mr selwyn_yeow/automation!104 deferred: worker budget full (3/3)" "$OUT"
-check_grep "mr selwyn_yeow/automation!107 deferred: worker budget full (3/3)" "$OUT"
+check "exactly one PR worker was dispatched" test "$(grep -cF 'dispatched pr ' "$OUT")" -eq 1
+check_grep "pr nywleswoey/automation#103 deferred: worker budget full (3/3)" "$OUT"
+check_grep "pr nywleswoey/automation#104 deferred: worker budget full (3/3)" "$OUT"
+check_grep "pr nywleswoey/automation#107 deferred: worker budget full (3/3)" "$OUT"
 
-setup "a failed MR query is logged and the pass continues"
-export STUB_MRS=branches STUB_GLAB_FAIL=mrs
+setup "a failed PR query is logged and the pass continues"
+export STUB_PRS=branches STUB_GH_FAIL=prs
 run_once
 check_status 0 "$STATUS"
-check_grep "mr query failed" "$OUT"
+check_grep "pr query failed" "$OUT"
 check_grep "pass end dispatches=0 skips=1 sweeps=1" "$OUT"
 
-setup "a failed thread query is logged and the MR is left alone"
-write_config "selwyn_yeow/automation" "repo-aaa" 300 9
-export STUB_MRS=branches STUB_WORKTREES=branches STUB_ORCA_PS=branches
-export STUB_GLAB_FAIL=discussions
+setup "a failed thread query is logged and the PR is left alone"
+write_config "nywleswoey/automation" "repo-aaa" 300 9
+export STUB_PRS=branches STUB_WORKTREES=branches STUB_ORCA_PS=branches
+export STUB_GH_FAIL=threads
 run_once
 check_status 0 "$STATUS"
-check_grep "thread query failed: selwyn_yeow/automation!101" "$OUT"
+check_grep "thread query failed: nywleswoey/automation#101" "$OUT"
 check_no_grep "worktree create" "$STUB_CALLS"
 
 # --- seen-list ------------------------------------------------------------------
 
-# The eligible-thread fixture carries two threads: d...0001, whose newest note is
-# 900001, and d...0002, whose newest is 900003. A seen entry matching both is
-# what a worker leaves behind after triaging MR 101 and getting no reply.
-SEEN_101_CURRENT='{"project":"selwyn_yeow/automation","mr":101,"discussion":"d000000000000000000000000000000000000001","lastNoteId":900001,"verdict":"ANSWER"}
-{"project":"selwyn_yeow/automation","mr":101,"discussion":"d000000000000000000000000000000000000002","lastNoteId":900003,"verdict":"ESCALATE"}'
+# The eligible-thread fixture carries two threads: PRRT_thread001, whose newest note is
+# 900001, and PRRT_thread002, whose newest is 900003. A seen entry matching both is
+# what a worker leaves behind after triaging PR 101 and getting no reply.
+SEEN_101_CURRENT='{"project":"nywleswoey/automation","pr":101,"thread":"PRRT_thread001","lastCommentId":900001,"verdict":"ANSWER"}
+{"project":"nywleswoey/automation","pr":101,"thread":"PRRT_thread002","lastCommentId":900003,"verdict":"ESCALATE"}'
 
 setup "a thread with a matching seen entry and an unchanged newest note is filtered out"
-write_config "selwyn_yeow/automation" "repo-aaa" 300 9
-export STUB_MRS=branches STUB_WORKTREES=branches STUB_ORCA_PS=branches
+write_config "nywleswoey/automation" "repo-aaa" 300 9
+export STUB_PRS=branches STUB_WORKTREES=branches STUB_ORCA_PS=branches
 printf '%s\n' "$SEEN_101_CURRENT" > "$WORK/seen.jsonl"
 run_once
 check_status 0 "$STATUS"
-check_grep "mr selwyn_yeow/automation!101 skipped: no eligible threads" "$OUT"
-check_no_grep "agent-loop-mr-101" "$STUB_CALLS"
-# The entries name MR 101 alone, so every other MR is dispatched as before.
-check_grep "dispatched mr selwyn_yeow/automation!103 (2 eligible threads)" "$OUT"
+check_grep "pr nywleswoey/automation#101 skipped: no eligible threads" "$OUT"
+check_no_grep "agent-loop-pr-101" "$STUB_CALLS"
+# The entries name PR 101 alone, so every other PR is dispatched as before.
+check_grep "dispatched pr nywleswoey/automation#103 (2 eligible threads)" "$OUT"
 
 setup "a newer note on the thread makes it eligible again"
-write_config "selwyn_yeow/automation" "repo-aaa" 300 9
-export STUB_MRS=branches STUB_WORKTREES=branches STUB_ORCA_PS=branches
+write_config "nywleswoey/automation" "repo-aaa" 300 9
+export STUB_PRS=branches STUB_WORKTREES=branches STUB_ORCA_PS=branches
 # Both entries name a note that is no longer the newest one on the thread.
 cat > "$WORK/seen.jsonl" <<'JSON'
-{"project":"selwyn_yeow/automation","mr":101,"discussion":"d000000000000000000000000000000000000001","lastNoteId":900000,"verdict":"ANSWER"}
-{"project":"selwyn_yeow/automation","mr":101,"discussion":"d000000000000000000000000000000000000002","lastNoteId":900002,"verdict":"ESCALATE"}
+{"project":"nywleswoey/automation","pr":101,"thread":"PRRT_thread001","lastCommentId":900000,"verdict":"ANSWER"}
+{"project":"nywleswoey/automation","pr":101,"thread":"PRRT_thread002","lastCommentId":900002,"verdict":"ESCALATE"}
 JSON
 run_once
 check_status 0 "$STATUS"
-check_grep "dispatched mr selwyn_yeow/automation!101 (2 eligible threads)" "$OUT"
+check_grep "dispatched pr nywleswoey/automation#101 (2 eligible threads)" "$OUT"
 
-setup "a seen entry for another merge request does not filter this one"
-write_config "selwyn_yeow/automation" "repo-aaa" 300 9
-export STUB_MRS=branches STUB_WORKTREES=branches STUB_ORCA_PS=branches
-printf '%s\n' "${SEEN_101_CURRENT//\"mr\":101/\"mr\":999}" > "$WORK/seen.jsonl"
+setup "a seen entry for another pull request does not filter this one"
+write_config "nywleswoey/automation" "repo-aaa" 300 9
+export STUB_PRS=branches STUB_WORKTREES=branches STUB_ORCA_PS=branches
+printf '%s\n' "${SEEN_101_CURRENT//\"pr\":101/\"pr\":999}" > "$WORK/seen.jsonl"
 run_once
 check_status 0 "$STATUS"
-check_grep "dispatched mr selwyn_yeow/automation!101 (2 eligible threads)" "$OUT"
+check_grep "dispatched pr nywleswoey/automation#101 (2 eligible threads)" "$OUT"
 
 setup "a missing seen-list filters nothing and does not stop the pass"
-write_config "selwyn_yeow/automation" "repo-aaa" 300 9
-export STUB_MRS=branches STUB_WORKTREES=branches STUB_ORCA_PS=branches
+write_config "nywleswoey/automation" "repo-aaa" 300 9
+export STUB_PRS=branches STUB_WORKTREES=branches STUB_ORCA_PS=branches
 check "no seen-list on disk" test ! -f "$WORK/seen.jsonl"
 run_once
 check_status 0 "$STATUS"
-check_grep "dispatched mr selwyn_yeow/automation!101 (2 eligible threads)" "$OUT"
+check_grep "dispatched pr nywleswoey/automation#101 (2 eligible threads)" "$OUT"
 
 setup "an unreadable seen-list filters nothing and does not stop the pass"
-write_config "selwyn_yeow/automation" "repo-aaa" 300 9
-export STUB_MRS=branches STUB_WORKTREES=branches STUB_ORCA_PS=branches
+write_config "nywleswoey/automation" "repo-aaa" 300 9
+export STUB_PRS=branches STUB_WORKTREES=branches STUB_ORCA_PS=branches
 printf 'not json at all\n' > "$WORK/seen.jsonl"
 run_once
 check_status 0 "$STATUS"
 check_grep "seen-list unreadable, filtering nothing this pass: $WORK/seen.jsonl" "$OUT"
-check_grep "dispatched mr selwyn_yeow/automation!101 (2 eligible threads)" "$OUT"
+check_grep "dispatched pr nywleswoey/automation#101 (2 eligible threads)" "$OUT"
 
 setup "the daemon never writes the seen-list itself"
-write_config "selwyn_yeow/automation" "repo-aaa" 300 9
-export STUB_MRS=branches STUB_WORKTREES=branches STUB_ORCA_PS=branches
+write_config "nywleswoey/automation" "repo-aaa" 300 9
+export STUB_PRS=branches STUB_WORKTREES=branches STUB_ORCA_PS=branches
 run_once
 check_status 0 "$STATUS"
-check_grep "dispatched mr selwyn_yeow/automation!101" "$OUT"
+check_grep "dispatched pr nywleswoey/automation#101" "$OUT"
 # Only a worker whose confirmation prompt I have answered writes an entry, and
 # the write-back script is the only thing that writes one.
 check "the loop created no seen-list" test ! -f "$WORK/seen.jsonl"
 
-setup "no open MRs means no MR traffic"
+setup "no open PRs means no PR traffic"
 run_once
 check_status 0 "$STATUS"
-check_grep "glab-axi api merge_requests?scope=created_by_me&state=opened&per_page=100 --raw" "$STUB_CALLS"
-check_no_grep "discussions" "$STUB_CALLS"
+check_grep 'gh-axi api POST /graphql --field query={ search(query: "is:pr is:open author:nywleswoey sort:updated-desc"' "$STUB_CALLS"
+check_no_grep "reviewThreads" "$STUB_CALLS"
 check_no_grep "dispatched mr" "$OUT"
 check_grep "pass end dispatches=0 skips=0 sweeps=1" "$OUT"
 
@@ -738,68 +751,75 @@ check_grep "pass end dispatches=0 skips=0 sweeps=1" "$OUT"
 # one whose issue is already closed, one whose issue I claimed by hand, one from
 # a branch that names no issue, one with the collision suffix, and one in a
 # project the config does not list.
-CLOSE_17="glab-axi api PUT projects/selwyn_yeow%2Fautomation/issues/17 --raw-field state_event=close --raw-field remove_labels=agent-in-progress"
+# The close and the unclaim are two calls in that order, so a failure can only
+# ever leave the label on an issue that is already closed.
+CLOSE_17="gh-axi issue close 17 --repo nywleswoey/automation"
+UNCLAIM_17="gh-axi issue edit 17 --repo nywleswoey/automation --remove-label agent-in-progress"
 
 setup "the close-out phase ticks and closes what it claimed and nothing else"
 export STUB_MERGED=set
 run_once
 check_status 0 "$STATUS"
-check_grep "glab-axi api merge_requests?scope=created_by_me&state=merged&per_page=100 --raw" "$STUB_CALLS"
+check_grep 'gh-axi api POST /graphql --field query={ search(query: "is:pr is:merged author:nywleswoey sort:updated-desc"' "$STUB_CALLS"
 check_grep "$CLOSE_17" "$STUB_CALLS"
-check_grep "closed out selwyn_yeow/automation#17: merge request !201 merged" "$OUT"
+check_grep "closed out nywleswoey/automation#17: pull request #201 merged" "$OUT"
 # The description write lands before the close, so the tick is on the issue the
 # close then freezes.
-check "the tick precedes the close" test "$(call_line 'description=')" -lt "$(call_line "$CLOSE_17")"
+check "the tick precedes the close" test "$(call_line 'gh-axi issue edit 17 --repo nywleswoey/automation --body-file')" -lt "$(call_line "$CLOSE_17")"
+check_grep "$UNCLAIM_17" "$STUB_CALLS"
+check "the close precedes the unclaim" test "$(call_line "$CLOSE_17")" -lt "$(call_line "$UNCLAIM_17")"
 # Every checkbox became ticked, nested ones included, and nothing else moved a
 # byte — a `- [ ]` in a code span or mid-sentence is prose, not a checklist
-# item, and GitLab counts it as neither.
+# item, and GitHub counts it as neither.
 printf '## Acceptance criteria\n\n- [x] First\n  - [x] Nested\n- [x] Second\n- [x] Third\n\nThe phase turns `- [ ] ` into `- [x] ` and leaves everything else alone.\nnot boxes: -[ ] and - [X] stay.\n' \
   > "$WORK/expected-17.txt"
-check "the rewritten description differs only in the checkbox markers" \
-  diff -q "$WORK/expected-17.txt" "$STUB_STATE/description-17.txt"
+check "the rewritten body differs only in the checkbox markers" \
+  diff -q "$WORK/expected-17.txt" "$STUB_STATE/body-17.txt"
 
 # 202 — issue 40 has no checkboxes, so it is closed with no description write.
-check_grep "closed out selwyn_yeow/automation#40: merge request !202 merged" "$OUT"
-check "no description was written for an issue with no checkboxes" \
-  test ! -f "$STUB_STATE/description-40.txt"
+check_grep "closed out nywleswoey/automation#40: pull request #202 merged" "$OUT"
+check "no body was written for an issue with no checkboxes" \
+  test ! -f "$STUB_STATE/body-40.txt"
 
 # 203 — issue 41 is already closed: one read to find that out, and nothing else.
-check_no_grep "issues/41 --raw-field" "$STUB_CALLS"
+check_no_grep "issue 41 " "$STUB_CALLS"
 check_no_grep "#41" "$OUT"
 
 # 204 — issue 42 carries the ready label, not the claim: the loop did not claim
 # it, so the loop does not touch it.
-check_no_grep "issues/42 --raw-field" "$STUB_CALLS"
+check_no_grep "issue 42 " "$STUB_CALLS"
 check_no_grep "#42" "$OUT"
 
-# 205 — issue 11's merge request closes issue 11 and never issue 1.
-check_grep "closed out selwyn_yeow/automation#11: merge request !205 merged" "$OUT"
+# 205 — issue 11's pull request closes issue 11 and never issue 1.
+check_grep "closed out nywleswoey/automation#11: pull request #205 merged" "$OUT"
 check_no_grep "issues/1 " "$STUB_CALLS"
 check_no_grep "#1:" "$OUT"
 
-# 206 — a name collision put the worker in agent-loop-issue-43-2.
-check_grep "closed out selwyn_yeow/automation#43: merge request !206 merged" "$OUT"
+# 206 — a name collision put the worker in agent-loop-issue-43-2, and Orca cut
+# its branch under a namespace: `nywleswoey/agent-loop-issue-43-2`. Both the
+# suffix and the prefix have to be seen through to reach issue 43.
+check_grep "closed out nywleswoey/automation#43: pull request #206 merged" "$OUT"
 
-# 207 — a branch that names no issue is a merge request I opened by hand.
-# 907 — a merged merge request in a project the config does not list.
+# 207 — a branch that names no issue is a pull request I opened by hand.
+# 907 — a merged pull request in a project the config does not list.
 check_no_grep "issues/99" "$STUB_CALLS"
-check_no_grep "!207" "$OUT"
-check_no_grep "!907" "$OUT"
+check_no_grep "#207" "$OUT"
+check_no_grep "#907" "$OUT"
 
-check "exactly four issues were closed" test "$(grep -cF 'state_event=close' "$STUB_CALLS")" -eq 4
+check "exactly four issues were closed" test "$(grep -cF 'gh-axi issue close ' "$STUB_CALLS")" -eq 4
 # The close-out runs before the reclaim, so the pass that follows it sees the
 # issues closed and repeats none of its own lines.
-check "one close-out line per issue" test "$(grep -cF 'closed out selwyn_yeow/automation#17' "$OUT")" -eq 1
+check "one close-out line per issue" test "$(grep -cF 'closed out nywleswoey/automation#17' "$OUT")" -eq 1
 
-setup "an unmerged merge request leaves its issue alone"
-# One open merge request, from the very branch the close-out phase reads issues
-# out of: it must never reach the phase, because the phase asks GitLab for
+setup "an unmerged pull request leaves its issue alone"
+# One open pull request, from the very branch the close-out phase reads issues
+# out of: it must never reach the phase, because the phase asks GitHub for
 # `state=merged` and nothing else.
-export STUB_MRS=openissue STUB_WORKTREES=branches STUB_ORCA_PS=branches
+export STUB_PRS=openissue STUB_WORKTREES=branches STUB_ORCA_PS=branches
 run_once
 check_status 0 "$STATUS"
-check_grep "dispatched mr selwyn_yeow/automation!301" "$OUT"
-check_no_grep "state_event=close" "$STUB_CALLS"
+check_grep "dispatched pr nywleswoey/automation#301" "$OUT"
+check_no_grep "gh-axi issue close" "$STUB_CALLS"
 check_no_grep "issues/17 " "$STUB_CALLS"
 check_no_grep "closed out" "$OUT"
 
@@ -807,44 +827,44 @@ setup "a closed-out issue is never handed back to the ready label"
 export STUB_MERGED=set STUB_CLAIMED=mixed STUB_ORCA_PS=busy
 run_once
 check_status 0 "$STATUS"
-check_grep "closed out selwyn_yeow/automation#11" "$OUT"
+check_grep "closed out nywleswoey/automation#11" "$OUT"
 # #11 was closed out before the reclaim ran, so the reclaim never saw it — and
-# #21, which no merge request names, is reclaimed exactly as before.
-check_grep "reclaimed selwyn_yeow/automation#21" "$OUT"
-check_no_grep "issues/11 --raw-field add_labels=ready-for-agent" "$STUB_CALLS"
+# #21, which no pull request names, is reclaimed exactly as before.
+check_grep "reclaimed nywleswoey/automation#21" "$OUT"
+check_no_grep "issue edit 11 --repo nywleswoey/automation --add-label ready-for-agent" "$STUB_CALLS"
 
 setup "a failed checklist update is logged and the issue is closed anyway"
-export STUB_MERGED=set STUB_GLAB_FAIL=description
+export STUB_MERGED=set STUB_GH_FAIL=body
 run_once
 check_status 0 "$STATUS"
-check_grep "checklist update failed for selwyn_yeow/automation#17, closing it anyway" "$OUT"
+check_grep "checklist update failed for nywleswoey/automation#17, closing it anyway" "$OUT"
 check_grep "$CLOSE_17" "$STUB_CALLS"
-check_grep "closed out selwyn_yeow/automation#17: merge request !201 merged" "$OUT"
+check_grep "closed out nywleswoey/automation#17: pull request #201 merged" "$OUT"
 
 setup "a failed close is logged and the pass continues"
-export STUB_MERGED=set STUB_GLAB_FAIL=close
+export STUB_MERGED=set STUB_GH_FAIL=close
 run_once
 check_status 0 "$STATUS"
-check_grep "close failed for selwyn_yeow/automation#17, leaving it claimed" "$OUT"
+check_grep "close failed for nywleswoey/automation#17, leaving it claimed" "$OUT"
 check_grep "pass start" "$OUT"
 check_grep "pass end" "$OUT"
 
-setup "a failed merged-mr query is logged and the pass continues"
-export STUB_MERGED=set STUB_GLAB_FAIL=merged
+setup "a failed merged-pr query is logged and the pass continues"
+export STUB_MERGED=set STUB_GH_FAIL=merged
 run_once
 check_status 0 "$STATUS"
-check_grep "merged-mr query failed" "$OUT"
-check_no_grep "state_event=close" "$STUB_CALLS"
+check_grep "merged-pr query failed" "$OUT"
+check_no_grep "gh-axi issue close" "$STUB_CALLS"
 check_grep "pass end dispatches=0 skips=1 sweeps=1" "$OUT"
 
 setup "a failed issue read is logged and the pass continues"
-export STUB_MERGED=set STUB_GLAB_FAIL=issue
+export STUB_MERGED=set STUB_GH_FAIL=issue
 run_once
 check_status 0 "$STATUS"
-check_grep "close-out query failed: selwyn_yeow/automation#17" "$OUT"
-check_no_grep "state_event=close" "$STUB_CALLS"
+check_grep "close-out query failed: nywleswoey/automation#17" "$OUT"
+check_no_grep "gh-axi issue close" "$STUB_CALLS"
 
-setup "no merged merge requests means no close-out traffic"
+setup "no merged pull requests means no close-out traffic"
 run_once
 check_status 0 "$STATUS"
 check_no_grep "issues/" "$STUB_CALLS"
