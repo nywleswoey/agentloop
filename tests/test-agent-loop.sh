@@ -353,9 +353,62 @@ CLOCK_ROUTES="$CLOCK_ROUTES"'|\bsystime\(|/proc/uptime|kern\.boottime'
 # `node` also appears as an English word in the worker prompt, and a check
 # that fires on prose gets deleted rather than fixed.
 CLOCK_ROUTES="$CLOCK_ROUTES"'|(perl|python3?|ruby|node).*(strftime|localtime|gmtime|time\(\)|Date\.now|datetime)'
+# Strip only unquoted comment starters. In particular, command substitutions in
+# double-quoted strings still need scanning even when a literal `#` precedes
+# them.
+strip_shell_comments() {
+  awk '
+    {
+      if (!continued) word_start = 1
+      output = ""
+      for (i = 1; i <= length($0); i++) {
+        char = substr($0, i, 1)
+        if (state == "single") {
+          output = output char
+          if (char == sprintf("%c", 39)) state = ""
+          continue
+        }
+        if (state == "double") {
+          output = output char
+          if (escaped) escaped = 0
+          else if (char == "\\") escaped = 1
+          else if (char == "\"") state = ""
+          continue
+        }
+        if (char == "\\") {
+          output = output char
+          if (i < length($0)) {
+            output = output substr($0, ++i, 1)
+            word_start = 0
+          } else {
+            continued = 1
+          }
+          continue
+        }
+        if (char == sprintf("%c", 39)) {
+          state = "single"
+          word_start = 0
+        } else if (char == "\"") {
+          state = "double"
+          word_start = 0
+        } else if (char == "#" && word_start) {
+          break
+        } else if (char ~ /[[:space:];|&()<>]/) {
+          word_start = 1
+        } else {
+          word_start = 0
+        }
+        output = output char
+      }
+      if (state == "double" && escaped) escaped = 0
+      if (i > length($0)) continued = 0
+      print output
+    }
+  ' "$1"
+}
 for _script in "$ROOT"/*.sh; do
   check "no clock read but date(1) in ${_script##*/}" \
-    test "$(sed 's/#.*//' "$_script" | grep -cE "$CLOCK_ROUTES")" -eq 0
+    test "$(strip_shell_comments "$_script" | grep -cE "$CLOCK_ROUTES")" -eq 0
 done
 
 # --- the loop keeps passing ---------------------------------------------------
