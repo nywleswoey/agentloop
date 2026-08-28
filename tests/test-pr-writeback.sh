@@ -46,7 +46,7 @@ setup() {
   export STUB_STATE STUB_CALLS
   mkdir -p "$STUB_STATE"
   : > "$STUB_CALLS"
-  unset STUB_GH_FAIL STUB_GH_STDERR
+  unset STUB_GH_FAIL STUB_GH_ERROR STUB_GH_STDERR
   OUT="$WORK/stdout.log"
   ERR="$WORK/stderr.log"
   : > "$OUT"
@@ -58,6 +58,11 @@ setup() {
 run() {
   "$SCRIPT" "$@" > "$OUT" 2> "$ERR"
   STATUS=$?
+  # 2 is never used, so it can never collide with gh-axi's own exit codes. Every
+  # invocation in this suite proves it, which is what a grep of the source for
+  # `exit 2` cannot do: a 2 arriving because `set -e` propagated some helper's
+  # status leaves no text to find.
+  check "exit status is never 2 (got $STATUS)" test "$STATUS" -ne 2
 }
 
 # Every call this seam makes to gh-axi is a write — it never reads — so counting
@@ -183,6 +188,223 @@ run comment --repo "$REPO" --pr 12 --body-file "$WORK/body.md" --add agent-needs
 check_status 1 "$STATUS"
 check_grep "--add is not a flag of comment" "$ERR"
 check_writes 0
+
+# --- merge ------------------------------------------------------------------------
+
+# The one irreversible unattended write, and the only verb whose exit code says
+# anything beyond "it landed". Two things separate it from the other four:
+#
+#   - it goes through a **raw API call**, because `gh-axi pr merge` cannot carry
+#     an assertion about *which* commit is being merged, and that assertion is
+#     the whole safety property — the loop merges the commit it assessed, or it
+#     merges nothing;
+#   - its failure class crosses the process boundary as an **exit status**, so a
+#     human running the seam by hand reads the same answer the loop does.
+#
+# The two shas below are mnemonic and pairwise distinct on purpose: a read that
+# picked up the wrong one names itself in the failure output rather than
+# blending into forty characters of hex.
+ASSESSED_SHA=a55e55eda55e55eda55e55eda55e55eda55e55ed   # the commit the gate assessed
+MOVED_SHA=deadbeefdeadbeefdeadbeefdeadbeefdeadbeef      # a head that moved under it
+
+# check_merge_argv <sha> <method> — the **whole** recorded argv line, which is
+# the only assertion that fails on both a wrong commit and a wrong method. It
+# spells gh_json's own `--full --jq tojson|@base64` tail, and that coupling is
+# the point rather than a leak: what this suite is asked to pin is the exact
+# command the seam issued, and the tail is part of it.
+check_merge_argv() {
+  check "the merge call is exactly this argv line" \
+    test "$(cat "$STUB_CALLS")" = "gh-axi api PUT /repos/$REPO/pulls/12/merge --field sha=$1 --field merge_method=$2 --full --jq tojson|@base64"
+}
+
+# The guard that keeps the two twins below non-vacuous: were the shas ever
+# edited to the same value, every "carries the one it was given" assertion would
+# pass on either.
+setup "the merge fixtures make a wrong commit visible"
+check "the fixture shas are distinct" test "$ASSESSED_SHA" != "$MOVED_SHA"
+
+setup "merge is one raw API call carrying the commit and the method"
+run merge --repo "$REPO" --pr 12 --sha "$ASSESSED_SHA" --method squash
+check_status 0 "$STATUS"
+# A grep for the sha alone passes on a call that also sent the wrong method, and
+# a grep for the method alone passes on a call that merged the wrong commit;
+# only the line as a whole fails on either.
+check_merge_argv "$ASSESSED_SHA" squash
+check_writes 1
+# Not the subcommand: it has no way to say which commit.
+check_no_grep "pr merge" "$STUB_CALLS"
+check_no_grep "$MOVED_SHA" "$STUB_CALLS"
+check_grep '"merged":true' "$OUT"
+check_no_grep "pr-writeback:" "$OUT"
+# The outcome line names the commit and the method, because a human running the
+# seam by hand is owed on the pass what the two refusal lines tell them.
+check_grep "pr-writeback: merge: $REPO#12 at $ASSESSED_SHA by squash" "$ERR"
+
+# A mutant twin of the case above: identical but for the method, so the
+# whole-line assertion is shown to be sensitive to it rather than merely
+# satisfied by it.
+setup "the method reaches the call rather than being defaulted"
+run merge --repo "$REPO" --pr 12 --sha "$ASSESSED_SHA" --method rebase
+check_status 0 "$STATUS"
+check_merge_argv "$ASSESSED_SHA" rebase
+check_no_grep "merge_method=squash" "$STUB_CALLS"
+
+# And the same twin on the commit.
+setup "the assessed commit reaches the call rather than being defaulted"
+run merge --repo "$REPO" --pr 12 --sha "$MOVED_SHA" --method squash
+check_status 0 "$STATUS"
+check_merge_argv "$MOVED_SHA" squash
+check_no_grep "$ASSESSED_SHA" "$STUB_CALLS"
+
+# The one guard that survives into the seam. Omitting the commit is an argument
+# error, not a merge of whatever happens to be at the head — which is exactly
+# what `gh-axi pr merge` would have done.
+setup "the assessed commit is mandatory"
+run merge --repo "$REPO" --pr 12 --method squash
+check_status 1 "$STATUS"
+check_grep "merge needs --sha" "$ERR"
+check_writes 0
+
+setup "the merge method is mandatory too"
+run merge --repo "$REPO" --pr 12 --sha "$ASSESSED_SHA"
+check_status 1 "$STATUS"
+check_grep "merge needs --method" "$ERR"
+check_writes 0
+
+# A malformed commit would reach GitHub as a 422 and come back classified
+# `refused` — which is the loop's *"I said yes and reality disagreed"* signal.
+# A typo must never be able to impersonate that, so it is refused here.
+for bad in "" "${ASSESSED_SHA:0:7}" "${ASSESSED_SHA}0" "nought-but-hex-here-nought-but-hex-here0" HEAD; do
+  setup "a commit of '${bad:-<empty>}' is refused"
+  if [[ -z "$bad" ]]; then
+    # Trailing, so the flag genuinely has no value: given one mid-line it would
+    # swallow the next flag as its value, which every flag here does and which
+    # the argument loop refuses a step later all the same.
+    run merge --repo "$REPO" --pr 12 --method squash --sha
+    check_grep "--sha needs a value" "$ERR"
+  else
+    run merge --repo "$REPO" --pr 12 --sha "$bad" --method squash
+    check_grep "--sha must be a full 40-character commit" "$ERR"
+  fi
+  check_status 1 "$STATUS"
+  check_writes 0
+done
+
+# The same argument, for the same reason: a method GitHub has never heard of is
+# a 422 wearing a refusal's clothes.
+for bad in fast-forward SQUASH "squash " ""; do
+  setup "a merge method of '${bad:-<empty>}' is refused"
+  if [[ -z "$bad" ]]; then
+    run merge --repo "$REPO" --pr 12 --sha "$ASSESSED_SHA" --method
+    check_grep "--method needs a value" "$ERR"
+  else
+    run merge --repo "$REPO" --pr 12 --sha "$ASSESSED_SHA" --method "$bad"
+    check_grep "--method must be one of: merge squash rebase" "$ERR"
+  fi
+  check_status 1 "$STATUS"
+  check_writes 0
+done
+
+# The merge flags belong to the merge, and the other verbs' flags do not belong
+# to it.
+setup "no other verb takes the assessed commit"
+run comment --repo "$REPO" --pr 12 --sha "$ASSESSED_SHA"
+check_status 1 "$STATUS"
+check_grep "--sha is not a flag of comment" "$ERR"
+check_writes 0
+
+setup "no other verb takes the merge method"
+run label --repo "$REPO" --pr 12 --add agent-needs-review --method squash
+check_status 1 "$STATUS"
+check_grep "--method is not a flag of label" "$ERR"
+check_writes 0
+
+setup "merge takes no free text"
+printf 'body\n' > "$WORK/body.md"
+run merge --repo "$REPO" --pr 12 --sha "$ASSESSED_SHA" --method squash --body-file "$WORK/body.md"
+check_status 1 "$STATUS"
+check_grep "--body-file is not a flag of merge" "$ERR"
+check_writes 0
+
+setup "merge takes no label"
+run merge --repo "$REPO" --pr 12 --sha "$ASSESSED_SHA" --method squash --add agent-needs-review
+check_status 1 "$STATUS"
+check_grep "--add is not a flag of merge" "$ERR"
+check_writes 0
+
+# --- the exit-code contract ---------------------------------------------------------
+
+# The failure class the loop needs is *"GitHub said no"* versus *"the network
+# hiccuped"*, and it is decided by gh.sh's shared classifier rather than by a
+# second copy of the rule living here.
+#
+# These three renderings are not invented. They were measured against real
+# GitHub in T13 — a draft pull request, a conflicted merge, and a deliberately
+# wrong commit — and each keeps its `(HTTP nnn)` suffix, which is the only thing
+# the classifier can cut on. The wrong-commit one is the race with a human push,
+# and it escalating rather than retrying is the correct posture toward a person
+# touching the same branch.
+for injected in 405-draft 405-conflict 409-race; do
+  setup "a merge GitHub refused ($injected) exits 3"
+  export STUB_GH_FAIL=merge STUB_GH_ERROR="$injected"
+  run merge --repo "$REPO" --pr 12 --sha "$ASSESSED_SHA" --method squash
+  check_status 3 "$STATUS"
+  # Verbatim on stdout, because the escalation that reports this pastes it.
+  check_grep "$(sed -n '1p' "$FIXTURES/gh-error-$injected.txt")" "$OUT"
+  check_grep "code: UNKNOWN" "$OUT"
+  check_no_grep "pr-writeback:" "$OUT"
+  # The prose says the merge was refused and does not restate what GitHub said.
+  check_grep "pr-writeback:" "$ERR"
+  check_no_grep "HTTP 40" "$ERR"
+  check_writes 1
+done
+
+# The other class, and the first real test of the unbounded-transient posture:
+# nothing is recorded, nothing is retried here, and the poll interval is the
+# whole of the backoff.
+setup "a transient failure exits 4 and leaves no further state"
+export STUB_GH_FAIL=merge STUB_GH_ERROR=500
+run merge --repo "$REPO" --pr 12 --sha "$ASSESSED_SHA" --method squash
+check_status 4 "$STATUS"
+check_grep "HTTP 500" "$OUT"
+check_writes 1
+# The state directory is where the stub records a comment body or a close; a
+# merge never writes there, so anything in it would be some *other* verb's write
+# having followed this one.
+check "no other verb's write followed the failed merge" \
+  test -z "$(ls -A "$STUB_STATE")"
+check_no_grep "pr comment" "$STUB_CALLS"
+check_no_grep "pr edit" "$STUB_CALLS"
+
+# gh-axi's own failure — a rejected flag, a broken token — reaches the seam as
+# empty text, and empty text classifies transient. That is the honest answer: a
+# call that never rendered a response says nothing about the pull request, so
+# the only thing to do is ask again. Nothing is escalated on this path, which is
+# why an empty stdout costs nobody a paste.
+setup "a failure gh-axi never rendered is transient, not a refusal"
+export STUB_GH_FAIL=merge STUB_GH_ERROR=405-draft STUB_GH_STDERR=1
+run merge --repo "$REPO" --pr 12 --sha "$ASSESSED_SHA" --method squash
+check_status 4 "$STATUS"
+check_writes 1
+
+# The classes belong to the merge alone. Every other verb keeps the old two.
+setup "a refused comment is still exit 1, not 3"
+printf 'hello\n' > "$WORK/body.md"
+export STUB_GH_FAIL=pr-comment
+run comment --repo "$REPO" --pr 12 --body-file "$WORK/body.md"
+check_status 1 "$STATUS"
+
+setup "a refused label is still exit 1, not 3"
+export STUB_GH_FAIL=pr-edit
+run label --repo "$REPO" --pr 12 --add agent-needs-review
+check_status 1 "$STATUS"
+
+# 2 is left unused so it can never collide with gh-axi's own exit codes, which
+# the loop would otherwise have to tell apart from the seam's.
+# The behavioural half is in `run` above, on every invocation. This is the other
+# half: an `exit 2` sitting on a path this suite happens not to reach.
+setup "2 is never spelled as an exit code either"
+check_no_grep "exit 2" "$SCRIPT"
 
 # --- the arguments every verb takes -------------------------------------------------
 

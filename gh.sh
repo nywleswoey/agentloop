@@ -12,9 +12,13 @@
 # against real GitHub. One copy was fixed long after the other was written and
 # the stub suite could not see the difference. Hence one definition.
 #
-# `agent-loop.sh` is the only caller today. `pr-writeback.sh` had one when it
-# spoke GraphQL; those mutations are deleted, and it now reaches GitHub through
-# gh-axi's own subcommands, which need nothing from here.
+# Both `agent-loop.sh` and `pr-writeback.sh` source it. The writeback seam once
+# had a GraphQL caller here; those mutations are deleted, and four of its five
+# verbs now reach GitHub through gh-axi's own subcommands, which need nothing
+# from here. The fifth is the merge, which needs both halves of this file: the
+# raw API call, because no subcommand can carry an assertion about *which*
+# commit is being merged, and the classifier, because the merge is the one call
+# in the project whose failure the caller has to read a meaning off.
 #
 # Deliberately absent: `die`, `log`, `say`. Their prefixes and log-file
 # behaviour differ per script, and nothing here may call them — every function
