@@ -82,10 +82,10 @@ require_tools() {
 
 # --- gh-axi ------------------------------------------------------------------
 
-# `gh_json`, `gh_graphql` and `gh_error_class` live in gh.sh, which
-# pr-writeback.sh sources as well. They used to exist twice, once in each
-# script, and the copies drifted far enough apart that one of them had never
-# worked against real GitHub. One definition is what stops that recurring.
+# `gh_json`, `gh_graphql` and `gh_error_class` live in gh.sh. They used to exist
+# twice, once here and once in pr-writeback.sh, and the copies drifted far
+# enough apart that one of them had never worked against real GitHub. One
+# definition is what stops that recurring.
 # shellcheck source=gh.sh
 source "$SCRIPT_DIR/gh.sh"
 

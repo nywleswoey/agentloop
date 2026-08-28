@@ -33,10 +33,6 @@
 #                                when that fixture exists and from
 #                                threads-$STUB_THREADS.json (default: eligible)
 #                                otherwise
-#                              addPullRequestReviewThreadReply
-#                                a reply, answered with a comment body
-#                              resolveReviewThread
-#                                a resolve, answered with a thread body
 #   api /repos/<o>/<n>       repo resolution, only for repos listed in
 #                            repos.txt; anything else 404s like the real CLI
 #   api /repos/<o>/<n>/labels
@@ -48,6 +44,16 @@
 #   api /repos/.../issues/<number>/dependencies/blocked_by
 #                            the issue's blockers, from blocked-<number>.json
 #                            when that fixture exists and `[]` otherwise
+#   pr comment <number> --body <text>
+#                            a pull-request comment carrying a literal body —
+#                            the seam's own CodeRabbit commands, visible in the
+#                            recorded argv
+#   pr comment <number> --body-file <path>
+#                            a pull-request comment carrying free text; the file
+#                            is copied whole to $STUB_STATE/pr-body-<number>.txt
+#                            so a test can compare it byte for byte
+#   pr edit <number> --add-label <name>
+#                            a label add, recorded by its argv
 #   issue edit <number> --add-label / --remove-label
 #                            a label swap, recorded by its argv
 #   issue edit <number> --body-file <path>
@@ -59,17 +65,45 @@
 #   label create --name ...  the loop's own two labels
 #
 # $STUB_GH_FAIL names a command that must fail: "issues", "claim", "prs",
-# "merged", "issue", "body", "close", "threads", "reply", "resolve",
-# "blockers" or "labels".
+# "merged", "issue", "body", "close", "threads", "blockers", "labels",
+# "pr-comment" or "pr-edit". $STUB_GH_STDERR makes that failure gh-axi's own
+# rather than GitHub's — reported on stderr, with stdout left empty.
 
 set -uo pipefail
 
 printf 'gh-axi %s\n' "$*" >> "$STUB_CALLS"
 
+# A refusal from GitHub goes out on *stdout* as TOON and exits 1, which is what
+# gh-axi really does. The second argument is the rendering; the default is the
+# one the read handlers have always injected, and a caller passes a measured
+# shape instead when it has one.
+#
+# $STUB_GH_STDERR switches to gh-axi's *other* failure shape: a failure of its
+# own rather than GitHub's — a rejected flag, a broken token — which it reports
+# on stderr and leaves stdout empty. A caller that only forwards stdout emits
+# nothing at all in that case, so the two shapes have to be separable here.
 fail_if() {
   [[ "${STUB_GH_FAIL:-}" == "$1" ]] || return 0
-  printf 'error: "gh: HTTP 500"\ncode: HTTP_ERROR\n'
+  local text="${2:-}"
+  [[ -n "$text" ]] || text=$'error: "gh: HTTP 500"\ncode: HTTP_ERROR'
+  if [[ -n "${STUB_GH_STDERR:-}" ]]; then
+    printf '%s\n' "$text" >&2
+  else
+    printf '%s\n' "$text"
+  fi
   exit 1
+}
+
+# The value of a flag in the recorded argv, or empty when it is absent.
+flag_value() {
+  local want="$1" i j
+  shift
+  for (( i = 1; i <= $#; i++ )); do
+    [[ "${!i}" == "$want" ]] || continue
+    j=$((i + 1))
+    [[ "$j" -le "$#" ]] && printf '%s' "${!j}"
+    return 0
+  done
 }
 
 # Every read comes back the way `--jq 'tojson|@base64' --full` renders one.
@@ -89,6 +123,48 @@ if [[ "${1:-}" == "label" ]]; then
   [[ "${2:-}" == "create" ]] || { echo "stub gh-axi: unhandled label subcommand: ${2:-}" >&2; exit 1; }
   printf 'label:\n  created: true\n'
   exit 0
+fi
+
+if [[ "${1:-}" == "pr" ]]; then
+  number="${3:-}"
+  case "${2:-}" in
+    comment)
+      # Fail-closed on the far end's own rule: `gh-axi pr comment` requires
+      # exactly one of --body / --body-file, so a seam that sent neither, or
+      # both, would be well-formed argv and wrong at GitHub.
+      body=$(flag_value --body "$@")
+      file=$(flag_value --body-file "$@")
+      if [[ -n "$body" && -n "$file" ]]; then
+        echo "stub gh-axi: pr comment takes --body or --body-file, not both" >&2
+        exit 1
+      fi
+      if [[ -z "$body" && -z "$file" ]]; then
+        echo "stub gh-axi: pr comment needs --body or --body-file" >&2
+        exit 1
+      fi
+      fail_if pr-comment $'error: "gh: Not Found (HTTP 404)"\ncode: UNKNOWN'
+      if [[ -n "$file" ]]; then
+        # Copied whole so a test can compare it byte for byte rather than
+        # grepping the flattened argv — free text is exactly the thing the
+        # argv line cannot carry faithfully.
+        [[ -f "$file" ]] || { echo "stub gh-axi: no such --body-file: $file" >&2; exit 1; }
+        cp "$file" "$STUB_STATE/pr-body-$number.txt"
+      fi
+      printf 'comment:\n  pr: %s\n  created: true\n' "$number"
+      exit 0
+      ;;
+    edit)
+      [[ -n "$(flag_value --add-label "$@")" ]] \
+        || { echo "stub gh-axi: unhandled pr edit without --add-label" >&2; exit 1; }
+      fail_if pr-edit $'error: "gh: Not Found (HTTP 404)"\ncode: UNKNOWN'
+      printf 'pr:\n  number: %s\n  edited: true\n' "$number"
+      exit 0
+      ;;
+    *)
+      echo "stub gh-axi: unhandled pr subcommand: ${2:-}" >&2
+      exit 1
+      ;;
+  esac
 fi
 
 if [[ "${1:-}" == "issue" ]]; then
@@ -163,14 +239,6 @@ if [[ "$path" == "graphql" || "$path" == "/graphql" ]]; then
     done
   fi
   case "$query" in
-    *addPullRequestReviewThreadReply*)
-      fail_if reply
-      emit '{"data":{"addPullRequestReviewThreadReply":{"comment":{"databaseId":990001}}}}'
-      ;;
-    *resolveReviewThread*)
-      fail_if resolve
-      emit '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}'
-      ;;
     *reviewThreads*)
       fail_if threads
       number=$(sed -n 's/.*pullRequest(number: \([0-9]*\)).*/\1/p' <<< "$query")

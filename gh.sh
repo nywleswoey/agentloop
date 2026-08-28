@@ -4,13 +4,17 @@
 #
 # The GitHub seam. Sourced, never run.
 #
-# One definition of every call `agent-loop.sh` and `pr-writeback.sh` make
-# against GitHub, plus the rule that decides whether a failed one is worth
-# trying again. It lived twice before — once in each script — and the copies
-# drifted: the writeback copy posted to the wrong GraphQL path, so its two
-# mutations arrived with null variables and never once succeeded against real
-# GitHub. One copy was fixed long after the other was written and the stub
-# suite could not see the difference. Hence one definition.
+# One definition of every call this project makes against GitHub through the
+# API, plus the rule that decides whether a failed one is worth trying again. It
+# lived twice before — once in `agent-loop.sh` and once in `pr-writeback.sh` —
+# and the copies drifted: the writeback copy posted to the wrong GraphQL path,
+# so its two mutations arrived with null variables and never once succeeded
+# against real GitHub. One copy was fixed long after the other was written and
+# the stub suite could not see the difference. Hence one definition.
+#
+# `agent-loop.sh` is the only caller today. `pr-writeback.sh` had one when it
+# spoke GraphQL; those mutations are deleted, and it now reaches GitHub through
+# gh-axi's own subcommands, which need nothing from here.
 #
 # Deliberately absent: `die`, `log`, `say`. Their prefixes and log-file
 # behaviour differ per script, and nothing here may call them — every function
