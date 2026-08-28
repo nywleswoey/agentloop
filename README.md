@@ -12,7 +12,7 @@ Each pass, in order:
 
 1. **Close-out** — an issue whose pull request has merged gets its checklist ticked, its description updated, its claim label removed, and the issue closed.
 2. **Issues** — queries each project for open issues labelled `ready-for-agent`, skips ones with an open blocker, swaps the label to `agent-in-progress`, and dispatches an Orca worker into a fresh worktree.
-3. **Pull requests** — enumerates every open pull request in each project except drafts and fork heads, derives its state from GitHub alone, logs one line per pull request, comments `@coderabbitai autofix` at the ones carrying unresolved findings, and hands over the ones it will not act on. It spends no worker and no worktree, and it keeps no local state: every pass re-derives from a fresh read.
+3. **Pull requests** — enumerates every open pull request in each project except drafts and fork heads, derives its state from GitHub alone, logs one line per pull request, comments `@coderabbitai autofix` at the ones carrying unresolved findings, runs the risk gate over the ones that are ready to judge, and hands over the ones it will not act on. It spends no worker and no worktree, and it keeps no local state: every pass re-derives from a fresh read.
 4. **Sweep** — removes the loop's own finished worktrees.
 
 Between passes it sleeps for `pollIntervalSeconds`.
@@ -24,6 +24,14 @@ Between passes it sleeps for `pollIntervalSeconds`.
 - **PID lock** — one loop per machine.
 - **Startup reclaim** — an issue left claimed with no live worker (crash, failed dispatch) is handed back to `ready-for-agent` when the loop next starts.
 - **Once per head commit** — the autofix trigger records its input head, and the matching autofix-status comment spends that head. Reviews are metered, and a poll loop that re-fired every pass would burn that budget; generated output commits and failure prose are never used as the input identity.
+- **The risk gate** — a pull request that is ready to judge goes through four independent vetoes over its head commit, and there are three outcomes. **CodeRabbit's verdict is a necessary input, not the verdict**: the reviewer judges the code, the loop judges blast radius and merge mechanics, and each holds a veto.
+  - **V1 — CodeRabbit's verdict.** Its merge-risk block must name a commit abbreviation that is a prefix of the head, and put the level at exactly *minimal*. An unrecognised level, an unparseable line or a stale commit all escalate — the tripwire for CodeRabbit changing shape.
+  - **V2 — checks.** *Every* rollup context green, not just the required ones: with no branch protection, required-ness is always false, so a required-only rule would leave no check able to block a merge. A check that has not reported yet defers rather than blocking; one that ran and declined to judge — skipped or neutral — counts as green, which is what GitHub itself says about the same commit.
+  - **V3 — mergeability.** GitHub must report the pull request both mergeable *and* clean; `mergeable` alone is true of the unstable and blocked states too. A branch that is **behind is never updated** — that write would move the head, void the verdict just validated, and spend metered review budget re-reviewing it.
+  - **V4 — blast radius.** Any change under `.github/workflows/`, or to `agent-loop.sh`, `pr-writeback.sh` or `gh.sh`, escalates. The principle is *never minimal if merging it changes what runs unattended*. There is **no diff-size ceiling** — a big change is not a risky one. A pull request touching more than 100 files escalates all the same, on the different ground that the read carries one page and merging on a file list known to be partial would let exactly the change this veto looks for slip past the page boundary.
+  - **V5 — the clock.** `defer` is the third outcome and is not a failure: a check still running, or a mergeability GitHub has not finished computing, is re-derived next pass in silence. `mergeGateTimeoutSeconds` from the head commit's date is what stops that being forever. A pull request whose review is merely rate-limited defers too — ahead of every veto, and exempt from that clock, because the rate limit self-clears on its own.
+
+  All four vetoes evaluate — nothing short-circuits — and **escalate beats defer**, so one handover carries every reason, the ones that passed included. The gate **never reads the pull request's reviews** and **never parses CodeRabbit's pre-merge checks**. It does not yet merge: a `merge` verdict is logged and nothing else.
 - **Escalation is a handover, not a notification** — the loop acts as the operator's own account, and GitHub never notifies you of your own actions, so no arrangement of writes can push one. A pull request the loop will not act on gets a comment carrying every reason and the raw values behind it, then the `agent-escalated` label, in that order — the record first, so a missing flag is re-added on a later pass without the record being posted twice. Once escalated at a head commit the loop takes **no further action on that pull request at that commit**. The three ways back in are the ones GitHub already gives you: merge it by hand, push a commit, or convert it to draft. There is no override label; a push is both the fix and the re-engagement.
 - **Log rotation** — one generation, capped at 5 MiB. A loop left running for weeks must not fill the disk.
 
@@ -31,7 +39,7 @@ Between passes it sleeps for `pollIntervalSeconds`.
 
 The PR phase triages GitHub state without a worker or worktree and sends each selected action through `pr-writeback.sh`. It creates no local fix commits, worker plans, or plan-confirmation step.
 
-`pr-writeback.sh` is the **only** thing that writes to a pull request: it posts CodeRabbit commands, comments and labels, and performs guarded merges.
+`pr-writeback.sh` is the **only** thing that writes to a pull request: it posts CodeRabbit commands, comments and labels, and performs guarded merges. Nothing in the loop calls its merge verb yet.
 
 ---
 
@@ -70,6 +78,7 @@ Then edit `agent-loop.config.json`:
   "pollIntervalSeconds": 300,
   "maxWorkers": 3,
   "autofixTimeoutSeconds": 5400,
+  "mergeGateTimeoutSeconds": 3600,
   "logPath": "~/.agent-loop/agent-loop.log",
   "labels": {
     "ready": "ready-for-agent",
@@ -89,6 +98,7 @@ Then edit `agent-loop.config.json`:
 | `pollIntervalSeconds` | Sleep between passes. |
 | `maxWorkers` | Hard cap on live workers across all projects. Governs **issue dispatch only** — the PR phase spends no worker. |
 | `autofixTimeoutSeconds` | How long a triggered autofix has to report before the loop calls it stalled. **Required; nothing defaults it.** An admitted guess: the only measurement behind it is a single 17m 35s run, which the research explicitly declined to derive a timeout from. |
+| `mergeGateTimeoutSeconds` | How long the risk gate will keep deferring a pull request whose signals are not computed yet, measured from the head commit's date. **Required; nothing defaults it.** An admitted guess with **no sample at all** behind this use of it — the only measurements anywhere near it are a four-second and a hundred-and-five-second review window, which is a different wait. |
 | `logPath` | Append-only log. Rotated at 5 MiB, one generation kept. |
 | `labels.ready` | Label the loop picks issues up by. |
 | `labels.claimed` | Label the loop swaps in once it claims an issue. |

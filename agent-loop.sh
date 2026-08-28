@@ -11,8 +11,10 @@
 # at them, the worktree inventory, which answers who holds a branch and reclaims
 # stale claims at startup, the PR phase, which is a reducer rather than a
 # dispatcher: it enumerates every open pull request in every configured
-# repository, derives that pull request's state from GitHub alone, logs it, and
-# asks CodeRabbit to fix its own findings, the close-out phase, which ticks,
+# repository, derives that pull request's state from GitHub alone, logs it,
+# asks CodeRabbit to fix its own findings, and puts the ones that are ready to
+# judge through the risk gate — four vetoes over one head commit, three
+# outcomes, and no merge yet, the close-out phase, which ticks,
 # closes and unclaims an issue once its pull request has merged, and the sweep,
 # which removes the loop's own finished worktrees at the end of every pass.
 #
@@ -39,10 +41,10 @@ ONCE=false
 BRANCH_REPORT=""
 LOG_PATH=""
 
-# What the PR phase recognises on GitHub. All four are CodeRabbit's surface
-# rather than the loop's, and all four are undocumented HTML markers or product
-# strings, so they are spelled once, here, where a change to any of them is one
-# edit.
+# What the PR phase recognises on GitHub. Every constant in this stanza is
+# CodeRabbit's surface rather than the loop's, and every one of them is an
+# undocumented HTML marker or product string, so they are spelled once, here,
+# where a change to any of them is one edit.
 #
 # The autofix trigger is spelled a second time in pr-writeback.sh, and the two
 # copies are not a duplication to collapse. The seam owns what is *written* —
@@ -53,6 +55,52 @@ LOG_PATH=""
 # fire a second run on top of it.
 AUTOFIX_TRIGGER='@coderabbitai autofix'
 AUTOFIX_STATUS_MARKER='<!-- This is an auto-generated comment: autofix status by CodeRabbit -->'
+# The walkthrough comment, and the two things the risk gate reads out of it.
+#
+# The walkthrough is the comment CodeRabbit *edits* rather than replaces, which
+# is why both of the gate's reads live in one body and why freshness anywhere
+# near it is the **updated** timestamp: observed gaps of five and seven days sit
+# between a walkthrough's creation and the edit that carries today's verdict.
+#
+# The rate-limit marker is tested **every pass regardless of timestamp**, and
+# ahead of every veto. It arrives by that same edit, so there is no timestamp
+# that could gate the test without missing it; and a throttled pull request
+# keeps a *stale* verdict, which V1 would read as CodeRabbit changing shape and
+# hand over permanently. The rate limit self-clears as usage ages out, so the
+# defer it produces is the one thing in the gate exempt from the gate clock.
+WALKTHROUGH_MARKER='<!-- This is an auto-generated comment: summarize by coderabbit.ai -->'
+RATE_LIMIT_MARKER='<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->'
+# The merge-risk verdict, delimited inside the walkthrough. Its shape is
+# `**Merge Risk:** _<emoji> <Level>_ · up to \`<abbrev>\`` — and the abbreviation
+# is **five** characters on every capture taken, not the seven the prose around
+# this feature says, which is exactly why the test is a prefix test rather than
+# a length-sensitive one.
+RISK_BLOCK_MARKER='<!-- final_review_risk_start -->'
+
+# The risk gate's own policy — the loop's, not CodeRabbit's. These say what the
+# loop will and will not merge unattended, and unlike everything above them a
+# change here is a change of mind rather than a change of surface.
+#
+# The only level that clears V1. There is no documented ladder — searches across
+# CodeRabbit's own documentation found the feature described nowhere at all — so
+# an ordering cannot be assumed and anything that is not exactly this escalates.
+RISK_LEVEL_MINIMAL='minimal'
+# V4's blast radius: never minimal if merging it changes what runs unattended.
+# The CI directory because a workflow is what runs on the next push, and these
+# three files because they *are* the unattended machine — `gh.sh` included, which
+# the ticket's "either of the loop's own scripts" predates: it is sourced by both
+# and a change to it changes what both do.
+#
+# Matched on the repository-relative path, so a repository that happens to carry
+# a file of the same name at its root escalates too. That is the safe direction,
+# and the loop's own repository is deliberately in scope like any other with
+# this guard doing the protecting instead of an exclusion.
+#
+# A comma-joined string rather than an array because it crosses into jq, which
+# splits it back; a bash array cannot make that trip without being rebuilt as
+# JSON on every call.
+CI_WORKFLOW_DIR='.github/workflows/'
+UNATTENDED_SCRIPTS='agent-loop.sh,pr-writeback.sh,gh.sh'
 # The legacy commit-status context. Measured: on this account CodeRabbit reports
 # review progress through the legacy status API and emits *zero* check runs,
 # while its own changelog says check runs are now the default surface. So both
@@ -206,6 +254,7 @@ load_config() {
   POLL_INTERVAL=$(jq -r '.pollIntervalSeconds // empty' "$CONFIG_PATH")
   MAX_WORKERS=$(jq -r '.maxWorkers // empty' "$CONFIG_PATH")
   AUTOFIX_TIMEOUT=$(jq -r '.autofixTimeoutSeconds // empty' "$CONFIG_PATH")
+  MERGE_GATE_TIMEOUT=$(jq -r '.mergeGateTimeoutSeconds // empty' "$CONFIG_PATH")
   LABEL_READY=$(jq -r '.labels.ready // empty' "$CONFIG_PATH")
   LABEL_CLAIMED=$(jq -r '.labels.claimed // empty' "$CONFIG_PATH")
   PROJECT_COUNT=$(jq -r '.projects | length' "$CONFIG_PATH" 2>/dev/null || echo 0)
@@ -217,6 +266,10 @@ load_config() {
   # admitted guess off a single seventeen-minute sample, so defaulting it would
   # add the file's first default *and* hide the guess behind it.
   require_positive_int autofixTimeoutSeconds "$AUTOFIX_TIMEOUT"
+  # Required for the same reason, and on thinner evidence still: this key bounds
+  # the risk gate's `defer`, and there is **no sample at all** behind that use of
+  # it. A default here would be a guess wearing a number's clothes.
+  require_positive_int mergeGateTimeoutSeconds "$MERGE_GATE_TIMEOUT"
   require_field labels.ready "$LABEL_READY"
   require_field labels.claimed "$LABEL_CLAIMED"
   [[ "$PROJECT_COUNT" -gt 0 ]] || die "config lists no projects: $CONFIG_PATH"
@@ -918,6 +971,17 @@ query_repo_open_prs() {
 # `commits(last: 1)` is the head; `comments(last: 100)` is the *newest* hundred,
 # which is the end of the timeline the freshness tests ask about.
 #
+# `mergeable` and `mergeStateStatus` are the risk gate's V3, and they are two
+# fields rather than one because `mergeable: MERGEABLE` is *also* true of the
+# unstable and blocked states — the two a naive mergeability test gets wrong.
+# Both are computed lazily and both can come back `UNKNOWN` on a first read,
+# with no documented retry contract anywhere; that is what `defer` is for.
+#
+# `files` is V4's blast radius. `totalCount` is fetched alongside the page so a
+# pull request with more than a hundred files is *known* to be truncated rather
+# than read as a short list — a workflow change hiding past the page boundary is
+# precisely the thing this veto exists to catch, so truncation escalates.
+#
 # ponytail: that window changed job with the handover and the change is worth
 # naming. Every other test over it is a *freshness* test — newest-first, so a
 # hundred is always enough — but the escalation marker is an *existence* test,
@@ -932,7 +996,7 @@ query_repo_open_prs() {
 # today's derivation happens to use would couple them silently to it.
 query_pr_state() {
   local github="$1" number="$2" owner="${1%%/*}" name="${1##*/}" response
-  response=$(gh_graphql "{ repository(owner: \"$owner\", name: \"$name\") { pullRequest(number: $number) { number headRefOid commits(last: 1) { nodes { commit { oid committedDate statusCheckRollup { state contexts(first: 100) { nodes { __typename ... on StatusContext { context state description createdAt creator { login } } ... on CheckRun { name status conclusion startedAt completedAt checkSuite { app { slug } } } } } } } } } reviewThreads(first: 100) { nodes { id isResolved isOutdated path line comments(first: 100) { nodes { databaseId createdAt author { login } } } } } comments(last: 100) { nodes { databaseId createdAt updatedAt body author { login } } } } } }") || return 1
+  response=$(gh_graphql "{ repository(owner: \"$owner\", name: \"$name\") { pullRequest(number: $number) { number headRefOid mergeable mergeStateStatus files(first: 100) { totalCount nodes { path } } commits(last: 1) { nodes { commit { oid committedDate statusCheckRollup { state contexts(first: 100) { nodes { __typename ... on StatusContext { context state description createdAt creator { login } } ... on CheckRun { name status conclusion startedAt completedAt checkSuite { app { slug } } } } } } } } } reviewThreads(first: 100) { nodes { id isResolved isOutdated path line comments(first: 100) { nodes { databaseId createdAt author { login } } } } } comments(last: 100) { nodes { databaseId createdAt updatedAt body author { login } } } } } }") || return 1
   jq -e '.data.repository.pullRequest != null' <<< "$response" >/dev/null 2>&1 || return 1
   printf '%s' "$response"
 }
@@ -1218,9 +1282,340 @@ escalate() {
   return 0
 }
 
+# --- the risk gate ------------------------------------------------------------
+#
+# Four vetoes over one head commit, and three outcomes: `merge`, `escalate` and
+# `defer`. The division of labour is the thing to hold on to — **CodeRabbit's
+# verdict is a necessary input, not the verdict.** The reviewer judges the code;
+# the loop judges blast radius and merge mechanics; each holds a veto. That is
+# forced rather than chosen: the gate never reads thread resolution, because
+# autofix does not resolve what it fixes, so the rubric cannot lean on "threads
+# are clean" as a proxy for "concerns addressed".
+#
+# `defer` is the third outcome and it is not a failure. A signal that is simply
+# **not computed yet** — a check still running, a mergeability GitHub has not
+# finished calculating — is re-derived next pass in silence, because an unknown
+# mergeability state is routine and has no documented retry contract to follow.
+# What stops that being forever is the clock, V5.
+#
+# **All four vetoes evaluate — no short-circuit — and escalate beats defer.**
+# One message carries every reason, the passes as well as the failures: an
+# operator reading a handover needs to know where *not* to look as much as where
+# to.
+
+# Everything the gate runs on, one value per line, in the order the reader below
+# takes them. Same protocol as pr_facts and for the same reason: several of
+# these are routinely empty, and `read` folding a run of tabs would silently
+# shift one field into another's slot.
+#
+#   limited      the walkthrough carries the rate-limit marker
+#   level        the merge-risk level, letters only and lowercased
+#   abbrev       the commit abbreviation the verdict was computed for
+#   block        parsed | unparseable | absent
+#   mergeable    GitHub's conflict axis
+#   mergestate   GitHub's everything-else axis
+#   green/pending/failed/total   the rollup, counted by verdict
+#   pendingnames the contexts that have not reported
+#   failednames  the contexts that reported badly, with what they said
+#   files        how many files the pull request touches
+#   truncated    more files than the page carries, so the list is not the whole
+#   guarded      the touched paths V4 refuses to merge unattended
+#
+# **Required-ness is not read, and its absence from the query is the proof.**
+# It is structurally always false once repository protection is out of scope, so
+# a gate that only looked at required checks would have no check that could ever
+# block a merge.
+#
+# **Pre-merge checks are not read either.** They are computed from the same
+# review as the merge-risk verdict, they measure hygiene rather than merge risk,
+# and the verdict subsumes them — so this parses no part of that block.
+gate_facts() {
+  jq -r \
+    --arg crlogin "$CODERABBIT_LOGIN" \
+    --arg walkthrough "$WALKTHROUGH_MARKER" \
+    --arg ratelimit "$RATE_LIMIT_MARKER" \
+    --arg riskstart "$RISK_BLOCK_MARKER" \
+    --arg workflows "$CI_WORKFLOW_DIR" \
+    --arg scripts "$UNATTENDED_SCRIPTS" '
+    def is_coderabbit: (. // "") | ascii_downcase | startswith($crlogin);
+    # A newline or a tab inside a value would reshape the one-value-per-line
+    # protocol at the bottom of this program into a *different* set of values
+    # rather than corrupt one visibly — the one failure a machine-read record
+    # must not have. Nothing GitHub allows in a check name or a path produces
+    # either today; this is what keeps that true when something does.
+    def flat: (. // "") | gsub("[\n\t]"; " ");
+    .data.repository.pullRequest as $pr
+    | ($pr.commits.nodes[-1].commit // {}) as $head
+    # The walkthrough, newest by its **updated** timestamp. CodeRabbit delivers
+    # by editing what it already posted, so the created one can be a week stale.
+    | ([ $pr.comments.nodes[]?
+         | select(.author.login | is_coderabbit)
+         | select((.body // "") | contains($walkthrough)) ]
+       | max_by(.updatedAt // "")) as $walk
+    | ($walk.body // "") as $body
+    # capture emits nothing on no match, so it is collected into an array first:
+    # bound bare, an unparseable block would make this whole program produce no
+    # output at all rather than say the block was unparseable.
+    | ([ $body | capture("final_review_risk_start -->\\s*\\*\\*Merge Risk:\\*\\*\\s*_(?<level>[^_]+)_\\s*·\\s*up to `(?<abbrev>[0-9a-fA-F]+)`") ]
+       | .[0]) as $risk
+    | [ $head.statusCheckRollup.contexts.nodes[]?
+        | if .__typename == "StatusContext" then
+            ((.state // "") | ascii_upcase) as $s
+            | { name: (.context // "?"), raw: $s,
+                verdict: (if $s == "SUCCESS" then "green"
+                          elif $s | IN("PENDING","EXPECTED") then "pending"
+                          else "failed" end) }
+          elif .__typename == "CheckRun" then
+            ((.status // "") | ascii_upcase) as $s
+            | ((.conclusion // "") | ascii_upcase) as $c
+            | { name: (.name // "?"), raw: ($s + "/" + (if $c == "" then "none" else $c end)),
+                # Neutral and skipped are green: a check that ran and declined to
+                # judge has not failed, and a required-looking name is not read.
+                verdict: (if $s != "COMPLETED" then "pending"
+                          elif $c | IN("SUCCESS","NEUTRAL","SKIPPED") then "green"
+                          else "failed" end) }
+          else empty end ] as $checks
+    | [ $pr.files.nodes[]?.path | select(. != null) ] as $paths
+    | ($pr.files.totalCount // 0) as $filecount
+    | ($scripts | split(",")) as $guardedfiles
+    | [ $paths[] | select(startswith($workflows) or IN($guardedfiles[])) | flat ] as $guarded
+    | [ (($body | contains($ratelimit)) | tostring),
+        (if $risk then ($risk.level | ascii_downcase | gsub("[^a-z]"; "")) else "" end),
+        (($risk.abbrev // "") | ascii_downcase),
+        (if ($body | contains($riskstart)) then (if $risk then "parsed" else "unparseable" end) else "absent" end),
+        (($pr.mergeable // "") | ascii_upcase),
+        (($pr.mergeStateStatus // "") | ascii_upcase),
+        ([ $checks[] | select(.verdict == "green") ] | length | tostring),
+        ([ $checks[] | select(.verdict == "pending") ] | length | tostring),
+        ([ $checks[] | select(.verdict == "failed") ] | length | tostring),
+        ($checks | length | tostring),
+        ([ $checks[] | select(.verdict == "pending") | (.name | flat) ] | join(",")),
+        ([ $checks[] | select(.verdict == "failed") | "\(.name | flat)=\(.raw | flat)" ] | join(",")),
+        ($filecount | tostring),
+        (($filecount > ($paths | length)) | tostring),
+        ($guarded | join(",")) ]
+    | .[]'
+}
+
+# The gate's answer, left in globals because it is three things — a verdict, the
+# log line's tail, and the rows a handover would carry — and a command
+# substitution would strip the array back to a string.
+GATE_VERDICT=""
+GATE_KIND=""
+GATE_KV=""
+GATE_REASONS=()
+
+# risk_gate <head> <headDate> <headEpoch> <now> <response> — leaves its verdict
+# in the globals above, and returns non-zero when the read it runs on could not
+# be made sense of.
+risk_gate() {
+  local head="$1" head_date="$2" head_epoch="$3" now="$4" response="$5"
+  local limited=false level="" abbrev="" block="" mergeable="" mergestate=""
+  local green=0 pending=0 failed=0 total=0 pendingnames="" failednames=""
+  local filecount=0 truncated=false guarded=""
+  local v1 v2 v3 v4 age clock="" deferred=false expired=false
+
+  GATE_VERDICT=defer
+  GATE_KIND=""
+  GATE_KV=""
+  GATE_REASONS=()
+
+  # Either all fifteen values arrive or the gate does not judge at all.
+  #
+  # Failing closed here would mean failing closed to a **write**: with every
+  # value empty, V1 sees no verdict and escalates, so a jq that hiccuped would
+  # post a handover on a pull request nothing is wrong with — and a handover is
+  # never retried, so that mistake would stick until the head moved. A read that
+  # cannot be made sense of is the same event as the unreadable state above, and
+  # gets the same answer: say so, skip, re-derive next pass.
+  #
+  # The last `read` is the one tested because it is the only one that can tell a
+  # short answer from a complete one; `|| true` on the block keeps `set -e` from
+  # taking the whole daemon down over one pull request.
+  #
+  # ponytail: no test reaches this. The suite's only seam is the stub CLIs, and
+  # every answer they can give is JSON this program has already been through
+  # once as `pr_facts` — so a short read is not reachable from outside the
+  # script, and the only way to test it would be a seam that exists for the
+  # test. It stays because the failure it prevents is a write.
+  local complete=false
+  {
+    read -r limited
+    read -r level
+    read -r abbrev
+    read -r block
+    read -r mergeable
+    read -r mergestate
+    read -r green
+    read -r pending
+    read -r failed
+    read -r total
+    read -r pendingnames
+    read -r failednames
+    read -r filecount
+    read -r truncated
+    read -r guarded && complete=true
+  } < <(gate_facts <<< "$response") || true
+  $complete || return 1
+
+  # **Ahead of every veto, and every pass regardless of timestamp.** A
+  # rate-limited pull request keeps a stale verdict; V1 would catch that
+  # staleness and route it to a handover, turning a transient throttle into a
+  # permanent one — and throttling would then escalate the whole queue whenever
+  # the reviewer is merely slow. So this defers, and it is the one defer the
+  # gate clock does not bound: the comment ships its own estimate, and unlike a
+  # review pause the rate limit self-clears as usage ages out.
+  if [[ "$limited" == "true" ]]; then
+    GATE_VERDICT=defer
+    GATE_KV="verdict=defer gate=rate-limited"
+    return 0
+  fi
+
+  # V1 — CodeRabbit's verdict. The abbreviation must be a **prefix of the head**,
+  # which is what scopes the verdict to the code being merged, and the level
+  # exactly minimal. Anything else escalates: an unrecognised level, an
+  # unparseable line, a block that is not there. There is no documented ladder of
+  # levels to order, so this is the tripwire for CodeRabbit changing shape.
+  #
+  # ponytail: a missing block escalates here, and it should not for long. #32
+  # makes *no merge-risk block anywhere on the pull request* one of the two
+  # routes into `unreviewed`, which is nudged and bounded before the gate is ever
+  # reached — so the tripwire goes back to meaning only *CodeRabbit changed
+  # shape*, rather than also firing where CodeRabbit behaved as documented.
+  if [[ "$block" == "parsed" && "$level" == "$RISK_LEVEL_MINIMAL" \
+        && -n "$abbrev" && "$head" == "$abbrev"* ]]; then
+    v1=ok
+    GATE_REASONS+=("$(reason ok "CodeRabbit puts merge risk at minimal for this commit" \
+      "level=$level abbrev=$abbrev head=$head")")
+  else
+    v1=no
+    GATE_REASONS+=("$(reason no "CodeRabbit's merge-risk verdict does not clear this commit" \
+      "block=${block:-unreadable} level=${level:-none} abbrev=${abbrev:-none} head=$head")")
+  fi
+
+  # V2 — checks. **Every** rollup context, not just the required ones. A failure
+  # is a veto; a context that has not reported yet is undecided rather than bad,
+  # and so is a rollup with nothing in it at all.
+  #
+  # An empty rollup is not reachable from here today — the review that has to be
+  # terminal to get this far is itself read off the rollup — but it is spelled
+  # out rather than left to fall through, because GitHub reports "a check is
+  # running" and "there are no checks" with the same rollup state, and reading
+  # the empty case as green is how a gate merges an unchecked commit.
+  if (( failed > 0 )); then
+    v2=no
+    GATE_REASONS+=("$(reason no "a status check on this commit is not green" \
+      "green=$green pending=$pending failed=$failed total=$total failing=$failednames")")
+  elif (( pending > 0 || total == 0 )); then
+    v2=defer
+    GATE_REASONS+=("$(reason defer "a status check on this commit has not reported yet" \
+      "green=$green pending=$pending failed=$failed total=$total waiting=${pendingnames:-none}")")
+  else
+    v2=ok
+    GATE_REASONS+=("$(reason ok "every status check on this commit is green" \
+      "green=$green pending=$pending failed=$failed total=$total")")
+  fi
+
+  # V3 — mergeability. Both axes, because `mergeable` alone is true of the
+  # unstable and blocked states too. `UNKNOWN` on either is GitHub still
+  # calculating, which is a defer and not a verdict — a gate that read it as
+  # "no conflicts detected" would merge conflicted pull requests.
+  #
+  # **A branch that is behind is never updated.** That write would move the head,
+  # void the verdict just validated, and spend metered review budget re-reviewing
+  # what was already reviewed. It escalates instead.
+  if [[ "$mergeable" == "MERGEABLE" && "$mergestate" == "CLEAN" ]]; then
+    v3=ok
+    GATE_REASONS+=("$(reason ok "GitHub reports this pull request mergeable and clean" \
+      "mergeable=$mergeable state=$mergestate")")
+  elif [[ -z "$mergeable" || -z "$mergestate" || "$mergeable" == "UNKNOWN" || "$mergestate" == "UNKNOWN" ]]; then
+    v3=defer
+    GATE_REASONS+=("$(reason defer "GitHub has not finished computing mergeability" \
+      "mergeable=${mergeable:-none} state=${mergestate:-none}")")
+  else
+    v3=no
+    GATE_REASONS+=("$(reason no "GitHub does not report this pull request both mergeable and clean" \
+      "mergeable=$mergeable state=$mergestate")")
+  fi
+
+  # V4 — blast radius. *Never minimal if merging it changes what runs
+  # unattended.* There is deliberately **no diff-size ceiling**: a big change is
+  # not a risky one, and a number saying otherwise would be unmeasured with an
+  # asymmetric failure mode. Ninety files that touch nothing unattended merge.
+  #
+  # A file list longer than the page the read carries escalates, and that is a
+  # different claim: not *this change is too big* but *this veto could not see*.
+  # Merging on a list known to be partial would let a workflow change past the
+  # page boundary through — the one thing the veto exists to stop — so the
+  # unknown fails the way every other unknown here does.
+  #
+  # ponytail: it is still a hundred-file cliff an operator will experience as a
+  # ceiling. Page the file connection until it is exhausted or a guarded path
+  # turns up, and the cliff goes away along with this branch.
+  if [[ "$truncated" == "true" ]]; then
+    v4=no
+    GATE_REASONS+=("$(reason no "the changed-file list is longer than one page, so the blast radius is unknown" \
+      "files=$filecount listed=100")")
+  elif [[ -n "$guarded" ]]; then
+    v4=no
+    GATE_REASONS+=("$(reason no "this pull request changes what runs unattended" \
+      "files=$filecount guarded=$guarded")")
+  else
+    v4=ok
+    GATE_REASONS+=("$(reason ok "nothing here changes what runs unattended" \
+      "files=$filecount guarded=none")")
+  fi
+
+  if [[ "$v2" == "defer" || "$v3" == "defer" ]]; then deferred=true; fi
+
+  # V5 — the clock, and it only exists because a `defer` is silent. It runs from
+  # the head commit's date, so no pull request can sit undecided forever.
+  #
+  # Whether it has run out is decided **once**, here, and read twice below: the
+  # row the handover carries and the verdict the loop acts on must never be able
+  # to disagree about what the clock said.
+  age=$(( now - head_epoch ))
+  if (( age > MERGE_GATE_TIMEOUT )); then expired=true; fi
+  if $deferred; then
+    clock=" age=$age bound=$MERGE_GATE_TIMEOUT"
+    if $expired; then
+      GATE_REASONS+=("$(reason no "a signal is still undecided past the gate clock" \
+        "age=${age}s bound=${MERGE_GATE_TIMEOUT}s head=$head_date")")
+    else
+      GATE_REASONS+=("$(reason defer "the gate clock has not run out yet" \
+        "age=${age}s bound=${MERGE_GATE_TIMEOUT}s head=$head_date")")
+    fi
+  fi
+
+  # **Escalate beats defer**, and a veto beats the clock: a pull request with
+  # both a veto and an undecided signal is a handover about the veto, because
+  # that is the one the operator can do something about.
+  if [[ "$v1" == "no" || "$v2" == "no" || "$v3" == "no" || "$v4" == "no" ]]; then
+    GATE_VERDICT=escalate
+    GATE_KIND=escalate
+  elif $deferred; then
+    if $expired; then
+      GATE_VERDICT=escalate
+      # `stuck`, not `escalate`: nothing here said no, the signals simply never
+      # arrived, and the kind is what tells the operator to go and look at the
+      # checks rather than at the diff.
+      GATE_KIND=stuck
+    else
+      GATE_VERDICT=defer
+    fi
+  else
+    GATE_VERDICT=merge
+  fi
+
+  # `mergeability`, not `mergeable`: this is V3's *outcome*, and the raw
+  # `mergeable=MERGEABLE` GitHub answered with travels in the handover's table.
+  # One name for two different things is how a reader learns the wrong one.
+  GATE_KV="verdict=$GATE_VERDICT risk=$v1 checks=$v2 mergeability=$v3 blast=$v4$clock"
+}
+
 # Run the PR phase for all configured projects. Enumerates open pull requests,
-# derives state from GitHub, logs it, and triggers CodeRabbit autofix or
-# escalates when appropriate.
+# derives state from GitHub, logs it, triggers CodeRabbit autofix, runs the risk
+# gate over what is assessable, and escalates when appropriate.
 pr_phase() {
   local i github
   for (( i = 0; i < PROJECT_COUNT; i++ )); do
@@ -1398,8 +1793,31 @@ pr_phase_one() {
       SKIPS=$((SKIPS + 1))
     fi
   else
-    # ponytail: logged only. #30 hands this to the risk gate.
+    # The gate. Every veto evaluates, the verdict lands in the tail, and only
+    # `escalate` writes anything: a `defer` is silent by design and re-derived
+    # next pass, and a `merge` verdict is — for now — logged and not acted on.
+    #
+    # ponytail: #31 turns `verdict=merge` into a merge through the seam, bounded
+    # to one per repository per pass and held back by `--no-merge`. Until then
+    # this is the safest intermediate state there is: the gate is fully
+    # observable before it can act irreversibly.
     state=assessable
+    if ! risk_gate "$head" "$head_date" "$head_epoch" "$now" "$response"; then
+      log "pr gate unreadable: $github#$number"
+      SKIPS=$((SKIPS + 1))
+      return 0
+    fi
+    kv="$kv $GATE_KV"
+    if [[ "$GATE_VERDICT" == "escalate" ]]; then
+      status=0
+      # The `[@]+` guard is bash 3.2 refusing to expand an empty array under
+      # `set -u`. Every veto appends a row, so this can never be empty — and the
+      # cost of being wrong about that is the daemon dying mid-pass.
+      escalate "$github" "$number" "$head" "$GATE_KIND" \
+        "${GATE_REASONS[@]+"${GATE_REASONS[@]}"}" || status=$?
+      kv="$kv $(escalation_kv "$GATE_KIND" "$status")"
+      (( status == 0 )) || SKIPS=$((SKIPS + 1))
+    fi
   fi
 
   log "pr $github#$number $head $state $kv"

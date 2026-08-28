@@ -4,6 +4,19 @@
       "pullRequest": {
         "number": 206,
         "headRefOid": "206f206f206f206f206f206f206f206f206f206f",
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "CLEAN",
+        "files": {
+          "totalCount": 2,
+          "nodes": [
+            {
+              "path": "pr-notes.md"
+            },
+            {
+              "path": "tests/fixtures/repos.txt"
+            }
+          ]
+        },
         "commits": {
           "nodes": [
             {
@@ -95,7 +108,7 @@
               "databaseId": 5379000206,
               "createdAt": "2026-08-27T08:39:00Z",
               "updatedAt": "2026-08-27T08:39:00Z",
-              "body": "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n<!-- review_stack_entry_start -->\n> Change Stack: 1 of 1\n<!-- review_stack_entry_end -->\n<!-- recent_review_start -->\n## Walkthrough\n\nThe pass loop grows a state log.\n<!-- recent_review_end -->\n<!-- final_review_risk_start -->\n**Merge Risk:** _⚪ Minimal_ · up to `dec0d`\n\nA localized change with no merge-blocking risk beyond normal checks and review.\n<!-- final_review_risk_end -->\n<!-- pre_merge_checks_walkthrough_start -->\n<details>\n<summary>🚥 Pre-merge checks | ✅ 5</summary>\n</details>\n<!-- pre_merge_checks_walkthrough_end -->\n<!-- tips_start -->\n<details>\n<summary>📜 Recent review details</summary>\n\nConfiguration used: defaults\nReview profile: CHILL\nPlan: Pro Plus\n</details>\n<!-- tips_end -->\n",
+              "body": "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n<!-- review_stack_entry_start -->\n> Change Stack: 1 of 1\n<!-- review_stack_entry_end -->\n<!-- recent_review_start -->\n## Walkthrough\n\nThe pass loop grows a state log.\n<!-- recent_review_end -->\n<!-- final_review_risk_start -->\n**Merge Risk:** _⚪ Minimal_ · up to `206f2`\n\nA localized change with no merge-blocking risk beyond normal checks and review.\n<!-- final_review_risk_end -->\n<!-- pre_merge_checks_walkthrough_start -->\n<details>\n<summary>🚥 Pre-merge checks | ✅ 5</summary>\n</details>\n<!-- pre_merge_checks_walkthrough_end -->\n<!-- tips_start -->\n<details>\n<summary>📜 Recent review details</summary>\n\nConfiguration used: defaults\nReview profile: CHILL\nPlan: Pro Plus\n</details>\n<!-- tips_end -->\n",
               "author": {
                 "login": "coderabbitai"
               }

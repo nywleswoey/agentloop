@@ -1,0 +1,42 @@
+{
+  "data": {
+    "repository": {
+      "pullRequests": {
+        "nodes": [
+          {
+            "number": 240,
+            "title": "undecided mergeability, waiting on the clock",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/240",
+            "headRefName": "undecided",
+            "headRefOid": "240a240a240a240a240a240a240a240a240a240a",
+            "labels": {
+              "nodes": []
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
+          },
+          {
+            "number": 241,
+            "title": "a review the reviewer is too throttled to run",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/241",
+            "headRefName": "throttled",
+            "headRefOid": "241b241b241b241b241b241b241b241b241b241b",
+            "labels": {
+              "nodes": []
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
+          }
+        ]
+      }
+    }
+  }
+}

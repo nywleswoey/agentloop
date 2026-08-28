@@ -2,6 +2,7 @@
   "pollIntervalSeconds": 300,
   "maxWorkers": 3,
   "autofixTimeoutSeconds": 5400,
+  "mergeGateTimeoutSeconds": 3600,
   "logPath": "~/.agent-loop/agent-loop.log",
   "labels": {
     "ready": "ready-for-agent",

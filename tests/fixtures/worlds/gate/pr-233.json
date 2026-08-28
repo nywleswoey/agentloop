@@ -1,0 +1,340 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "number": 233,
+        "headRefOid": "233b233b233b233b233b233b233b233b233b233b",
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "CLEAN",
+        "files": {
+          "totalCount": 90,
+          "nodes": [
+            {
+              "path": "src/module-00.js"
+            },
+            {
+              "path": "src/module-01.js"
+            },
+            {
+              "path": "src/module-02.js"
+            },
+            {
+              "path": "src/module-03.js"
+            },
+            {
+              "path": "src/module-04.js"
+            },
+            {
+              "path": "src/module-05.js"
+            },
+            {
+              "path": "src/module-06.js"
+            },
+            {
+              "path": "src/module-07.js"
+            },
+            {
+              "path": "src/module-08.js"
+            },
+            {
+              "path": "src/module-09.js"
+            },
+            {
+              "path": "src/module-10.js"
+            },
+            {
+              "path": "src/module-11.js"
+            },
+            {
+              "path": "src/module-12.js"
+            },
+            {
+              "path": "src/module-13.js"
+            },
+            {
+              "path": "src/module-14.js"
+            },
+            {
+              "path": "src/module-15.js"
+            },
+            {
+              "path": "src/module-16.js"
+            },
+            {
+              "path": "src/module-17.js"
+            },
+            {
+              "path": "src/module-18.js"
+            },
+            {
+              "path": "src/module-19.js"
+            },
+            {
+              "path": "src/module-20.js"
+            },
+            {
+              "path": "src/module-21.js"
+            },
+            {
+              "path": "src/module-22.js"
+            },
+            {
+              "path": "src/module-23.js"
+            },
+            {
+              "path": "src/module-24.js"
+            },
+            {
+              "path": "src/module-25.js"
+            },
+            {
+              "path": "src/module-26.js"
+            },
+            {
+              "path": "src/module-27.js"
+            },
+            {
+              "path": "src/module-28.js"
+            },
+            {
+              "path": "src/module-29.js"
+            },
+            {
+              "path": "src/module-30.js"
+            },
+            {
+              "path": "src/module-31.js"
+            },
+            {
+              "path": "src/module-32.js"
+            },
+            {
+              "path": "src/module-33.js"
+            },
+            {
+              "path": "src/module-34.js"
+            },
+            {
+              "path": "src/module-35.js"
+            },
+            {
+              "path": "src/module-36.js"
+            },
+            {
+              "path": "src/module-37.js"
+            },
+            {
+              "path": "src/module-38.js"
+            },
+            {
+              "path": "src/module-39.js"
+            },
+            {
+              "path": "src/module-40.js"
+            },
+            {
+              "path": "src/module-41.js"
+            },
+            {
+              "path": "src/module-42.js"
+            },
+            {
+              "path": "src/module-43.js"
+            },
+            {
+              "path": "src/module-44.js"
+            },
+            {
+              "path": "src/module-45.js"
+            },
+            {
+              "path": "src/module-46.js"
+            },
+            {
+              "path": "src/module-47.js"
+            },
+            {
+              "path": "src/module-48.js"
+            },
+            {
+              "path": "src/module-49.js"
+            },
+            {
+              "path": "src/module-50.js"
+            },
+            {
+              "path": "src/module-51.js"
+            },
+            {
+              "path": "src/module-52.js"
+            },
+            {
+              "path": "src/module-53.js"
+            },
+            {
+              "path": "src/module-54.js"
+            },
+            {
+              "path": "src/module-55.js"
+            },
+            {
+              "path": "src/module-56.js"
+            },
+            {
+              "path": "src/module-57.js"
+            },
+            {
+              "path": "src/module-58.js"
+            },
+            {
+              "path": "src/module-59.js"
+            },
+            {
+              "path": "src/module-60.js"
+            },
+            {
+              "path": "src/module-61.js"
+            },
+            {
+              "path": "src/module-62.js"
+            },
+            {
+              "path": "src/module-63.js"
+            },
+            {
+              "path": "src/module-64.js"
+            },
+            {
+              "path": "src/module-65.js"
+            },
+            {
+              "path": "src/module-66.js"
+            },
+            {
+              "path": "src/module-67.js"
+            },
+            {
+              "path": "src/module-68.js"
+            },
+            {
+              "path": "src/module-69.js"
+            },
+            {
+              "path": "src/module-70.js"
+            },
+            {
+              "path": "src/module-71.js"
+            },
+            {
+              "path": "src/module-72.js"
+            },
+            {
+              "path": "src/module-73.js"
+            },
+            {
+              "path": "src/module-74.js"
+            },
+            {
+              "path": "src/module-75.js"
+            },
+            {
+              "path": "src/module-76.js"
+            },
+            {
+              "path": "src/module-77.js"
+            },
+            {
+              "path": "src/module-78.js"
+            },
+            {
+              "path": "src/module-79.js"
+            },
+            {
+              "path": "src/module-80.js"
+            },
+            {
+              "path": "src/module-81.js"
+            },
+            {
+              "path": "src/module-82.js"
+            },
+            {
+              "path": "src/module-83.js"
+            },
+            {
+              "path": "src/module-84.js"
+            },
+            {
+              "path": "src/module-85.js"
+            },
+            {
+              "path": "src/module-86.js"
+            },
+            {
+              "path": "src/module-87.js"
+            },
+            {
+              "path": "src/module-88.js"
+            },
+            {
+              "path": "src/module-89.js"
+            }
+          ]
+        },
+        "commits": {
+          "nodes": [
+            {
+              "commit": {
+                "oid": "233b233b233b233b233b233b233b233b233b233b",
+                "committedDate": "2026-08-27T11:30:00Z",
+                "statusCheckRollup": {
+                  "state": "SUCCESS",
+                  "contexts": {
+                    "nodes": [
+                      {
+                        "__typename": "StatusContext",
+                        "context": "CodeRabbit",
+                        "state": "SUCCESS",
+                        "description": "Review completed",
+                        "createdAt": "2026-08-27T11:31:00Z",
+                        "creator": {
+                          "login": "coderabbitai"
+                        }
+                      },
+                      {
+                        "__typename": "StatusContext",
+                        "context": "ci/build",
+                        "state": "SUCCESS",
+                        "description": "Build passed",
+                        "createdAt": "2026-08-27T11:31:00Z",
+                        "creator": {
+                          "login": "github-actions"
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "reviewThreads": {
+          "nodes": []
+        },
+        "comments": {
+          "nodes": [
+            {
+              "databaseId": 5379000233,
+              "createdAt": "2026-08-20T09:00:00Z",
+              "updatedAt": "2026-08-27T11:32:00Z",
+              "body": "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n<!-- recent_review_start -->\n## Walkthrough\n\nA localized change.\n<!-- recent_review_end -->\n<!-- final_review_risk_start -->\n**Merge Risk:** _⚪ Minimal_ · up to `233b2`\n\nProse CodeRabbit wrote about the change, which nothing parses.\n<!-- final_review_risk_end -->\n<!-- pre_merge_checks_walkthrough_start -->\n<details>\n<summary>🚥 Pre-merge checks | ✅ 5</summary>\n</details>\n<!-- pre_merge_checks_walkthrough_end -->\n<!-- tips_start -->\n<details>\n<summary>📜 Recent review details</summary>\n\nConfiguration used: defaults\nReview profile: CHILL\nPlan: Pro Plus\n</details>\n<!-- tips_end -->\n",
+              "author": {
+                "login": "coderabbitai"
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

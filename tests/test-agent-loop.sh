@@ -56,13 +56,14 @@ setup() {
   write_config "nywleswoey/automation" "repo-aaa"
 }
 
-# write_config <github-full-name> <orca-repo-id> [poll-interval-seconds] [max-workers] [autofix-timeout]
+# write_config <github-full-name> <orca-repo-id> [poll-interval-seconds] [max-workers] [autofix-timeout] [merge-gate-timeout]
 write_config() {
   cat > "$CONFIG" <<JSON
 {
   "pollIntervalSeconds": ${3:-300},
   "maxWorkers": ${4:-3},
   "autofixTimeoutSeconds": ${5:-5400},
+  "mergeGateTimeoutSeconds": ${6:-3600},
   "logPath": "$LOG",
   "labels": { "ready": "ready-for-agent", "claimed": "agent-in-progress" },
   "projects": [
@@ -816,12 +817,12 @@ check_grep "pr nywleswoey/automation#203 203c203c203c203c203c203c203c203c203c203
 check_grep "pr nywleswoey/automation#204 204d204d204d204d204d204d204d204d204d204d needs-autofix review=terminal threads=2 autofix=unspent action=triggered" "$OUT"
 
 # 205 — reviewed, nothing unresolved to fix.
-check_grep "pr nywleswoey/automation#205 205e205e205e205e205e205e205e205e205e205e assessable review=terminal threads=0 autofix=unspent" "$OUT"
+check_grep "pr nywleswoey/automation#205 205e205e205e205e205e205e205e205e205e205e assessable review=terminal threads=0 autofix=unspent verdict=merge risk=ok checks=ok mergeability=ok blast=ok" "$OUT"
 
 # 206 — autofix already ran at this head. Its findings are *still* unresolved,
 # because autofix does not resolve what it fixes, and it is assessable anyway:
 # unresolved threads are input to the fix trigger and to nothing else.
-check_grep "pr nywleswoey/automation#206 206f206f206f206f206f206f206f206f206f206f assessable review=terminal threads=3 autofix=spent" "$OUT"
+check_grep "pr nywleswoey/automation#206 206f206f206f206f206f206f206f206f206f206f assessable review=terminal threads=3 autofix=spent verdict=merge risk=ok checks=ok mergeability=ok blast=ok" "$OUT"
 
 # 207 — triggered an hour ago, CodeRabbit has not answered, still inside the
 # bound.
@@ -830,14 +831,14 @@ check_grep "pr nywleswoey/automation#207 207a207a207a207a207a207a207a207a207a207
 # 208 and 212 — opened by a bot, and merging into a release branch rather than
 # trunk. Neither is an exclusion: the rule has exactly two, and these are the
 # two most often mistaken for a third.
-check_grep "pr nywleswoey/automation#208 208b208b208b208b208b208b208b208b208b208b assessable review=terminal threads=0 autofix=unspent" "$OUT"
-check_grep "pr nywleswoey/automation#212 212f212f212f212f212f212f212f212f212f212f assessable review=terminal threads=0 autofix=unspent" "$OUT"
+check_grep "pr nywleswoey/automation#208 208b208b208b208b208b208b208b208b208b208b assessable review=terminal threads=0 autofix=unspent verdict=merge risk=ok checks=ok mergeability=ok blast=ok" "$OUT"
+check_grep "pr nywleswoey/automation#212 212f212f212f212f212f212f212f212f212f212f assessable review=terminal threads=0 autofix=unspent verdict=merge risk=ok checks=ok mergeability=ok blast=ok" "$OUT"
 
 # 209 and 210 — CodeRabbit reporting through a check run and no legacy status at
 # all, which is the surface its own changelog says is now the default and which
 # this account does not in fact emit. Both are read, either one terminal is
 # terminal, and the pair differs only in the check run's status.
-check_grep "pr nywleswoey/automation#209 209c209c209c209c209c209c209c209c209c209c assessable review=terminal threads=0 autofix=unspent" "$OUT"
+check_grep "pr nywleswoey/automation#209 209c209c209c209c209c209c209c209c209c209c assessable review=terminal threads=0 autofix=unspent verdict=merge risk=ok checks=ok mergeability=ok blast=ok" "$OUT"
 check_grep "pr nywleswoey/automation#210 210d210d210d210d210d210d210d210d210d210d reviewing review=pending threads=0 autofix=unspent" "$OUT"
 
 # 211 — nothing rolled up on the head commit at all, which is what a pull
@@ -1088,7 +1089,7 @@ check "still exactly one trigger after the second pass" test "$(grep -cF 'pr com
 # unresolved. Spent on this head all the same.
 replay autofix-once/pass3 2026-08-27T13:00:00Z
 check_status 0 "$STATUS"
-check_grep "pr nywleswoey/automation#301 301a301a301a301a301a301a301a301a301a301a assessable review=terminal threads=2 autofix=spent" "$PASS_LOG"
+check_grep "pr nywleswoey/automation#301 301a301a301a301a301a301a301a301a301a301a assessable review=terminal threads=2 autofix=spent verdict=merge risk=ok checks=ok mergeability=ok blast=ok" "$PASS_LOG"
 check "still exactly one trigger after the third pass" test "$(grep -cF 'pr comment 301' "$STUB_CALLS")" -eq 1
 
 # --- pr phase: a status from an earlier head does not spend this one ----------------
@@ -1104,6 +1105,275 @@ check_grep "pr nywleswoey/automation#206 206f206f206f206f206f206f206f206f206f206
 check "one trigger was posted for the unspent current head" \
   test "$(grep -cF 'body @coderabbitai autofix' "$STUB_CALLS")" -eq 1
 
+# --- pr phase: the risk gate ----------------------------------------------------------
+
+# Four vetoes over one head commit and three outcomes — `merge`, `escalate` and
+# `defer` — asserted whole against one world carrying a pull request for each.
+#
+# The division of labour is what the fixtures are built around: **CodeRabbit's
+# verdict is a necessary input, not the verdict.** V1 is the reviewer's judgement
+# of the code; V2, V3 and V4 are the loop's own judgement of merge mechanics and
+# blast radius; each holds a veto, and every one of them is proven to escalate on
+# its own below.
+
+setup "the risk gate judges every assessable pull request and merges none of them"
+export STUB_WORLD=gate STUB_NOW=2026-08-27T12:00:00Z
+run_once
+check_status 0 "$STATUS"
+
+GATE_PR="pr nywleswoey/automation"
+GATE_TAIL="review=terminal threads=0 autofix=unspent"
+
+# --- the merge verdict, which is still only a verdict ----------------------------------
+
+# Everything clears, and the loop says so and does nothing. That is deliberate:
+# it is the safest possible intermediate state, and it makes the gate fully
+# observable before it can act irreversibly.
+check_grep "$GATE_PR#220 220a220a220a220a220a220a220a220a220a220a assessable $GATE_TAIL verdict=merge risk=ok checks=ok mergeability=ok blast=ok" "$OUT"
+check "nothing at all was merged" \
+  test "$(grep -cE 'pulls/[0-9]+/merge' "$STUB_CALLS")" -eq 0
+# A merge verdict is silent on the pull request itself: no comment, no label.
+check_no_grep "pr comment 220 --repo nywleswoey/automation" "$STUB_CALLS"
+check_no_grep "pr edit 220 --repo nywleswoey/automation" "$STUB_CALLS"
+
+# --- V1: CodeRabbit's verdict ----------------------------------------------------------
+
+# The abbreviation must be a **prefix of the head** and the level exactly
+# minimal. Three ways to fail, all of them the same tripwire for CodeRabbit
+# changing shape, and every escalation carries the raw values behind it.
+
+# A verdict computed for some other commit. A stale verdict can never authorise
+# the merge of newer code, and the raw row is what lets the operator see that at
+# a glance rather than re-deriving it.
+check_grep "$GATE_PR#221 221b221b221b221b221b221b221b221b221b221b assessable $GATE_TAIL verdict=escalate risk=no checks=ok mergeability=ok blast=ok action=escalated kind=escalate label=added" "$OUT"
+check_grep "| no | CodeRabbit's merge-risk verdict does not clear this commit | \`block=parsed level=minimal abbrev=bad11 head=221b221b221b221b221b221b221b221b221b221b\` |" "$STUB_STATE/pr-body-221.txt"
+
+# A level that is not minimal. There is no documented ladder of levels anywhere,
+# so nothing may be inferred about ordering: anything but minimal escalates.
+check_grep "$GATE_PR#222 222c222c222c222c222c222c222c222c222c222c assessable $GATE_TAIL verdict=escalate risk=no checks=ok mergeability=ok blast=ok action=escalated kind=escalate label=added" "$OUT"
+check_grep "| no | CodeRabbit's merge-risk verdict does not clear this commit | \`block=parsed level=high abbrev=222c2 head=222c222c222c222c222c222c222c222c222c222c\` |" "$STUB_STATE/pr-body-222.txt"
+
+# The block is there and its line is a shape nothing parses. This is the case the
+# veto exists for: an unparseable verdict is not a missing one, and reading it as
+# absent would be reading CodeRabbit changing shape as CodeRabbit having nothing
+# to say.
+check_grep "$GATE_PR#223 223d223d223d223d223d223d223d223d223d223d assessable $GATE_TAIL verdict=escalate risk=no checks=ok mergeability=ok blast=ok action=escalated kind=escalate label=added" "$OUT"
+check_grep "| no | CodeRabbit's merge-risk verdict does not clear this commit | \`block=unparseable level=none abbrev=none head=223d223d223d223d223d223d223d223d223d223d\` |" "$STUB_STATE/pr-body-223.txt"
+
+# The observed abbreviation is **five** characters, not the seven the prose
+# around this feature says — which is exactly why the test is a prefix test. The
+# fixture is pinned to that, so a rubric quietly rewritten to compare whole
+# strings or a fixed seven would fail here rather than in production.
+GATE_ABBREV=$(jq -r '.data.repository.pullRequest.comments.nodes[0].body' \
+  "$FIXTURES/worlds/gate/pr-220.json" | sed -n 's/.*up to `\(.*\)`.*/\1/p')
+check "the captured abbreviation is five characters" test "${#GATE_ABBREV}" -eq 5
+check "and it is a prefix of the head, not the whole of it" \
+  test "220a220a220a220a220a220a220a220a220a220a" != "$GATE_ABBREV"
+
+# --- V2: checks ------------------------------------------------------------------------
+
+# **Every** rollup context, not just the required ones. Required-ness is
+# structurally always false once repository protection is out of scope, so a
+# gate that only looked at required checks would have no check that could ever
+# block a merge. The failing context on 224 carries `isRequired: false` in the
+# fixture and the query never asks for the field at all, which is the strongest
+# available form of "it plays no part".
+check_grep "$GATE_PR#224 224e224e224e224e224e224e224e224e224e224e assessable $GATE_TAIL verdict=escalate risk=ok checks=no mergeability=ok blast=ok action=escalated kind=escalate label=added" "$OUT"
+check_grep "| no | a status check on this commit is not green | \`green=1 pending=0 failed=1 total=2 failing=ci/build=FAILURE\` |" "$STUB_STATE/pr-body-224.txt"
+check "the failing check is one nothing requires" \
+  test "$(jq -r '[.data.repository.pullRequest.commits.nodes[-1].commit.statusCheckRollup.contexts.nodes[] | select(.context == "ci/build") | .isRequired] | .[0]' "$FIXTURES/worlds/gate/pr-224.json")" = "false"
+check_no_grep "isRequired" "$STUB_CALLS"
+
+# --- V3: mergeability ------------------------------------------------------------------
+
+# Both axes, because `mergeable: MERGEABLE` is *also* true of the unstable and
+# blocked states — the two a naive mergeability test gets wrong. 230 is exactly
+# that pair, and it escalates.
+check_grep "$GATE_PR#230 230e230e230e230e230e230e230e230e230e230e assessable $GATE_TAIL verdict=escalate risk=ok checks=ok mergeability=no blast=ok action=escalated kind=escalate label=added" "$OUT"
+check_grep "| no | GitHub does not report this pull request both mergeable and clean | \`mergeable=MERGEABLE state=BLOCKED\` |" "$STUB_STATE/pr-body-230.txt"
+
+# A branch that is behind escalates, and — the point of the veto — **is never
+# updated**. That write would move the head, void the verdict just validated and
+# spend metered review budget re-reviewing what was already reviewed.
+check_grep "$GATE_PR#225 225f225f225f225f225f225f225f225f225f225f assessable $GATE_TAIL verdict=escalate risk=ok checks=ok mergeability=no blast=ok action=escalated kind=escalate label=added" "$OUT"
+check_grep "| no | GitHub does not report this pull request both mergeable and clean | \`mergeable=MERGEABLE state=BEHIND\` |" "$STUB_STATE/pr-body-225.txt"
+check_no_grep "update-branch" "$STUB_CALLS"
+check_no_grep "updatePullRequestBranch" "$STUB_CALLS"
+
+# --- V4: blast radius ------------------------------------------------------------------
+
+# *Never minimal if merging it changes what runs unattended.*
+check_grep "$GATE_PR#226 226a226a226a226a226a226a226a226a226a226a assessable $GATE_TAIL verdict=escalate risk=ok checks=ok mergeability=ok blast=no action=escalated kind=escalate label=added" "$OUT"
+check_grep "| no | this pull request changes what runs unattended | \`files=2 guarded=.github/workflows/test.yml\` |" "$STUB_STATE/pr-body-226.txt"
+check_grep "$GATE_PR#227 227b227b227b227b227b227b227b227b227b227b assessable $GATE_TAIL verdict=escalate risk=ok checks=ok mergeability=ok blast=no action=escalated kind=escalate label=added" "$OUT"
+# All three of the loop's own files in one row, so the guard list is proven
+# whole rather than by its first entry. `gh.sh` is guarded on the same principle
+# as the other two — it is sourced by both and a change to it changes what both
+# do — which is a deliberate widening of the ticket's "either of the loop's own
+# scripts", and the assertion is where that widening is visible.
+check_grep "| no | this pull request changes what runs unattended | \`files=4 guarded=agent-loop.sh,gh.sh,pr-writeback.sh\` |" "$STUB_STATE/pr-body-227.txt"
+LOOP_GUARDED=$(sed -n "s/^UNATTENDED_SCRIPTS='\(.*\)'$/\1/p" "$SCRIPT")
+check "the guard list is exactly the three files the fixture touches" \
+  test "$LOOP_GUARDED" = "agent-loop.sh,pr-writeback.sh,gh.sh"
+
+# **There is no diff-size ceiling** — declined as an unmeasured number with an
+# asymmetric failure mode. Ninety files that touch nothing unattended merge.
+check_grep "$GATE_PR#233 233b233b233b233b233b233b233b233b233b233b assessable $GATE_TAIL verdict=merge risk=ok checks=ok mergeability=ok blast=ok" "$OUT"
+check "the large change really is large" \
+  test "$(jq -r '.data.repository.pullRequest.files.totalCount' "$FIXTURES/worlds/gate/pr-233.json")" -eq 90
+
+# What does escalate is not size but **not being able to see**: a file list
+# longer than the page the read carries means the blast radius is unknown, and a
+# workflow change hidden past the boundary is precisely what this veto exists to
+# catch.
+check_grep "$GATE_PR#231 231f231f231f231f231f231f231f231f231f231f assessable $GATE_TAIL verdict=escalate risk=ok checks=ok mergeability=ok blast=no action=escalated kind=escalate label=added" "$OUT"
+check_grep "| no | the changed-file list is longer than one page, so the blast radius is unknown | \`files=137 listed=100\` |" "$STUB_STATE/pr-body-231.txt"
+
+# A check that ran and declined to judge is green. This is the one place the
+# gate reads a value the ticket does not enumerate, so it is asserted rather than
+# left buried: a path-filtered workflow reports `SKIPPED` on most commits, so
+# reading it as not-green would escalate nearly every pull request in a
+# repository that uses path filters. It also agrees with GitHub rather than
+# inventing a second opinion — `mergeStateStatus: CLEAN`, which V3 separately
+# requires, says the same thing about the same commit.
+check_grep "$GATE_PR#235 235d235d235d235d235d235d235d235d235d235d assessable $GATE_TAIL verdict=merge risk=ok checks=ok mergeability=ok blast=ok" "$OUT"
+check "the check really did not run" \
+  test "$(jq -r '[.data.repository.pullRequest.commits.nodes[-1].commit.statusCheckRollup.contexts.nodes[] | select(.__typename == "CheckRun") | .conclusion] | .[0]' "$FIXTURES/worlds/gate/pr-235.json")" = "SKIPPED"
+
+# --- defer: a signal that is simply not computed yet -----------------------------------
+
+# `defer` is not a failure. A check still running and a mergeability GitHub has
+# not finished calculating are re-derived next pass **in silence** — no comment,
+# no label, nothing but the state line, which with no local state anywhere is the
+# only record the wait leaves.
+check_grep "$GATE_PR#228 228c228c228c228c228c228c228c228c228c228c assessable $GATE_TAIL verdict=defer risk=ok checks=defer mergeability=ok blast=ok age=1800 bound=3600" "$OUT"
+check_grep "$GATE_PR#229 229d229d229d229d229d229d229d229d229d229d assessable $GATE_TAIL verdict=defer risk=ok checks=ok mergeability=defer blast=ok age=1800 bound=3600" "$OUT"
+check_no_grep "pr comment 228 --repo nywleswoey/automation" "$STUB_CALLS"
+check_no_grep "pr edit 228 --repo nywleswoey/automation" "$STUB_CALLS"
+check_no_grep "pr comment 229 --repo nywleswoey/automation" "$STUB_CALLS"
+check_no_grep "pr edit 229 --repo nywleswoey/automation" "$STUB_CALLS"
+
+# --- every veto evaluates, and escalate beats defer ------------------------------------
+
+# 234 has a veto **and** an undecided signal. Nothing short-circuits, so the
+# message carries both rows and the two that passed as well; and the kind is the
+# veto's rather than the clock's, because the veto is the one the operator can
+# act on.
+check_grep "$GATE_PR#234 234c234c234c234c234c234c234c234c234c234c assessable $GATE_TAIL verdict=escalate risk=no checks=ok mergeability=defer blast=ok age=1800 bound=3600 action=escalated kind=escalate label=added" "$OUT"
+GATE_BOTH="$STUB_STATE/pr-body-234.txt"
+check "the first line names the kind" \
+  test "$(head -1 "$GATE_BOTH")" = '**Escalated — `escalate`:** a veto is present and says no.'
+check_grep "| no | CodeRabbit's merge-risk verdict does not clear this commit |" "$GATE_BOTH"
+check_grep "| defer | GitHub has not finished computing mergeability | \`mergeable=UNKNOWN state=UNKNOWN\` |" "$GATE_BOTH"
+# The rows that **passed** are carried too: an operator reading a handover is
+# owed the complete picture the gate saw, because the passing rows are what tell
+# them where *not* to look.
+check_grep "| ok | every status check on this commit is green | \`green=2 pending=0 failed=0 total=2\` |" "$GATE_BOTH"
+check_grep "| ok | nothing here changes what runs unattended | \`files=1 guarded=none\` |" "$GATE_BOTH"
+check "one row per veto, plus the clock, plus the table head" \
+  test "$(grep -cE '^\|' "$GATE_BOTH")" -eq 7
+
+# --- freshness is the updated timestamp, never the created one -------------------------
+
+# CodeRabbit delivers by **editing an existing comment** — observed gaps of five
+# and seven days between a walkthrough's creation and the edit carrying today's
+# verdict. 232 carries two walkthroughs whose orderings disagree: the newest by
+# creation holds a stale verdict, the newest by update holds this head's. A merge
+# verdict is only reachable through the second.
+check_grep "$GATE_PR#232 232a232a232a232a232a232a232a232a232a232a assessable $GATE_TAIL verdict=merge risk=ok checks=ok mergeability=ok blast=ok" "$OUT"
+check "the two walkthroughs really do order differently" \
+  test "$(jq -r '[.data.repository.pullRequest.comments.nodes | max_by(.createdAt).databaseId, max_by(.updatedAt).databaseId] | .[0] == .[1]' "$FIXTURES/worlds/gate/pr-232.json")" = "false"
+
+# --- the prohibitions ------------------------------------------------------------------
+
+# **The pull request's reviews are never read for a verdict.** The read does not
+# ask for them at all, which is what makes this a fact rather than a promise. The
+# reasoning is not squeamishness: an approving CodeRabbit review is contingent on
+# comments being *resolved*, and autofix does not resolve what it fixes, so the
+# only exit would be the loop resolving threads itself and merging on the
+# approval that produced.
+check_no_grep "reviews(" "$STUB_CALLS"
+check_no_grep "latestReviews" "$STUB_CALLS"
+check_no_grep "reviewDecision" "$STUB_CALLS"
+
+# **Pre-merge checks are ignored and never parsed** — subsumed by the merge-risk
+# verdict, computed from the same review, and measuring hygiene rather than merge
+# risk. 220's walkthrough reports two of them failing and it still reaches a
+# merge verdict, which is the mutant that proves nothing reads them.
+check "the merged verdict's own walkthrough reports failing pre-merge checks" \
+  test "$(jq -r '.data.repository.pullRequest.comments.nodes[0].body | contains("Pre-merge checks | ❌ 2")' "$FIXTURES/worlds/gate/pr-220.json")" = "true"
+check_no_grep "pre_merge" "$OUT"
+check_no_grep "Pre-merge" "$OUT"
+
+# **The gate never reads thread resolution.** Unresolved threads are input to the
+# fix trigger and to nothing else — forced, because autofix does not resolve the
+# threads it fixes, so "threads are clean" can never be a termination condition.
+check_no_grep "resolveReviewThread" "$STUB_CALLS"
+
+# One line per pull request, and one action at most on each.
+check "one state line per pull request" \
+  test "$(grep -cE '^[0-9TZ:-]+ pr nywleswoey/automation#' "$OUT")" -eq 16
+
+# --- pr phase: the gate clock, proven by a mutant twin ---------------------------------
+
+# One world at two frozen instants either side of the bound. Nothing but
+# $STUB_NOW differs, so whatever differs in the verdict is caused by the clock
+# and by nothing else. Both pull requests share a head date, so the clock says
+# the same thing about both — and only one of them is exempt from it.
+
+setup "an undecided signal inside the gate clock defers in silence"
+export STUB_WORLD=gate-clock STUB_NOW=2026-08-27T12:59:59Z
+run_once
+check_status 0 "$STATUS"
+check_grep "pr nywleswoey/automation#240 240a240a240a240a240a240a240a240a240a240a assessable review=terminal threads=0 autofix=unspent verdict=defer risk=ok checks=ok mergeability=defer blast=ok age=3599 bound=3600" "$OUT"
+check_no_grep "kind=stuck" "$OUT"
+check_no_grep "pr comment 240 --repo nywleswoey/automation" "$STUB_CALLS"
+
+setup "the same signal one second past the gate clock is handed over as stuck"
+export STUB_WORLD=gate-clock STUB_NOW=2026-08-27T13:00:01Z
+run_once
+check_status 0 "$STATUS"
+check_grep "pr nywleswoey/automation#240 240a240a240a240a240a240a240a240a240a240a assessable review=terminal threads=0 autofix=unspent verdict=escalate risk=ok checks=ok mergeability=defer blast=ok age=3601 bound=3600 action=escalated kind=stuck label=added" "$OUT"
+# `stuck`, not `escalate`: nothing said no, the signals simply never arrived, and
+# the kind is what tells the operator to go and look at the checks rather than at
+# the diff.
+STUCK="$STUB_STATE/pr-body-240.txt"
+check "the first line names the kind" \
+  test "$(head -1 "$STUCK")" = '**Escalated — `stuck`:** signals are still undecided past the merge-gate timeout.'
+check_grep "| no | a signal is still undecided past the gate clock | \`age=3601s bound=3600s head=2026-08-27T12:00:00Z\` |" "$STUCK"
+check_grep "| defer | GitHub has not finished computing mergeability | \`mergeable=UNKNOWN state=UNKNOWN\` |" "$STUCK"
+
+# --- pr phase: the rate limit defers, ahead of every veto and outside the clock --------
+
+# A throttled pull request keeps a **stale** verdict — 241's walkthrough names a
+# commit that is not its head, which V1 alone would escalate on. The marker is
+# tested ahead of every veto, so it defers instead: the handover would otherwise
+# turn a transient throttle into a permanent one, and fair-usage throttling would
+# escalate the whole queue whenever the reviewer is merely slow.
+#
+# It is also **exempt from the gate clock**, which is why it is in this world:
+# 241 shares 240's head date, so it is equally far past the bound at the second
+# instant and defers anyway. That is safe because unlike a review pause the rate
+# limit self-clears as usage ages out; the comment even ships its own estimate.
+check_grep "pr nywleswoey/automation#241 241b241b241b241b241b241b241b241b241b241b assessable review=terminal threads=0 autofix=unspent verdict=defer gate=rate-limited" "$OUT"
+check_no_grep "pr comment 241 --repo nywleswoey/automation" "$STUB_CALLS"
+check_no_grep "pr edit 241 --repo nywleswoey/automation" "$STUB_CALLS"
+check "the throttled pull request's verdict really is stale" \
+  test "$(jq -r '.data.repository.pullRequest.comments.nodes[0].body | test("up to `241b`") | not' "$FIXTURES/worlds/gate-clock/pr-241.json")" = "true"
+
+# The same fixture inside the clock defers too, which is what "regardless of
+# timestamp" means: the test has no clock of its own to be inside or outside of.
+setup "a rate-limited pull request defers on every pass, at any age"
+export STUB_WORLD=gate-clock STUB_NOW=2026-08-27T12:00:01Z
+run_once
+check_status 0 "$STATUS"
+check_grep "pr nywleswoey/automation#241 241b241b241b241b241b241b241b241b241b241b assessable review=terminal threads=0 autofix=unspent verdict=defer gate=rate-limited" "$OUT"
+check_no_grep "pr comment 241 --repo nywleswoey/automation" "$STUB_CALLS"
+# The rate-limit block arrives by an **edit**, so the comment carrying it can be
+# a week older than the pull request's head. The fixture is pinned to that gap.
+check "the rate-limit block arrived by editing a much older comment" \
+  test "$(jq -r '.data.repository.pullRequest.comments.nodes[0] | (.createdAt < .updatedAt)' "$FIXTURES/worlds/gate-clock/pr-241.json")" = "true"
+
 # --- pr phase: configuration order is the axis ---------------------------------------
 
 setup "pull requests are enumerated per repository, in configuration order"
@@ -1112,6 +1382,7 @@ cat > "$CONFIG" <<JSON
   "pollIntervalSeconds": 300,
   "maxWorkers": 3,
   "autofixTimeoutSeconds": 5400,
+  "mergeGateTimeoutSeconds": 3600,
   "logPath": "$LOG",
   "labels": { "ready": "ready-for-agent", "claimed": "agent-in-progress" },
   "projects": [
@@ -1190,6 +1461,7 @@ cat > "$CONFIG" <<JSON
   "pollIntervalSeconds": 300,
   "maxWorkers": 3,
   "autofixTimeoutSeconds": 5400,
+  "mergeGateTimeoutSeconds": 3600,
   "seenListPath": "$WORK/seen.jsonl",
   "logPath": "$LOG",
   "labels": { "ready": "ready-for-agent", "claimed": "agent-in-progress" },
@@ -1208,6 +1480,7 @@ cat > "$CONFIG" <<JSON
 {
   "pollIntervalSeconds": 300,
   "maxWorkers": 3,
+  "mergeGateTimeoutSeconds": 3600,
   "logPath": "$LOG",
   "labels": { "ready": "ready-for-agent", "claimed": "agent-in-progress" },
   "projects": [
@@ -1219,6 +1492,33 @@ run_once
 check_status nonzero "$STATUS"
 check_grep "config is missing autofixTimeoutSeconds" "$OUT"
 check "no pass ran" test "$(grep -cF 'pass start' "$OUT")" -eq 0
+
+# The gate clock is required on the same argument and thinner evidence: this
+# config has no defaults anywhere, and there is no sample at all behind the
+# number. A default would be a guess wearing a number's clothes.
+setup "the merge-gate timeout is required, not defaulted"
+cat > "$CONFIG" <<JSON
+{
+  "pollIntervalSeconds": 300,
+  "maxWorkers": 3,
+  "autofixTimeoutSeconds": 5400,
+  "logPath": "$LOG",
+  "labels": { "ready": "ready-for-agent", "claimed": "agent-in-progress" },
+  "projects": [
+    { "github": "nywleswoey/automation", "orcaRepoId": "repo-aaa" }
+  ]
+}
+JSON
+run_once
+check_status nonzero "$STATUS"
+check_grep "config is missing mergeGateTimeoutSeconds" "$OUT"
+check "no pass ran" test "$(grep -cF 'pass start' "$OUT")" -eq 0
+
+setup "a merge-gate timeout that is not a positive integer fails at startup"
+write_config "nywleswoey/automation" "repo-aaa" 300 3 5400 0
+run_once
+check_status nonzero "$STATUS"
+check_grep "config mergeGateTimeoutSeconds must be a positive integer, got: 0" "$OUT"
 
 setup "the loop keeps no local state for the PR phase"
 export STUB_WORLD=states STUB_NOW=2026-08-27T12:00:00Z

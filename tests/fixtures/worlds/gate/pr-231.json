@@ -1,0 +1,370 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "number": 231,
+        "headRefOid": "231f231f231f231f231f231f231f231f231f231f",
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "CLEAN",
+        "files": {
+          "totalCount": 137,
+          "nodes": [
+            {
+              "path": "src/file-000.js"
+            },
+            {
+              "path": "src/file-001.js"
+            },
+            {
+              "path": "src/file-002.js"
+            },
+            {
+              "path": "src/file-003.js"
+            },
+            {
+              "path": "src/file-004.js"
+            },
+            {
+              "path": "src/file-005.js"
+            },
+            {
+              "path": "src/file-006.js"
+            },
+            {
+              "path": "src/file-007.js"
+            },
+            {
+              "path": "src/file-008.js"
+            },
+            {
+              "path": "src/file-009.js"
+            },
+            {
+              "path": "src/file-010.js"
+            },
+            {
+              "path": "src/file-011.js"
+            },
+            {
+              "path": "src/file-012.js"
+            },
+            {
+              "path": "src/file-013.js"
+            },
+            {
+              "path": "src/file-014.js"
+            },
+            {
+              "path": "src/file-015.js"
+            },
+            {
+              "path": "src/file-016.js"
+            },
+            {
+              "path": "src/file-017.js"
+            },
+            {
+              "path": "src/file-018.js"
+            },
+            {
+              "path": "src/file-019.js"
+            },
+            {
+              "path": "src/file-020.js"
+            },
+            {
+              "path": "src/file-021.js"
+            },
+            {
+              "path": "src/file-022.js"
+            },
+            {
+              "path": "src/file-023.js"
+            },
+            {
+              "path": "src/file-024.js"
+            },
+            {
+              "path": "src/file-025.js"
+            },
+            {
+              "path": "src/file-026.js"
+            },
+            {
+              "path": "src/file-027.js"
+            },
+            {
+              "path": "src/file-028.js"
+            },
+            {
+              "path": "src/file-029.js"
+            },
+            {
+              "path": "src/file-030.js"
+            },
+            {
+              "path": "src/file-031.js"
+            },
+            {
+              "path": "src/file-032.js"
+            },
+            {
+              "path": "src/file-033.js"
+            },
+            {
+              "path": "src/file-034.js"
+            },
+            {
+              "path": "src/file-035.js"
+            },
+            {
+              "path": "src/file-036.js"
+            },
+            {
+              "path": "src/file-037.js"
+            },
+            {
+              "path": "src/file-038.js"
+            },
+            {
+              "path": "src/file-039.js"
+            },
+            {
+              "path": "src/file-040.js"
+            },
+            {
+              "path": "src/file-041.js"
+            },
+            {
+              "path": "src/file-042.js"
+            },
+            {
+              "path": "src/file-043.js"
+            },
+            {
+              "path": "src/file-044.js"
+            },
+            {
+              "path": "src/file-045.js"
+            },
+            {
+              "path": "src/file-046.js"
+            },
+            {
+              "path": "src/file-047.js"
+            },
+            {
+              "path": "src/file-048.js"
+            },
+            {
+              "path": "src/file-049.js"
+            },
+            {
+              "path": "src/file-050.js"
+            },
+            {
+              "path": "src/file-051.js"
+            },
+            {
+              "path": "src/file-052.js"
+            },
+            {
+              "path": "src/file-053.js"
+            },
+            {
+              "path": "src/file-054.js"
+            },
+            {
+              "path": "src/file-055.js"
+            },
+            {
+              "path": "src/file-056.js"
+            },
+            {
+              "path": "src/file-057.js"
+            },
+            {
+              "path": "src/file-058.js"
+            },
+            {
+              "path": "src/file-059.js"
+            },
+            {
+              "path": "src/file-060.js"
+            },
+            {
+              "path": "src/file-061.js"
+            },
+            {
+              "path": "src/file-062.js"
+            },
+            {
+              "path": "src/file-063.js"
+            },
+            {
+              "path": "src/file-064.js"
+            },
+            {
+              "path": "src/file-065.js"
+            },
+            {
+              "path": "src/file-066.js"
+            },
+            {
+              "path": "src/file-067.js"
+            },
+            {
+              "path": "src/file-068.js"
+            },
+            {
+              "path": "src/file-069.js"
+            },
+            {
+              "path": "src/file-070.js"
+            },
+            {
+              "path": "src/file-071.js"
+            },
+            {
+              "path": "src/file-072.js"
+            },
+            {
+              "path": "src/file-073.js"
+            },
+            {
+              "path": "src/file-074.js"
+            },
+            {
+              "path": "src/file-075.js"
+            },
+            {
+              "path": "src/file-076.js"
+            },
+            {
+              "path": "src/file-077.js"
+            },
+            {
+              "path": "src/file-078.js"
+            },
+            {
+              "path": "src/file-079.js"
+            },
+            {
+              "path": "src/file-080.js"
+            },
+            {
+              "path": "src/file-081.js"
+            },
+            {
+              "path": "src/file-082.js"
+            },
+            {
+              "path": "src/file-083.js"
+            },
+            {
+              "path": "src/file-084.js"
+            },
+            {
+              "path": "src/file-085.js"
+            },
+            {
+              "path": "src/file-086.js"
+            },
+            {
+              "path": "src/file-087.js"
+            },
+            {
+              "path": "src/file-088.js"
+            },
+            {
+              "path": "src/file-089.js"
+            },
+            {
+              "path": "src/file-090.js"
+            },
+            {
+              "path": "src/file-091.js"
+            },
+            {
+              "path": "src/file-092.js"
+            },
+            {
+              "path": "src/file-093.js"
+            },
+            {
+              "path": "src/file-094.js"
+            },
+            {
+              "path": "src/file-095.js"
+            },
+            {
+              "path": "src/file-096.js"
+            },
+            {
+              "path": "src/file-097.js"
+            },
+            {
+              "path": "src/file-098.js"
+            },
+            {
+              "path": "src/file-099.js"
+            }
+          ]
+        },
+        "commits": {
+          "nodes": [
+            {
+              "commit": {
+                "oid": "231f231f231f231f231f231f231f231f231f231f",
+                "committedDate": "2026-08-27T11:30:00Z",
+                "statusCheckRollup": {
+                  "state": "SUCCESS",
+                  "contexts": {
+                    "nodes": [
+                      {
+                        "__typename": "StatusContext",
+                        "context": "CodeRabbit",
+                        "state": "SUCCESS",
+                        "description": "Review completed",
+                        "createdAt": "2026-08-27T11:31:00Z",
+                        "creator": {
+                          "login": "coderabbitai"
+                        }
+                      },
+                      {
+                        "__typename": "StatusContext",
+                        "context": "ci/build",
+                        "state": "SUCCESS",
+                        "description": "Build passed",
+                        "createdAt": "2026-08-27T11:31:00Z",
+                        "creator": {
+                          "login": "github-actions"
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "reviewThreads": {
+          "nodes": []
+        },
+        "comments": {
+          "nodes": [
+            {
+              "databaseId": 5379000231,
+              "createdAt": "2026-08-20T09:00:00Z",
+              "updatedAt": "2026-08-27T11:32:00Z",
+              "body": "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n<!-- recent_review_start -->\n## Walkthrough\n\nA localized change.\n<!-- recent_review_end -->\n<!-- final_review_risk_start -->\n**Merge Risk:** _⚪ Minimal_ · up to `231f2`\n\nProse CodeRabbit wrote about the change, which nothing parses.\n<!-- final_review_risk_end -->\n<!-- pre_merge_checks_walkthrough_start -->\n<details>\n<summary>🚥 Pre-merge checks | ✅ 5</summary>\n</details>\n<!-- pre_merge_checks_walkthrough_end -->\n<!-- tips_start -->\n<details>\n<summary>📜 Recent review details</summary>\n\nConfiguration used: defaults\nReview profile: CHILL\nPlan: Pro Plus\n</details>\n<!-- tips_end -->\n",
+              "author": {
+                "login": "coderabbitai"
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
