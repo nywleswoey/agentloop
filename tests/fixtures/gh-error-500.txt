@@ -1,0 +1,2 @@
+error: "gh: Internal Server Error (HTTP 500)"
+code: UNKNOWN

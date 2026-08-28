@@ -170,15 +170,23 @@ check_class transient "an error line with no code line" 'error: "gh: something b
 CURRENT="measured against real GitHub (T13)"
 echo "== $CURRENT"
 
-# Verbatim from a live probe of PUT /repos/{o}/{r}/pulls/{n}/merge, quoted
-# exactly. These are the refusals the merge gate will actually meet, and the
-# whole classifier exists so that none of them is retried forever.
-check_class refused "a draft pull request" \
-  "$(printf 'error: "gh: Pull Request is still a draft (HTTP 405)"\ncode: UNKNOWN\n')"
-check_class refused "a pull request with merge conflicts" \
-  "$(printf 'error: "gh: Pull Request has merge conflicts (HTTP 405)"\ncode: UNKNOWN\n')"
-check_class refused "a merge naming a commit that is no longer head" \
-  "$(printf 'error: "gh: Head branch was modified. Review and try the merge again. (HTTP 409)"\ncode: UNKNOWN\n')"
+# Verbatim from a live probe of PUT /repos/{o}/{r}/pulls/{n}/merge. These are
+# the refusals the merge gate will actually meet, and the whole classifier
+# exists so that none of them is retried forever.
+#
+# **Read from the fixture files rather than quoted here**, because those same
+# files are what the stub gh-axi injects into the writeback suite's merge cases.
+# One copy of a measurement, asserted in the place that says what it means: a
+# fixture edited into something the classifier calls transient fails here, in
+# the suite that can explain why, rather than silently in the suite that only
+# sees an exit code.
+for measured in \
+  "405-draft:a draft pull request" \
+  "405-conflict:a pull request with merge conflicts" \
+  "409-race:a merge naming a commit that is no longer head"
+do
+  check_class refused "${measured#*:}" "$(cat "$FIXTURES/gh-error-${measured%%:*}.txt")"
+done
 
 # --- $GH_ERROR is where the text comes from ------------------------------------
 
@@ -255,11 +263,10 @@ echo "== $CURRENT"
 # through neither channel the header promises — and a caller classifying that
 # would read empty text, get the rule-4 default, and retry a refusal every pass.
 #
-# The assertion is that the two calls agree, not what they say. The stub's
-# injected rendering is not one gh-axi can actually produce (`code: HTTP_ERROR`
-# is not in its vocabulary) and a later ticket replaces it with measured bytes;
-# what must hold either way is that gh_graphql forwards whatever gh_json saw,
-# unaltered.
+# The assertion is that the two calls agree, not what they say — the stub's
+# injected rendering is named by $STUB_GH_ERROR and any of them would do here.
+# What must hold whichever one arrives is that gh_graphql forwards whatever
+# gh_json saw, unaltered.
 QUERY='{ search(query: "is:pr is:open author:nywleswoey", type: ISSUE, first: 100) { nodes { ... on PullRequest { number } } } }'
 
 export STUB_GH_FAIL=prs

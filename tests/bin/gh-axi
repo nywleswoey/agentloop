@@ -44,6 +44,9 @@
 #   api /repos/.../issues/<number>/dependencies/blocked_by
 #                            the issue's blockers, from blocked-<number>.json
 #                            when that fixture exists and `[]` otherwise
+#   api PUT /repos/<o>/<n>/pulls/<number>/merge
+#                            the merge, which must carry both --field sha= and
+#                            --field merge_method= or the stub refuses it
 #   pr comment <number> --body <text>
 #                            a pull-request comment carrying a literal body —
 #                            the seam's own CodeRabbit commands, visible in the
@@ -66,17 +69,29 @@
 #
 # $STUB_GH_FAIL names a command that must fail: "issues", "claim", "prs",
 # "merged", "issue", "body", "close", "threads", "blockers", "labels",
-# "pr-comment" or "pr-edit". $STUB_GH_STDERR makes that failure gh-axi's own
-# rather than GitHub's — reported on stderr, with stdout left empty.
+# "pr-comment", "pr-edit" or "merge". $STUB_GH_ERROR names which rendering it
+# fails with, from fixtures/gh-error-<name>.txt. $STUB_GH_STDERR makes that
+# failure gh-axi's own rather than GitHub's — reported on stderr, with stdout
+# left empty.
 
 set -uo pipefail
 
 printf 'gh-axi %s\n' "$*" >> "$STUB_CALLS"
 
 # A refusal from GitHub goes out on *stdout* as TOON and exits 1, which is what
-# gh-axi really does. The second argument is the rendering; the default is the
-# one the read handlers have always injected, and a caller passes a measured
-# shape instead when it has one.
+# gh-axi really does.
+#
+# **Which refusal is injected is chosen per call.** The stub used to emit one
+# canned string for every injected failure, and that string — `code: HTTP_ERROR`
+# — is not one gh-axi can produce at all: its `mapGhError` table has no such
+# code, and the status-carrying failures it does produce arrive as `UNKNOWN`. A
+# stub that can only emit one shape cannot test a rule whose whole job is to
+# tell two shapes apart, so the renderings live in `fixtures/gh-error-*.txt` and
+# $STUB_GH_ERROR names the one this run gets. Three of them are measured against
+# real GitHub; see fixtures/gh-errors.md.
+#
+# The second argument is the handler's default when $STUB_GH_ERROR says nothing,
+# so a test that only wants *a* failure still gets a plausible one.
 #
 # $STUB_GH_STDERR switches to gh-axi's *other* failure shape: a failure of its
 # own rather than GitHub's — a rejected flag, a broken token — which it reports
@@ -84,12 +99,15 @@ printf 'gh-axi %s\n' "$*" >> "$STUB_CALLS"
 # nothing at all in that case, so the two shapes have to be separable here.
 fail_if() {
   [[ "${STUB_GH_FAIL:-}" == "$1" ]] || return 0
-  local text="${2:-}"
-  [[ -n "$text" ]] || text=$'error: "gh: HTTP 500"\ncode: HTTP_ERROR'
+  local name="${STUB_GH_ERROR:-${2:-500}}" file
+  file="$STUB_FIXTURES/gh-error-$name.txt"
+  # A name with no fixture behind it is the test's own mistake, and answering it
+  # with some other refusal would let that mistake pass as a result.
+  [[ -f "$file" ]] || { echo "stub gh-axi: no error fixture named $name" >&2; exit 1; }
   if [[ -n "${STUB_GH_STDERR:-}" ]]; then
-    printf '%s\n' "$text" >&2
+    cat "$file" >&2
   else
-    printf '%s\n' "$text"
+    cat "$file"
   fi
   exit 1
 }
@@ -142,7 +160,7 @@ if [[ "${1:-}" == "pr" ]]; then
         echo "stub gh-axi: pr comment needs --body or --body-file" >&2
         exit 1
       fi
-      fail_if pr-comment $'error: "gh: Not Found (HTTP 404)"\ncode: UNKNOWN'
+      fail_if pr-comment 404
       if [[ -n "$file" ]]; then
         # Copied whole so a test can compare it byte for byte rather than
         # grepping the flattened argv — free text is exactly the thing the
@@ -156,7 +174,7 @@ if [[ "${1:-}" == "pr" ]]; then
     edit)
       [[ -n "$(flag_value --add-label "$@")" ]] \
         || { echo "stub gh-axi: unhandled pr edit without --add-label" >&2; exit 1; }
-      fail_if pr-edit $'error: "gh: Not Found (HTTP 404)"\ncode: UNKNOWN'
+      fail_if pr-edit 404
       printf 'pr:\n  number: %s\n  edited: true\n' "$number"
       exit 0
       ;;
@@ -294,6 +312,27 @@ if [[ "$path" == */labels ]]; then
   repo="${path#/repos/}"
   repo="${repo%/labels}"
   emit "$(tr ',' '\n' <<< "$(repo_labels "$repo")" | grep . | jq -R '{name: .}' | jq -s -c '.')"
+  exit 0
+fi
+
+# The merge. A raw API call rather than `gh-axi pr merge`, because only the raw
+# call can carry the `sha=` assertion — which is the whole reason the seam
+# reaches for it, so the stub fails closed on its absence rather than merging
+# whatever it was handed.
+if [[ "$path" == /repos/*/*/pulls/*/merge ]]; then
+  [[ "$method" == "PUT" ]] \
+    || { echo "stub gh-axi: merge takes PUT, not $method" >&2; exit 1; }
+  [[ "$*" == *"--field sha="* ]] \
+    || { echo "stub gh-axi: merge without a sha assertion" >&2; exit 1; }
+  [[ "$*" == *"--field merge_method="* ]] \
+    || { echo "stub gh-axi: merge without a merge method" >&2; exit 1; }
+  fail_if merge
+  # GitHub answers with the *merge* commit, not the one asserted, so the stub
+  # does too. Nothing is recorded under $STUB_STATE: a test that wants to know
+  # which commit was merged reads the argv, which is where the assertion lives,
+  # and an unread file here would be the first thing to trip the transient
+  # case's assertion that a failed merge leaves the state directory empty.
+  emit '{"sha":"11ee66e511ee66e511ee66e511ee66e511ee66e5","merged":true,"message":"Pull Request successfully merged"}'
   exit 0
 fi
 

@@ -1,0 +1,2 @@
+error: "gh: Pull Request is still a draft (HTTP 405)"
+code: UNKNOWN

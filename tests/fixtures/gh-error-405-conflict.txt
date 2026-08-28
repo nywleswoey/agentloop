@@ -1,0 +1,2 @@
+error: "gh: Pull Request has merge conflicts (HTTP 405)"
+code: UNKNOWN
