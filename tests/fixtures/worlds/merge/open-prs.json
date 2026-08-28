@@ -1,0 +1,58 @@
+{
+  "data": {
+    "repository": {
+      "pullRequests": {
+        "nodes": [
+          {
+            "number": 310,
+            "title": "the first candidate the gate clears",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/310",
+            "headRefName": "clean-change",
+            "headRefOid": "310a310a310a310a310a310a310a310a310a310a",
+            "labels": {
+              "nodes": []
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
+          },
+          {
+            "number": 311,
+            "title": "a second candidate the gate clears just as well",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/311",
+            "headRefName": "another-clean-change",
+            "headRefOid": "311b311b311b311b311b311b311b311b311b311b",
+            "labels": {
+              "nodes": []
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
+          },
+          {
+            "number": 312,
+            "title": "findings to fix, which is not a merge",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/312",
+            "headRefName": "unfixed-findings",
+            "headRefOid": "312c312c312c312c312c312c312c312c312c312c",
+            "labels": {
+              "nodes": []
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
+          }
+        ]
+      }
+    }
+  }
+}

@@ -12,7 +12,7 @@ Each pass, in order:
 
 1. **Close-out** — an issue whose pull request has merged gets its checklist ticked, its description updated, its claim label removed, and the issue closed.
 2. **Issues** — queries each project for open issues labelled `ready-for-agent`, skips ones with an open blocker, swaps the label to `agent-in-progress`, and dispatches an Orca worker into a fresh worktree.
-3. **Pull requests** — enumerates every open pull request in each project except drafts and fork heads, derives its state from GitHub alone, logs one line per pull request, comments `@coderabbitai autofix` at the ones carrying unresolved findings, runs the risk gate over the ones that are ready to judge, and hands over the ones it will not act on. It spends no worker and no worktree, and it keeps no local state: every pass re-derives from a fresh read.
+3. **Pull requests** — enumerates every open pull request in each project except drafts and fork heads, derives its state from GitHub alone, logs one line per pull request, comments `@coderabbitai autofix` at the ones carrying unresolved findings, runs the risk gate over the ones that are ready to judge, merges at most one of them per repository, and hands over the ones it will not act on. It spends no worker and no worktree, and it keeps no local state: every pass re-derives from a fresh read.
 4. **Sweep** — removes the loop's own finished worktrees.
 
 Between passes it sleeps for `pollIntervalSeconds`.
@@ -31,7 +31,9 @@ Between passes it sleeps for `pollIntervalSeconds`.
   - **V4 — blast radius.** Any change under `.github/workflows/`, or to `agent-loop.sh`, `pr-writeback.sh` or `gh.sh`, escalates. The principle is *never minimal if merging it changes what runs unattended*. There is **no diff-size ceiling** — a big change is not a risky one. A pull request touching more than 100 files escalates all the same, on the different ground that the read carries one page and merging on a file list known to be partial would let exactly the change this veto looks for slip past the page boundary.
   - **V5 — the clock.** `defer` is the third outcome and is not a failure: a check still running, or a mergeability GitHub has not finished computing, is re-derived next pass in silence. `mergeGateTimeoutSeconds` from the head commit's date is what stops that being forever. A pull request whose review is merely rate-limited defers too — ahead of every veto, and exempt from that clock, because the rate limit self-clears on its own.
 
-  All four vetoes evaluate — nothing short-circuits — and **escalate beats defer**, so one handover carries every reason, the ones that passed included. The gate **never reads the pull request's reviews** and **never parses CodeRabbit's pre-merge checks**. It does not yet merge: a `merge` verdict is logged and nothing else.
+  All four vetoes evaluate — nothing short-circuits — and **escalate beats defer**, so one handover carries every reason, the ones that passed included. The gate **never reads the pull request's reviews** and **never parses CodeRabbit's pre-merge checks**.
+- **The merge names the commit the gate assessed** — never the head as GitHub reports it at the moment of the write. The seam sends it as an assertion GitHub compares against the head, so a push that raced the gate loses with a 409 and escalates instead of being merged unreviewed. Branch deletion needs no key and no call: the repository's delete-on-merge setting is honoured by GitHub on the merge itself.
+- **At most one merge per repository per pass.** A merge changes the base under every other open pull request in that repository, invalidating mergeability, check results and the commit each verdict was scoped to — so the loop merges once and lets the next pass re-derive. The candidates it held are logged as deferred. Other repositories are unaffected, and non-merge actions stay unbounded. A merge GitHub **refuses** escalates as its own kind, `refused`, carrying GitHub's answer verbatim: *I said yes and reality disagreed* is evidence the rubric is wrong. A merge that fails **transiently** is neither escalated nor retried within the pass — the poll interval is the whole of the backoff.
 - **Escalation is a handover, not a notification** — the loop acts as the operator's own account, and GitHub never notifies you of your own actions, so no arrangement of writes can push one. A pull request the loop will not act on gets a comment carrying every reason and the raw values behind it, then the `agent-escalated` label, in that order — the record first, so a missing flag is re-added on a later pass without the record being posted twice. Once escalated at a head commit the loop takes **no further action on that pull request at that commit**. The three ways back in are the ones GitHub already gives you: merge it by hand, push a commit, or convert it to draft. There is no override label; a push is both the fix and the re-engagement.
 - **Log rotation** — one generation, capped at 5 MiB. A loop left running for weeks must not fill the disk.
 
@@ -39,7 +41,7 @@ Between passes it sleeps for `pollIntervalSeconds`.
 
 The PR phase triages GitHub state without a worker or worktree and sends each selected action through `pr-writeback.sh`. It creates no local fix commits, worker plans, or plan-confirmation step.
 
-`pr-writeback.sh` is the **only** thing that writes to a pull request: it posts CodeRabbit commands, comments and labels, and performs guarded merges. Nothing in the loop calls its merge verb yet.
+`pr-writeback.sh` is the **only** thing that writes to a pull request: it posts CodeRabbit commands, comments and labels, and performs guarded merges. Its merge verb is the loop's one irreversible unattended write, and `--no-merge` is what holds it.
 
 ---
 
@@ -87,7 +89,8 @@ Then edit `agent-loop.config.json`:
   "projects": [
     {
       "github": "your-owner/your-repo",
-      "orcaRepoId": "00000000-0000-0000-0000-000000000000"
+      "orcaRepoId": "00000000-0000-0000-0000-000000000000",
+      "mergeMethod": "squash"
     }
   ]
 }
@@ -104,6 +107,7 @@ Then edit `agent-loop.config.json`:
 | `labels.claimed` | Label the loop swaps in once it claims an issue. |
 | `projects[].github` | GitHub repository, as `<owner>/<name>`. |
 | `projects[].orcaRepoId` | Orca repo UUID that project maps to. |
+| `projects[].mergeMethod` | `merge`, `squash` or `rebase` — how the loop merges in that repository. **Required, per repository, and validated at startup** against the repository's own permission booleans, because GitHub exposes no default-merge-method field to read one from. A method the repository forbids fails at second zero rather than coming back as a refusal at the merge, where it would be indistinguishable from the gate having been wrong. |
 
 `agent-loop.config.json` is gitignored — it holds your own project paths and repo IDs.
 
@@ -117,6 +121,13 @@ Then edit `agent-loop.config.json`:
 
 # One pass, then exit
 ./agent-loop.sh --once
+
+# Everything except the merge. A dry run when paired with --once: the gate still
+# judges and logs the verdict it would have acted on, and every reversible write
+# still happens. There is deliberately no config key for this — a persistent
+# switch would be the confirmation gate this replaced coming back as a boolean,
+# and a `false` left in a file is a forgettable bypass.
+./agent-loop.sh --once --no-merge
 
 # Who holds this branch, in each configured project?
 # Reports and exits — takes no lock, runs no pass.

@@ -56,7 +56,7 @@ setup() {
   write_config "nywleswoey/automation" "repo-aaa"
 }
 
-# write_config <github-full-name> <orca-repo-id> [poll-interval-seconds] [max-workers] [autofix-timeout] [merge-gate-timeout]
+# write_config <github-full-name> <orca-repo-id> [poll-interval-seconds] [max-workers] [autofix-timeout] [merge-gate-timeout] [merge-method]
 write_config() {
   cat > "$CONFIG" <<JSON
 {
@@ -67,7 +67,7 @@ write_config() {
   "logPath": "$LOG",
   "labels": { "ready": "ready-for-agent", "claimed": "agent-in-progress" },
   "projects": [
-    { "github": "$1", "orcaRepoId": "$2" }
+    { "github": "$1", "orcaRepoId": "$2", "mergeMethod": "${7:-squash}" }
   ]
 }
 JSON
@@ -816,13 +816,16 @@ check_grep "pr nywleswoey/automation#203 203c203c203c203c203c203c203c203c203c203
 # one I opened myself, which is a conversation rather than a finding.
 check_grep "pr nywleswoey/automation#204 204d204d204d204d204d204d204d204d204d204d needs-autofix review=terminal threads=2 autofix=unspent action=triggered" "$OUT"
 
-# 205 — reviewed, nothing unresolved to fix.
-check_grep "pr nywleswoey/automation#205 205e205e205e205e205e205e205e205e205e205e assessable review=terminal threads=0 autofix=unspent verdict=merge risk=ok checks=ok mergeability=ok blast=ok" "$OUT"
+# 205 — reviewed, nothing unresolved to fix. It is the first pull request in
+# this repository the gate clears, so it is the one that gets merged.
+check_grep "pr nywleswoey/automation#205 205e205e205e205e205e205e205e205e205e205e assessable review=terminal threads=0 autofix=unspent verdict=merge risk=ok checks=ok mergeability=ok blast=ok action=merged method=squash" "$OUT"
 
 # 206 — autofix already ran at this head. Its findings are *still* unresolved,
 # because autofix does not resolve what it fixes, and it is assessable anyway:
-# unresolved threads are input to the fix trigger and to nothing else.
-check_grep "pr nywleswoey/automation#206 206f206f206f206f206f206f206f206f206f206f assessable review=terminal threads=3 autofix=spent verdict=merge risk=ok checks=ok mergeability=ok blast=ok" "$OUT"
+# unresolved threads are input to the fix trigger and to nothing else. It clears
+# the gate as well, and is deferred to the next pass by the one-merge-per-
+# repository bound — 205 has already moved the base under it.
+check_grep "pr nywleswoey/automation#206 206f206f206f206f206f206f206f206f206f206f assessable review=terminal threads=3 autofix=spent verdict=merge risk=ok checks=ok mergeability=ok blast=ok action=deferred bound=merge-per-repo" "$OUT"
 
 # 207 — triggered an hour ago, CodeRabbit has not answered, still inside the
 # bound.
@@ -856,6 +859,12 @@ check_no_grep "dec0dec0dec0dec0dec0dec0dec0dec0dec0dec0" "$OUT"
 
 # Exactly one line per pull request, and exactly one action across the pass.
 check "one state line per pull request" test "$(grep -cE '^[0-9TZ:-]+ pr nywleswoey/automation#' "$OUT")" -eq 10
+# Four of these clear the gate and exactly one of them is merged, which is the
+# bound running along the axis configuration order provides.
+check "exactly one merge this pass" \
+  test "$(grep -cE 'pulls/[0-9]+/merge' "$STUB_CALLS")" -eq 1
+check "and it is the first candidate, not any of the ones behind it" \
+  test "$(grep -cF '/pulls/205/merge' "$STUB_CALLS")" -eq 1
 
 # --- pr phase: the action goes through the real seam --------------------------------
 
@@ -1116,20 +1125,25 @@ check "one trigger was posted for the unspent current head" \
 # blast radius; each holds a veto, and every one of them is proven to escalate on
 # its own below.
 
-setup "the risk gate judges every assessable pull request and merges none of them"
+# This world carries sixteen pull requests to judge, four of which clear every
+# veto — and the loop merges at most one per repository per pass, so a plain run
+# would act on the first and defer the other three, mixing the bound into a case
+# that is about the rubric. `--no-merge` holds the one irreversible write and
+# nothing else, which is exactly the reading this case wants: every verdict is
+# reached and logged, and none of them is acted on. The merge itself is proven
+# in its own world below.
+setup "the risk gate judges every assessable pull request"
 export STUB_WORLD=gate STUB_NOW=2026-08-27T12:00:00Z
-run_once
+run_once --no-merge
 check_status 0 "$STATUS"
 
 GATE_PR="pr nywleswoey/automation"
 GATE_TAIL="review=terminal threads=0 autofix=unspent"
 
-# --- the merge verdict, which is still only a verdict ----------------------------------
+# --- the merge verdict, which the flag holds -------------------------------------------
 
-# Everything clears, and the loop says so and does nothing. That is deliberate:
-# it is the safest possible intermediate state, and it makes the gate fully
-# observable before it can act irreversibly.
-check_grep "$GATE_PR#220 220a220a220a220a220a220a220a220a220a220a assessable $GATE_TAIL verdict=merge risk=ok checks=ok mergeability=ok blast=ok" "$OUT"
+# Everything clears, the loop says so, and the flag stops it there.
+check_grep "$GATE_PR#220 220a220a220a220a220a220a220a220a220a220a assessable $GATE_TAIL verdict=merge risk=ok checks=ok mergeability=ok blast=ok action=would-merge method=squash" "$OUT"
 check "nothing at all was merged" \
   test "$(grep -cE 'pulls/[0-9]+/merge' "$STUB_CALLS")" -eq 0
 # A merge verdict is silent on the pull request itself: no comment, no label.
@@ -1374,6 +1388,283 @@ check_no_grep "pr comment 241 --repo nywleswoey/automation" "$STUB_CALLS"
 check "the rate-limit block arrived by editing a much older comment" \
   test "$(jq -r '.data.repository.pullRequest.comments.nodes[0] | (.createdAt < .updatedAt)' "$FIXTURES/worlds/gate-clock/pr-241.json")" = "true"
 
+# --- pr phase: the merge ---------------------------------------------------------------
+
+# The line the loop exists to cross. Everything before it is reversible; this is
+# not, so the three guards that make crossing it safe are what the cases below
+# are about: the commit named is the one the gate assessed, the bound is one
+# merge per repository per pass, and `--no-merge` holds the write and nothing
+# else.
+#
+# The world carries three pull requests: two the gate clears, so the bound has
+# something to bind, and one with findings still open, so *non-merge actions are
+# unbounded* is provable after the pass has spent its merge.
+#
+# The commits are mnemonic and pairwise distinct on purpose, and the decoy is in
+# the **fixture** rather than in an assertion: 310's walkthrough carries the
+# review-details line CodeRabbit really writes, naming a second full-length
+# commit next to the head. A merge that read the wrong one names itself instead
+# of blending into forty characters of hex.
+MERGE_SHA_310=310a310a310a310a310a310a310a310a310a310a   # the commit the gate assesses
+MERGE_SHA_311=311b311b311b311b311b311b311b311b311b311b   # the candidate behind it
+MERGE_SHA_312=312c312c312c312c312c312c312c312c312c312c   # not a candidate at all
+MERGE_DECOY=dec0dec0dec0dec0dec0dec0dec0dec0dec0dec0     # named in 310's own walkthrough
+MERGE_RESPONSE_SHA=11ee66e511ee66e511ee66e511ee66e511ee66e5  # what GitHub answers with
+
+# check_merge_argv <repo> <number> <sha> <method> — the **whole** recorded argv
+# line. A grep for the commit alone passes on a call that also sent the wrong
+# method, and a grep for the method alone passes on a call that merged the wrong
+# commit; only the line as a whole fails on either. It spells gh_json's own
+# `--full --jq` tail, and that coupling is the point rather than a leak: what is
+# being pinned is the exact command the loop caused to be issued.
+check_merge_argv() {
+  local want="gh-axi api PUT /repos/$1/pulls/$2/merge --field sha=$3 --field merge_method=$4 --full --jq tojson|@base64"
+  check "the merge call is exactly: $want" grep -qxF -- "$want" "$STUB_CALLS"
+}
+
+# The guard that keeps every "it named the one it assessed" assertion below
+# non-vacuous: were any two of these ever edited to the same value, a wrong read
+# would satisfy the assertion for the right one.
+setup "the merge fixtures make a wrong commit visible"
+check "the two candidates are distinct" test "$MERGE_SHA_310" != "$MERGE_SHA_311"
+check "neither is the pull request that is not a candidate" \
+  test "$MERGE_SHA_310" != "$MERGE_SHA_312" -a "$MERGE_SHA_311" != "$MERGE_SHA_312"
+check "none of them is the decoy in 310's own walkthrough" \
+  test "$MERGE_SHA_310" != "$MERGE_DECOY" -a "$MERGE_SHA_311" != "$MERGE_DECOY" \
+    -a "$MERGE_SHA_312" != "$MERGE_DECOY"
+check "and none is the commit GitHub answers the merge with" \
+  test "$MERGE_SHA_310" != "$MERGE_RESPONSE_SHA" -a "$MERGE_DECOY" != "$MERGE_RESPONSE_SHA"
+check "the decoy really is in the fixture, or it is guarding nothing" \
+  grep -qF "$MERGE_DECOY" "$FIXTURES/worlds/merge/pr-310.json"
+
+setup "a minimal-risk pull request is merged, and the merge names the assessed commit"
+export STUB_WORLD=merge STUB_NOW=2026-08-27T12:00:00Z
+run_once
+check_status 0 "$STATUS"
+check_grep "pr nywleswoey/automation#310 $MERGE_SHA_310 assessable review=terminal threads=0 autofix=unspent verdict=merge risk=ok checks=ok mergeability=ok blast=ok action=merged method=squash" "$OUT"
+check_merge_argv nywleswoey/automation 310 "$MERGE_SHA_310" squash
+# Not the subcommand: `gh-axi pr merge` has no way to say which commit, which is
+# the whole reason the seam reaches for the raw endpoint.
+check_no_grep "pr merge" "$STUB_CALLS"
+# The three commits a wrong read could have named instead.
+check_no_grep "sha=$MERGE_DECOY" "$STUB_CALLS"
+check_no_grep "sha=$MERGE_SHA_311" "$STUB_CALLS"
+check_no_grep "$MERGE_RESPONSE_SHA" "$STUB_CALLS"
+# **Assess, then merge that commit** — asserted by call position, so the order is
+# a fact about the run rather than a reading of the source.
+check "the pull request is read before it is merged" \
+  test "$(call_line 'pullRequest(number: 310)')" -lt "$(call_line '/pulls/310/merge')"
+# Branch deletion needs no key and no call: the repository's delete-on-merge
+# setting is honoured by GitHub on the merge itself.
+check_no_grep "--delete-branch" "$STUB_CALLS"
+check_no_grep "DELETE /repos/nywleswoey/automation/git/refs" "$STUB_CALLS"
+# A merge is silent on the pull request itself: the loop says nothing where
+# GitHub has already said everything.
+check_no_grep "pr comment 310 --repo nywleswoey/automation" "$STUB_CALLS"
+check_no_grep "pr edit 310 --repo nywleswoey/automation" "$STUB_CALLS"
+
+# A mutant twin on the method: the same fixture and the same commit, one config
+# key apart. Without it a merge method hard-coded to `squash` would pass every
+# assertion above.
+setup "the configured merge method reaches the call rather than being defaulted"
+write_config "nywleswoey/automation" "repo-aaa" 300 3 5400 3600 rebase
+export STUB_WORLD=merge STUB_NOW=2026-08-27T12:00:00Z
+run_once
+check_status 0 "$STATUS"
+check_grep "pr nywleswoey/automation#310 $MERGE_SHA_310 assessable review=terminal threads=0 autofix=unspent verdict=merge risk=ok checks=ok mergeability=ok blast=ok action=merged method=rebase" "$OUT"
+check_merge_argv nywleswoey/automation 310 "$MERGE_SHA_310" rebase
+check_no_grep "merge_method=squash" "$STUB_CALLS"
+
+setup "at most one merge per repository per pass, and non-merge actions are unbounded"
+export STUB_WORLD=merge STUB_NOW=2026-08-27T12:00:00Z
+run_once
+check_status 0 "$STATUS"
+check "exactly one merge this pass" \
+  test "$(grep -cE 'pulls/[0-9]+/merge' "$STUB_CALLS")" -eq 1
+# 311 clears the gate exactly as 310 does, and is deferred rather than dropped —
+# said out loud, because with no local state this line is the only record the
+# candidate leaves. A merge changes the base under it, so its verdict has to be
+# re-derived next pass rather than acted on now.
+check_grep "pr nywleswoey/automation#311 $MERGE_SHA_311 assessable review=terminal threads=0 autofix=unspent verdict=merge risk=ok checks=ok mergeability=ok blast=ok action=deferred bound=merge-per-repo" "$OUT"
+check_no_grep "/pulls/311/merge" "$STUB_CALLS"
+# 312 is behind the merge in the enumeration and still acted on: the bound is on
+# merges, and a trigger changes no base.
+check_grep "pr nywleswoey/automation#312 $MERGE_SHA_312 needs-autofix review=terminal threads=2 autofix=unspent action=triggered" "$OUT"
+check_grep "gh-axi pr comment 312 --repo nywleswoey/automation --body @coderabbitai autofix" "$STUB_CALLS"
+check "the trigger is fired after the merge has already been spent" \
+  test "$(call_line '/pulls/310/merge')" -lt "$(call_line 'pr comment 312')"
+
+# --- pr phase: --no-merge, proven by a mutant twin -------------------------------------
+
+# The same world at the same instant, one flag apart. Everything up to the
+# action is identical, which is what makes the difference attributable to the
+# flag and to nothing else.
+MERGE_STATE_310="pr nywleswoey/automation#310 $MERGE_SHA_310 assessable review=terminal threads=0 autofix=unspent verdict=merge risk=ok checks=ok mergeability=ok blast=ok"
+
+setup "--no-merge holds the merge, and holds nothing else"
+export STUB_WORLD=merge STUB_NOW=2026-08-27T12:00:00Z
+run_once --no-merge
+check_status 0 "$STATUS"
+# The verdict it would have acted on is logged, and the write is not made.
+check_grep "$MERGE_STATE_310 action=would-merge method=squash" "$OUT"
+check "nothing at all was merged" \
+  test "$(grep -cE 'pulls/[0-9]+/merge' "$STUB_CALLS")" -eq 0
+check_no_grep "$MERGE_SHA_310" "$STUB_CALLS"
+# Everything reversible still runs.
+check_grep "pr nywleswoey/automation#312 $MERGE_SHA_312 needs-autofix review=terminal threads=2 autofix=unspent action=triggered" "$OUT"
+check_grep "gh-axi pr comment 312 --repo nywleswoey/automation --body @coderabbitai autofix" "$STUB_CALLS"
+# The bound is spent by the held merge too, so `--once --no-merge` reports the
+# same set of actions a real pass would take rather than every candidate it can
+# see. The flag withholds the write, not the arithmetic.
+check_grep "pr nywleswoey/automation#311 $MERGE_SHA_311 assessable review=terminal threads=0 autofix=unspent verdict=merge risk=ok checks=ok mergeability=ok blast=ok action=deferred bound=merge-per-repo" "$OUT"
+
+setup "the same pass without the flag merges instead"
+export STUB_WORLD=merge STUB_NOW=2026-08-27T12:00:00Z
+run_once
+check_status 0 "$STATUS"
+check_grep "$MERGE_STATE_310 action=merged method=squash" "$OUT"
+check_merge_argv nywleswoey/automation 310 "$MERGE_SHA_310" squash
+
+# A flag, never a key. A config that names one is a config with an unknown key
+# in it, and unknown keys are ignored — so the merge happens, which is the only
+# way to say "this is not a switch" out loud.
+setup "--no-merge is a flag and not a config key"
+cat > "$CONFIG" <<JSON
+{
+  "pollIntervalSeconds": 300,
+  "maxWorkers": 3,
+  "autofixTimeoutSeconds": 5400,
+  "mergeGateTimeoutSeconds": 3600,
+  "noMerge": true,
+  "logPath": "$LOG",
+  "labels": { "ready": "ready-for-agent", "claimed": "agent-in-progress" },
+  "projects": [
+    { "github": "nywleswoey/automation", "orcaRepoId": "repo-aaa", "mergeMethod": "squash" }
+  ]
+}
+JSON
+export STUB_WORLD=merge STUB_NOW=2026-08-27T12:00:00Z
+run_once
+check_status 0 "$STATUS"
+check_grep "$MERGE_STATE_310 action=merged method=squash" "$OUT"
+check_merge_argv nywleswoey/automation 310 "$MERGE_SHA_310" squash
+
+# --- pr phase: a merge GitHub refuses --------------------------------------------------
+
+# Measured against real GitHub: a merge naming a commit that is no longer the
+# head comes back `Head branch was modified` with the status suffix intact,
+# which classifies `refused`. So a race with a human push **escalates rather
+# than retrying** — which is the entire reason the assessed commit is sent as an
+# assertion in the first place.
+setup "a merge racing a human push escalates rather than retrying"
+export STUB_WORLD=merge STUB_NOW=2026-08-27T12:00:00Z
+export STUB_GH_FAIL=merge STUB_GH_ERROR=409-race
+run_once
+check_status 0 "$STATUS"
+check_grep "$MERGE_STATE_310 merge=refused rc=3 action=escalated kind=refused label=added" "$OUT"
+check "the merge was attempted exactly once" \
+  test "$(grep -cE 'pulls/[0-9]+/merge' "$STUB_CALLS")" -eq 1
+REFUSED="$STUB_STATE/pr-body-310.txt"
+# Its own kind, because *I said yes and reality disagreed* is evidence the
+# rubric is wrong rather than a fact about this pull request.
+check "the first line names the kind" \
+  test "$(head -1 "$REFUSED")" = '**Escalated — `refused`:** the gate said merge and GitHub said no.'
+# GitHub's answer and the seam's exit status, verbatim — the whole of what the
+# operator has to go on.
+check_grep 'rc=3 method=squash head=310a310a310a310a310a310a310a310a310a310a response=error: "gh: Head branch was modified. Review and try the merge again. (HTTP 409)" code: UNKNOWN' "$REFUSED"
+# The rows that led the gate to say yes travel with it: an operator asked to
+# believe the rubric is wrong is owed what the rubric saw.
+check_grep "| ok | CodeRabbit puts merge risk at minimal for this commit |" "$REFUSED"
+check_grep "| ok | every status check on this commit is green |" "$REFUSED"
+check_grep "| ok | GitHub reports this pull request mergeable and clean |" "$REFUSED"
+check_grep "| ok | nothing here changes what runs unattended |" "$REFUSED"
+check "four vetoes, the refusal, and the table head" \
+  test "$(grep -cE '^\|' "$REFUSED")" -eq 7
+check_grep "gh-axi pr edit 310 --repo nywleswoey/automation --add-label agent-escalated" "$STUB_CALLS"
+# A refusal is not a skip. The loop set out to act on this pull request and did
+# — the action turned out to be the handover, and the handover landed. Only a
+# handover that fails to land counts against the pass.
+check_grep "pass end dispatches=0 skips=0" "$OUT"
+# The bound is spent by the attempt, so the pass stops touching this repository's
+# merge candidates whatever the answer was.
+check_grep "pr nywleswoey/automation#311 $MERGE_SHA_311 assessable review=terminal threads=0 autofix=unspent verdict=merge risk=ok checks=ok mergeability=ok blast=ok action=deferred bound=merge-per-repo" "$OUT"
+
+# --- pr phase: a merge that fails transiently ------------------------------------------
+
+# The other class. Nothing durable came back, so nothing is escalated — a
+# handover is never retried, and posting one on a network blip would park a good
+# pull request until a human noticed. Nothing is retried inside the pass either:
+# the poll interval is the whole of the backoff and the next pass re-derives.
+setup "a transient merge failure is neither escalated nor retried"
+export STUB_WORLD=merge STUB_NOW=2026-08-27T12:00:00Z
+export STUB_GH_FAIL=merge STUB_GH_ERROR=500
+run_once
+check_status 0 "$STATUS"
+check_grep "$MERGE_STATE_310 merge=failed class=transient rc=4" "$OUT"
+check "the merge was attempted exactly once" \
+  test "$(grep -cE 'pulls/[0-9]+/merge' "$STUB_CALLS")" -eq 1
+check_no_grep "pr comment 310 --repo nywleswoey/automation" "$STUB_CALLS"
+check_no_grep "pr edit 310 --repo nywleswoey/automation" "$STUB_CALLS"
+check_no_grep "kind=refused" "$OUT"
+# It counts against the pass, because `pass end` is where a run that failed to
+# do what it set out to do is supposed to say so.
+check_grep "pass end dispatches=0 skips=1" "$OUT"
+
+# --- the merge method is per repository, required, and checked at startup --------------
+
+setup "a config with no merge method fails at startup"
+cat > "$CONFIG" <<JSON
+{
+  "pollIntervalSeconds": 300,
+  "maxWorkers": 3,
+  "autofixTimeoutSeconds": 5400,
+  "mergeGateTimeoutSeconds": 3600,
+  "logPath": "$LOG",
+  "labels": { "ready": "ready-for-agent", "claimed": "agent-in-progress" },
+  "projects": [
+    { "github": "nywleswoey/automation", "orcaRepoId": "repo-aaa" }
+  ]
+}
+JSON
+run_once
+check_status nonzero "$STATUS"
+check_grep "projects[0] (nywleswoey/automation) has no mergeMethod" "$OUT"
+check "no pass ran" test "$(grep -cF 'pass start' "$OUT")" -eq 0
+
+setup "a merge method that is not one fails at startup"
+write_config "nywleswoey/automation" "repo-aaa" 300 3 5400 3600 fast-forward
+run_once
+check_status nonzero "$STATUS"
+check_grep "mergeMethod must be one of: merge squash rebase, got: fast-forward" "$OUT"
+check "no pass ran" test "$(grep -cF 'pass start' "$OUT")" -eq 0
+
+# The one that matters most. A method the repository forbids comes back from
+# GitHub as a refusal, which classifies `refused` and reaches the operator as
+# *I said yes and reality disagreed* — the kind that exists precisely to say the
+# rubric is wrong. A config typo must never be able to impersonate that, so it
+# dies at second zero against the repository's own permission booleans.
+setup "a merge method the repository forbids fails at startup, not at the merge"
+write_config "nywleswoey/merge-only" "repo-aaa" 300 3 5400 3600 squash
+export STUB_WORLD=merge STUB_NOW=2026-08-27T12:00:00Z
+run_once
+check_status nonzero "$STATUS"
+check_grep "nywleswoey/merge-only does not permit mergeMethod squash (allow_squash_merge is false)" "$OUT"
+check "no pass ran" test "$(grep -cF 'pass start' "$OUT")" -eq 0
+check "and nothing was merged on the way to finding out" \
+  test "$(grep -cE 'pulls/[0-9]+/merge' "$STUB_CALLS")" -eq 0
+# Checked against the read that already happens, so the guard costs no new call.
+check "the permission read is the repository read the loop already makes" \
+  test "$(grep -cxF 'gh-axi api /repos/nywleswoey/merge-only --full --jq tojson|@base64' "$STUB_CALLS")" -eq 1
+
+# The same repository with the method it does permit starts, which is what keeps
+# the case above about the method rather than about the repository.
+setup "the same repository with a method it permits starts"
+write_config "nywleswoey/merge-only" "repo-aaa" 300 3 5400 3600 merge
+run_once
+check_status 0 "$STATUS"
+check_grep "validated nywleswoey/merge-only -> orca repo repo-aaa, merging by merge" "$OUT"
+check_grep "pass end" "$OUT"
+
 # --- pr phase: configuration order is the axis ---------------------------------------
 
 setup "pull requests are enumerated per repository, in configuration order"
@@ -1386,8 +1677,8 @@ cat > "$CONFIG" <<JSON
   "logPath": "$LOG",
   "labels": { "ready": "ready-for-agent", "claimed": "agent-in-progress" },
   "projects": [
-    { "github": "nywleswoey/automation", "orcaRepoId": "repo-aaa" },
-    { "github": "nywleswoey/other", "orcaRepoId": "repo-bbb" }
+    { "github": "nywleswoey/automation", "orcaRepoId": "repo-aaa", "mergeMethod": "squash" },
+    { "github": "nywleswoey/other", "orcaRepoId": "repo-bbb", "mergeMethod": "squash" }
   ]
 }
 JSON
@@ -1399,6 +1690,18 @@ check_grep "pr nywleswoey/other#502 502b502b502b502b502b502b502b502b502b502b ass
 check "the first configured repository is enumerated first" \
   test "$(call_line 'name: "automation") { pullRequests(states: OPEN')" \
      -lt "$(call_line 'name: "other") { pullRequests(states: OPEN')"
+
+# The one-merge bound is **per repository**, and this is where that is visible:
+# both pull requests clear the gate and both are merged in the same pass. A
+# merge changes the base under the other pull requests in its own repository and
+# under nothing else, so a global bound would have parked the second repository
+# behind the first for a whole poll interval, every pass, forever.
+check_grep "pr nywleswoey/automation#501 501a501a501a501a501a501a501a501a501a501a assessable review=terminal threads=0 autofix=unspent verdict=merge risk=ok checks=ok mergeability=ok blast=ok action=merged method=squash" "$OUT"
+check_grep "pr nywleswoey/other#502 502b502b502b502b502b502b502b502b502b502b assessable review=terminal threads=0 autofix=unspent verdict=merge risk=ok checks=ok mergeability=ok blast=ok action=merged method=squash" "$OUT"
+check "one merge in each repository, not one across both" \
+  test "$(grep -cE 'pulls/[0-9]+/merge' "$STUB_CALLS")" -eq 2
+check "and each names its own repository's commit" \
+  grep -qxF -- 'gh-axi api PUT /repos/nywleswoey/other/pulls/502/merge --field sha=502b502b502b502b502b502b502b502b502b502b --field merge_method=squash --full --jq tojson|@base64' "$STUB_CALLS"
 
 # --- pr phase: the worker budget does not gate it -------------------------------------
 
@@ -1466,7 +1769,7 @@ cat > "$CONFIG" <<JSON
   "logPath": "$LOG",
   "labels": { "ready": "ready-for-agent", "claimed": "agent-in-progress" },
   "projects": [
-    { "github": "nywleswoey/automation", "orcaRepoId": "repo-aaa" }
+    { "github": "nywleswoey/automation", "orcaRepoId": "repo-aaa", "mergeMethod": "squash" }
   ]
 }
 JSON
@@ -1484,7 +1787,7 @@ cat > "$CONFIG" <<JSON
   "logPath": "$LOG",
   "labels": { "ready": "ready-for-agent", "claimed": "agent-in-progress" },
   "projects": [
-    { "github": "nywleswoey/automation", "orcaRepoId": "repo-aaa" }
+    { "github": "nywleswoey/automation", "orcaRepoId": "repo-aaa", "mergeMethod": "squash" }
   ]
 }
 JSON
@@ -1505,7 +1808,7 @@ cat > "$CONFIG" <<JSON
   "logPath": "$LOG",
   "labels": { "ready": "ready-for-agent", "claimed": "agent-in-progress" },
   "projects": [
-    { "github": "nywleswoey/automation", "orcaRepoId": "repo-aaa" }
+    { "github": "nywleswoey/automation", "orcaRepoId": "repo-aaa", "mergeMethod": "squash" }
   ]
 }
 JSON

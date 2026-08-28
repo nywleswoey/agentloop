@@ -14,9 +14,10 @@
 # repository, derives that pull request's state from GitHub alone, logs it,
 # asks CodeRabbit to fix its own findings, and puts the ones that are ready to
 # judge through the risk gate — four vetoes over one head commit, three
-# outcomes, and no merge yet, the close-out phase, which ticks,
-# closes and unclaims an issue once its pull request has merged, and the sweep,
-# which removes the loop's own finished worktrees at the end of every pass.
+# outcomes, and at most one merge per repository per pass, the close-out phase,
+# which ticks, closes and unclaims an issue once its pull request has merged,
+# and the sweep, which removes the loop's own finished worktrees at the end of
+# every pass.
 #
 # The PR phase keeps **no local state at all**. Every pass re-derives from a
 # fresh read, which is what makes "GitHub is the state store" true rather than
@@ -40,6 +41,12 @@ RUNTIME_WAIT_SECONDS="${AGENT_LOOP_RUNTIME_WAIT_SECONDS:-60}"
 ONCE=false
 BRANCH_REPORT=""
 LOG_PATH=""
+# Holds the one irreversible write and nothing else. A flag rather than a config
+# key on purpose: a persistent switch would be the confirmation gate this whole
+# effort replaced walking back in as a boolean, and a `false` left in a file is a
+# forgettable bypass. A flag is scoped to one invocation, grants nothing, and
+# only withholds. With `--once` it is a genuine dry run.
+NO_MERGE=false
 
 # What the PR phase recognises on GitHub. Every constant in this stanza is
 # CodeRabbit's surface rather than the loop's, and every one of them is an
@@ -101,6 +108,21 @@ RISK_LEVEL_MINIMAL='minimal'
 # JSON on every call.
 CI_WORKFLOW_DIR='.github/workflows/'
 UNATTENDED_SCRIPTS='agent-loop.sh,pr-writeback.sh,gh.sh'
+# What GitHub's merge endpoint accepts for `merge_method`, and the permission
+# boolean the repository read answers each one with. Spelled here as well as in
+# pr-writeback.sh for the same reason the autofix trigger is: the seam owns what
+# it *sends*, this owns what the loop *validates the config against*, and the
+# whole point of that validation is that it happens at startup. A fourth word is
+# not a merge method the loop got wrong — it is one that does not exist, which
+# GitHub answers with a 422 that classifies `refused`, which is the loop's *"I
+# said yes and reality disagreed"* signal. A config typo must never be able to
+# impersonate that, so it dies at second zero instead.
+#
+# The pairing is a lookup rather than a `case` because it is also what the
+# permission check reads: GitHub exposes no default-merge-method field, only
+# these three booleans saying what is permitted.
+MERGE_METHODS='merge squash rebase'
+MERGE_METHOD_PERMISSIONS='{"merge":"allow_merge_commit","squash":"allow_squash_merge","rebase":"allow_rebase_merge"}'
 # The legacy commit-status context. Measured: on this account CodeRabbit reports
 # review progress through the legacy status API and emits *zero* check runs,
 # while its own changelog says check runs are now the default surface. So both
@@ -137,7 +159,7 @@ SKIPS=0
 # variables, and required tools. Called when --help is passed or on argument errors.
 usage() {
   cat <<'EOF'
-Usage: agent-loop.sh [--once] [--config <path>]
+Usage: agent-loop.sh [--once] [--no-merge] [--config <path>]
        agent-loop.sh --branch-report <branch> [--config <path>]
 
 Polls the GitHub repositories in the config and dispatches Orca workers at
@@ -145,6 +167,10 @@ anything workable. Started by hand, runs until Ctrl-C.
 
 Options:
   --once              Run exactly one pass and exit instead of looping.
+  --no-merge          Hold the merge, and only the merge. Everything reversible
+                      still runs and the gate still logs the verdict it would
+                      have acted on. Scoped to this invocation; there is no
+                      config key for it. With --once it is a dry run.
   --branch-report <branch>
                       Report who holds <branch> in each configured project and
                       exit, without taking the lock or running a pass.
@@ -392,25 +418,42 @@ validate_config() {
   local repo_ids
   repo_ids=$(jq -r '.result.repos[].id' <<< "$ORCA_REPOS")
 
-  local i github orca_id
+  local i github orca_id method repo_json permission permitted
   for (( i = 0; i < PROJECT_COUNT; i++ )); do
     github=$(jq -r ".projects[$i].github // empty" "$CONFIG_PATH")
     orca_id=$(jq -r ".projects[$i].orcaRepoId // empty" "$CONFIG_PATH")
+    method=$(jq -r ".projects[$i].mergeMethod // empty" "$CONFIG_PATH")
     [[ -n "$github" ]] || die "projects[$i] has no github path"
     [[ -n "$orca_id" ]] || die "projects[$i] ($github) has no orcaRepoId"
+    # Per repository, because it mirrors a repository setting, and required,
+    # because there is nothing to default it from: GitHub exposes no
+    # default-merge-method field.
+    [[ -n "$method" ]] || die "projects[$i] ($github) has no mergeMethod"
+    [[ " $MERGE_METHODS " == *" $method "* ]] \
+      || die "projects[$i] ($github) mergeMethod must be one of: $MERGE_METHODS, got: $method"
 
     # GitHub names a repository by `<owner>/<name>` everywhere — in the REST
     # path, in the GraphQL query and on the command line — so unlike GitLab
     # there is no second numeric identifier to resolve and carry around. The
     # read is still made, because a typo must fail here and not on the first
-    # query of the first pass.
-    gh_json "/repos/$github" >/dev/null 2>&1 \
+    # query of the first pass — and it is the read the merge method is checked
+    # against, which is what puts that failure at startup rather than at the
+    # merge.
+    repo_json=$(gh_json "/repos/$github" 2>/dev/null) \
       || die "project does not resolve: $github"
+    permission=$(jq -r --arg m "$method" '.[$m]' <<< "$MERGE_METHOD_PERMISSIONS")
+    # `// false`, so a repository read that carries no such field fails closed.
+    # This is a read at startup, so the cost of being wrong is a loud refusal to
+    # start; the cost of the other direction is a merge refused unattended and
+    # reported as the rubric being wrong.
+    permitted=$(jq -r --arg p "$permission" '.[$p] // false' <<< "$repo_json")
+    [[ "$permitted" == "true" ]] \
+      || die "$github does not permit mergeMethod $method ($permission is $permitted)"
     grep -qxF "$orca_id" <<< "$repo_ids" \
       || die "orcaRepoId does not resolve: $orca_id ($github)"
 
     ensure_labels "$github"
-    log "validated $github -> orca repo $orca_id"
+    log "validated $github -> orca repo $orca_id, merging by $method"
   done
 }
 
@@ -1114,7 +1157,7 @@ epoch_of() {
     || date -u -d "$1" +%s 2>/dev/null
 }
 
-# The one action the phase has. It goes through pr-writeback.sh rather than
+# The autofix trigger. It goes through pr-writeback.sh rather than
 # calling gh-axi here, because the seam is a thing a human can also run by hand
 # and because the trigger's text is the seam's own constant.
 #
@@ -1123,6 +1166,25 @@ epoch_of() {
 # if a failed trigger ever needs explaining beyond "it failed".
 post_autofix_trigger() {
   "$SCRIPT_DIR/pr-writeback.sh" autofix --repo "$1" --pr "$2" --sha "$3" >/dev/null 2>&1
+}
+
+# The one irreversible write. merge_pr <repo> <number> <assessed-commit> <method>
+#
+# The commit is the one the gate assessed and never the head as GitHub reports
+# it now: the seam turns it into an assertion GitHub compares against the head,
+# so a push that raced the gate loses with a 409 instead of being merged
+# unreviewed. The method comes from the configuration that was validated against
+# this repository's own permission booleans at startup.
+#
+# Unlike the trigger, **stdout is kept**. It is GitHub's answer verbatim, and on
+# a refusal it is the text the handover pastes — the whole of what the operator
+# has to go on when the gate said yes and reality disagreed. stderr is the
+# seam's own prose for a human running it by hand, and is dropped.
+#
+# The exit status is the seam's contract and passes through untouched: 0 merged,
+# 3 refused, 4 transient, 1 an argument error or a fatal failure of the seam.
+merge_pr() {
+  "$SCRIPT_DIR/pr-writeback.sh" merge --repo "$1" --pr "$2" --sha "$3" --method "$4" 2>/dev/null
 }
 
 # --- the handover -------------------------------------------------------------
@@ -1142,11 +1204,23 @@ post_autofix_trigger() {
 # that **passed** are carried too: an operator reading a handover is owed the
 # complete picture the gate saw, not the subset that said no, because the
 # passing rows are what tell them where *not* to look.
-# The tab is the join, so a tab inside a field would reshape the row into a
-# different one rather than corrupt it visibly — the one failure a record must
-# not have. Nothing produces one today; the substitution is what keeps that
-# true when the raw values start coming from CodeRabbit and GitHub.
-reason() { printf '%s\t%s\t%s' "${1//$'\t'/ }" "${2//$'\t'/ }" "${3//$'\t'/ }"; }
+# The tab is the join and the newline ends the row, so either one inside a field
+# would reshape the row into a different one rather than corrupt it visibly —
+# the one failure a record must not have. The reader is a `read` with `IFS`, and
+# a `read` stops at the first newline, so a value carrying one loses everything
+# after it *silently*.
+#
+# That is no longer hypothetical: the refused merge's raw value is GitHub's own
+# answer, forwarded verbatim through the seam, and gh-axi renders it as two
+# lines. Without the second substitution the `code:` line is dropped from the
+# one record the operator has to go on.
+#
+# md_cell substitutes newlines as well, and that is not this: it renders a value
+# that has already survived being read back. By then the loss has happened.
+reason() {
+  local verdict="${1//$'\t'/ }" what="${2//$'\t'/ }" raw="${3//$'\t'/ }"
+  printf '%s\t%s\t%s' "${verdict//$'\n'/ }" "${what//$'\n'/ }" "${raw//$'\n'/ }"
+}
 
 # A table cell. Three characters can break one: the pipe that draws the table,
 # and — because the raw column is rendered inside a code span — the backtick
@@ -1167,9 +1241,9 @@ md_cell() {
 # head-scoped record can live at all.
 #
 # The kind is the first line because it is what tells the operator what to do
-# next — whether to read the diff or go and look at CodeRabbit. Four are
-# defined; after this only `stalled` has a caller, and the other three arrive
-# with the risk gate, the merge and the review nudge.
+# next — whether to read the diff, go and look at CodeRabbit, or go and look at
+# the rubric. All four now have callers: `stalled` from the autofix clock,
+# `escalate` and `stuck` from the risk gate, and `refused` from the merge.
 escalation_body() {
   local kind="$1" head="$2" meaning r verdict what raw
   shift 2
@@ -1630,17 +1704,38 @@ risk_gate() {
 # derives state from GitHub, logs it, triggers CodeRabbit autofix, runs the risk
 # gate over what is assessable, and escalates when appropriate.
 pr_phase() {
-  local i github
+  local i github method
   for (( i = 0; i < PROJECT_COUNT; i++ )); do
     github=$(jq -r ".projects[$i].github" "$CONFIG_PATH")
-    pr_phase_project "$github"
+    # Validated against this repository's own permission booleans at startup, so
+    # by here it is a method the repository is known to allow.
+    method=$(jq -r ".projects[$i].mergeMethod" "$CONFIG_PATH")
+    pr_phase_project "$github" "$method"
   done
 }
+
+# **At most one merge per repository per pass**, reset here, at the top of each
+# repository — which is the axis the bound runs along, and the one configuration
+# order already provides.
+#
+# A merge changes the base under every other open pull request in that
+# repository: mergeability, check results and the commit each verdict was scoped
+# to are all invalidated by it. So the loop merges once and then stops touching
+# that repository's merge candidates, letting the next pass re-derive them from
+# a base that has settled. Other repositories are unaffected, and **non-merge
+# actions stay unbounded** — a trigger or a handover changes no base.
+#
+# Spent on the *attempt*, not on the success. A transient failure is the reason:
+# it means no durable answer came back, so the merge may well have landed and
+# the base may already have moved. A refusal did move nothing, but it escalates,
+# and an escalated pull request is one the loop has stopped acting on anyway.
+REPO_MERGE_SPENT=false
 
 # Run the PR phase for one project. Queries open pull requests and processes
 # each one through pr_phase_one.
 pr_phase_project() {
-  local github="$1" numbers number labelled
+  local github="$1" method="$2" numbers number labelled
+  REPO_MERGE_SPENT=false
   if ! numbers=$(query_repo_open_prs "$github"); then
     log "pr query failed: $github"
     SKIPS=$((SKIPS + 1))
@@ -1649,7 +1744,7 @@ pr_phase_project() {
   # stdin is closed for the body: gh-axi must not swallow the PR list.
   while IFS=$'\t' read -r number labelled; do
     [[ -n "$number" ]] || continue
-    pr_phase_one "$github" "$number" "$labelled" < /dev/null
+    pr_phase_one "$github" "$number" "$labelled" "$method" < /dev/null
   done <<< "$numbers"
 }
 
@@ -1660,10 +1755,10 @@ pr_phase_project() {
 # carrying the values the state was derived from. The tail is what keeps a new
 # reason from being a suite-wide edit.
 pr_phase_one() {
-  local github="$1" number="$2" labelled="$3"
+  local github="$1" number="$2" labelled="$3" method="$4"
   local response head head_date terminal threads status_at status_head trigger_at escalated
   local now head_epoch status_epoch trigger_epoch spent in_flight age status
-  local state review kv
+  local state review kv merge_out merge_status escalate_status
 
   if ! response=$(query_pr_state "$github" "$number"); then
     log "pr state query failed: $github#$number"
@@ -1806,14 +1901,8 @@ pr_phase_one() {
       SKIPS=$((SKIPS + 1))
     fi
   else
-    # The gate. Every veto evaluates, the verdict lands in the tail, and only
-    # `escalate` writes anything: a `defer` is silent by design and re-derived
-    # next pass, and a `merge` verdict is — for now — logged and not acted on.
-    #
-    # ponytail: #31 turns `verdict=merge` into a merge through the seam, bounded
-    # to one per repository per pass and held back by `--no-merge`. Until then
-    # this is the safest intermediate state there is: the gate is fully
-    # observable before it can act irreversibly.
+    # The gate. Every veto evaluates, the verdict lands in the tail, and a
+    # `defer` is silent by design and re-derived next pass.
     state=assessable
     if ! risk_gate "$head" "$head_date" "$head_epoch" "$now" "$response"; then
       log "pr gate unreadable: $github#$number"
@@ -1830,6 +1919,74 @@ pr_phase_one() {
         "${GATE_REASONS[@]+"${GATE_REASONS[@]}"}" || status=$?
       kv="$kv $(escalation_kv "$GATE_KIND" "$status")"
       (( status == 0 )) || SKIPS=$((SKIPS + 1))
+    elif [[ "$GATE_VERDICT" == "merge" ]]; then
+      # The line the whole daemon exists to cross. Everything before it is
+      # reversible; this is not, so the three things that make crossing it safe
+      # are all here: the commit named is the one the gate assessed, the bound
+      # is spent before the write rather than after it, and the flag holds the
+      # write and nothing else.
+      if $REPO_MERGE_SPENT; then
+        # Deferred to the next pass rather than dropped, and said out loud: with
+        # no local state this line is the only record the candidate leaves.
+        kv="$kv action=deferred bound=merge-per-repo"
+      elif $NO_MERGE; then
+        # The bound is spent here too, so a `--once --no-merge` run reports the
+        # same set of actions a real pass would take rather than every candidate
+        # it could see. The flag withholds the write, not the arithmetic.
+        REPO_MERGE_SPENT=true
+        kv="$kv action=would-merge method=$method"
+      else
+        REPO_MERGE_SPENT=true
+        merge_status=0
+        merge_out=$(merge_pr "$github" "$number" "$head" "$method") || merge_status=$?
+        case "$merge_status" in
+          0)
+            # Branch deletion needs no key and no call: the repository's
+            # delete-on-merge setting is honoured by GitHub on the merge itself.
+            kv="$kv action=merged method=$method"
+            ;;
+          3)
+            # Refused: GitHub answered, durably, no. Its own kind, because *I
+            # said yes and reality disagreed* is evidence the rubric is wrong
+            # rather than a fact about this pull request — and the record
+            # carries what GitHub said, verbatim, alongside the rows that led
+            # the gate to say yes.
+            #
+            # A merge racing a human push arrives here: the assertion on the
+            # assessed commit loses with a 409, which classifies refused. It
+            # escalates rather than retrying, which is the whole point of
+            # asserting the commit at all.
+            escalate_status=0
+            escalate "$github" "$number" "$head" refused \
+              "${GATE_REASONS[@]+"${GATE_REASONS[@]}"}" \
+              "$(reason no "GitHub refused the merge of the commit the gate cleared" \
+                   "rc=$merge_status method=$method head=$head response=${merge_out:-none}")" \
+              || escalate_status=$?
+            kv="$kv merge=refused rc=$merge_status $(escalation_kv refused "$escalate_status")"
+            # Only a handover that did not land counts against the pass. The
+            # refusal itself is not a skip: the loop set out to act on this pull
+            # request and did — the action turned out to be the handover.
+            (( escalate_status == 0 )) || SKIPS=$((SKIPS + 1))
+            ;;
+          4)
+            # Transient: the call did not get a durable answer. **Not escalated
+            # and not retried within the pass** — the poll interval is the whole
+            # of the backoff, retrying a merge is idempotent because an
+            # already-merged pull request answers 200, and the next pass
+            # re-derives everything from a fresh read.
+            kv="$kv merge=failed class=transient rc=$merge_status"
+            SKIPS=$((SKIPS + 1))
+            ;;
+          *)
+            # The seam's exit 1 — an argument error, or a fatal failure of the
+            # seam itself. Nothing was classified, so nothing durable is known,
+            # and the posture is the transient one: say so, act no further, let
+            # the next pass re-derive.
+            kv="$kv merge=failed class=unknown rc=$merge_status"
+            SKIPS=$((SKIPS + 1))
+            ;;
+        esac
+      fi
     fi
   fi
 
@@ -2040,6 +2197,7 @@ run_pass() {
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --once) ONCE=true; shift ;;
+    --no-merge) NO_MERGE=true; shift ;;
     --branch-report) BRANCH_REPORT="${2:-}"; [[ -n "$BRANCH_REPORT" ]] || die "--branch-report needs a branch"; shift 2 ;;
     --config) CONFIG_PATH="${2:-}"; [[ -n "$CONFIG_PATH" ]] || die "--config needs a path"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
