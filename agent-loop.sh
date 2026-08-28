@@ -866,7 +866,7 @@ query_pr_state() {
   printf '%s' "$response"
 }
 
-# The six facts the state machine runs on, one per line — see the caller for
+# The seven facts the state machine runs on, one per line — see the caller for
 # why they are not one tab-separated line:
 #
 #   head        the head commit
@@ -874,6 +874,7 @@ query_pr_state() {
 #   terminal    true when CodeRabbit's review on that commit has finished
 #   threads     unresolved CodeRabbit review threads on the pull request
 #   statusAt    newest autofix-status comment, ISO-8601, empty if none
+#   statusHead  input head recorded by that status's trigger, empty if unknown
 #   triggerAt   newest autofix trigger I posted, ISO-8601, empty if none
 #
 # Three judgements are made here and are worth naming:
@@ -921,17 +922,25 @@ pr_facts() {
         | select(.comments.nodes[0].author.login | is_coderabbit) ] as $threads
     | [ $pr.comments.nodes[]?
         | select((.body // "") | contains($statusmarker))
-        | .updatedAt ] as $statuses
+        | { createdAt, updatedAt } ]
+        | max_by(.updatedAt) as $status
     | [ $pr.comments.nodes[]?
         | select(((.author.login // "") | ascii_downcase) == ($me | ascii_downcase))
         | select((.body // "") | contains($trigger))
-        | .createdAt ] as $triggers
+        | { createdAt,
+            head: (try ((.body // "")
+              | capture("<!-- agent-loop-autofix-head: (?<sha>[0-9a-fA-F]{40}) -->").sha)
+              catch "") } ] as $triggers
+    | [ $triggers[]
+        | select(.createdAt <= ($status.createdAt // "")) ]
+        | max_by(.createdAt) as $statusTrigger
     | [ ($head.oid // ""),
         ($head.committedDate // ""),
         (($terminal | any) | tostring),
         ($threads | length | tostring),
-        ($statuses | max // ""),
-        ($triggers | max // "") ]
+        ($status.updatedAt // ""),
+        ($statusTrigger.head // ""),
+        ($triggers | map(.createdAt) | max // "") ]
     | .[]'
 }
 
@@ -953,7 +962,7 @@ epoch_of() {
 # dropped; only the exit status reaches the log line. Capture them into the tail
 # if a failed trigger ever needs explaining beyond "it failed".
 post_autofix_trigger() {
-  "$SCRIPT_DIR/pr-writeback.sh" autofix --repo "$1" --pr "$2" >/dev/null 2>&1
+  "$SCRIPT_DIR/pr-writeback.sh" autofix --repo "$1" --pr "$2" --sha "$3" >/dev/null 2>&1
 }
 
 pr_phase() {
@@ -986,7 +995,7 @@ pr_phase_project() {
 # reason from being a suite-wide edit.
 pr_phase_one() {
   local github="$1" number="$2"
-  local response head head_date terminal threads status_at trigger_at
+  local response head head_date terminal threads status_at status_head trigger_at
   local now head_epoch status_epoch trigger_epoch spent in_flight age status
   local state review kv
 
@@ -995,7 +1004,7 @@ pr_phase_one() {
     SKIPS=$((SKIPS + 1))
     return 0
   fi
-  # One value per line, not one tab-separated line: two of the six are routinely
+  # One value per line, not one tab-separated line: three of the seven are routinely
   # empty, and bash's `read` folds a run of tabs into a single delimiter — so a
   # pull request with no autofix status would silently have its trigger read as
   # its status, and every one of them would look spent.
@@ -1003,20 +1012,21 @@ pr_phase_one() {
   # `|| true`, because a jq that answered nothing leaves `read` at end of input
   # and `set -e` would take the whole daemon down over one unreadable pull
   # request. The empty head below is what says so instead.
-  head=""; head_date=""; terminal=""; threads=0; status_at=""; trigger_at=""
+  head=""; head_date=""; terminal=""; threads=0; status_at=""; status_head=""; trigger_at=""
   {
     read -r head
     read -r head_date
     read -r terminal
     read -r threads
     read -r status_at
+    read -r status_head
     read -r trigger_at
   } < <(pr_facts <<< "$response") || true
 
-  # The head commit and its date are the origin every comparison below is made
-  # against, so a pull request that will not yield them is not guessed at: an
-  # unparseable date read as epoch zero would make every comment newer than the
-  # head and every autofix look spent.
+  # The head commit is the identity used by `spent`, and its date is the origin
+  # for the in-flight clock. A pull request that will not yield either is not
+  # guessed at: an unparseable date read as epoch zero would make every trigger
+  # appear newer than the head.
   head_epoch=$(epoch_of "$head_date") || head_epoch=""
   if [[ -z "$head" || -z "$head_epoch" ]]; then
     log "pr state unreadable: $github#$number"
@@ -1032,15 +1042,12 @@ pr_phase_one() {
   trigger_epoch=$(epoch_of "$trigger_at") || trigger_epoch=""
 
   # **Autofix is spent on this head** when the newest autofix-status comment is
-  # newer than the head commit. Autofix pushes its commit and *then* posts the
-  # status naming it, so a status newer than the head means autofix has already
-  # been attempted here. Two properties fall out and both are the point: the
-  # trigger fires at most once per head commit, so a poll loop cannot burn a
-  # metered review budget; and a failed or declined autofix needs no parsing at
-  # all — it pushes nothing, so the head never moves, but its status comment
-  # still lands newer than the head and the pull request falls straight through.
+  # paired with a trigger that records this head as its input. CodeRabbit's
+  # visible `Commit:` is an output commit on success and `_none_` on failure, so
+  # neither can identify the input. The loop records that identity in its own
+  # trigger instead and never parses CodeRabbit's result prose.
   spent=unspent
-  if [[ -n "$status_epoch" ]] && (( status_epoch > head_epoch )); then
+  if [[ -n "$status_head" && "$status_head" == "$head" ]]; then
     spent=spent
   fi
 
@@ -1078,7 +1085,7 @@ pr_phase_one() {
   elif (( threads > 0 )) && [[ "$spent" == "unspent" ]]; then
     state=needs-autofix
     status=0
-    post_autofix_trigger "$github" "$number" || status=$?
+    post_autofix_trigger "$github" "$number" "$head" || status=$?
     if (( status == 0 )); then
       kv="$kv action=triggered"
     else

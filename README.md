@@ -23,14 +23,14 @@ Between passes it sleeps for `pollIntervalSeconds`.
 - **Fail closed** — if the worktree inventory can't be read, the budget is treated as full and the sweep is skipped. A budget that failed open would dispatch a fresh `maxWorkers` on top of the workers it couldn't see.
 - **PID lock** — one loop per machine.
 - **Startup reclaim** — an issue left claimed with no live worker (crash, failed dispatch) is handed back to `ready-for-agent` when the loop next starts.
-- **Once per head commit** — the autofix trigger fires at most once per head, derived from an autofix-status comment landing newer than the head commit. Reviews are metered, and a poll loop that re-fired every pass would burn that budget; a failed or declined autofix falls through on the same term, with none of CodeRabbit's prose parsed.
+- **Once per head commit** — the autofix trigger records its input head, and the matching autofix-status comment spends that head. Reviews are metered, and a poll loop that re-fired every pass would burn that budget; generated output commits and failure prose are never used as the input identity.
 - **Log rotation** — one generation, capped at 5 MiB. A loop left running for weeks must not fill the disk.
 
-### Nothing is written to GitHub without confirmation
+### Pull-request writes use one seam
 
-A PR worker triages threads, prepares a local commit per fix, writes a plan, and stops. Nothing reaches GitHub until the operator marks entries `confirmed` and runs `pr-writeback.sh` against that plan.
+The PR phase triages GitHub state without a worker or worktree and sends each selected action through `pr-writeback.sh`. It creates no local fix commits, worker plans, or plan-confirmation step.
 
-`pr-writeback.sh` is the **only** thing that pushes a worker's fixes or writes to a review thread. Keeping every write in one script is what makes "nothing before confirmation" checkable rather than a promise.
+`pr-writeback.sh` is the **only** thing that writes to a pull request: it posts CodeRabbit commands, comments and labels, and performs guarded merges.
 
 ---
 

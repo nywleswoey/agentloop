@@ -18,7 +18,7 @@
 # thing a human can also run by hand.
 #
 # Usage:
-#   pr-writeback.sh autofix --repo <owner/name> --pr <n>
+#   pr-writeback.sh autofix --repo <owner/name> --pr <n> [--sha <commit>]
 #   pr-writeback.sh review  --repo <owner/name> --pr <n>
 #   pr-writeback.sh comment --repo <owner/name> --pr <n> --body-file <path>
 #   pr-writeback.sh label   --repo <owner/name> --pr <n> --add <name>
@@ -146,7 +146,7 @@ Flags:
   --pr <n>             The pull-request number.
   --body-file <path>   comment only: the body, which must not be empty.
   --add <name>         label only: the label to add.
-  --sha <commit>       merge only: the assessed commit, in full. Required.
+  --sha <commit>       autofix: input head to record; merge: assessed commit.
   --method <name>      merge only: merge, squash or rebase. Required.
   -h, --help           Show this message.
 
@@ -201,7 +201,8 @@ while [[ $# -gt 0 ]]; do
       flag_of --add label
       ADD_LABEL="${2:-}"; [[ -n "$ADD_LABEL" ]] || die "--add needs a value"; shift 2 ;;
     --sha)
-      flag_of --sha merge
+      [[ "$VERB" == autofix || "$VERB" == merge ]] \
+        || die "--sha is not a flag of ${VERB}"
       SHA="${2:-}"; [[ -n "$SHA" ]] || die "--sha needs a value"; shift 2 ;;
     --method)
       flag_of --method merge
@@ -221,6 +222,11 @@ done
 [[ "$PR" =~ ^[1-9][0-9]*$ ]] || die "--pr must be a positive integer, got: $PR"
 
 case "$VERB" in
+  autofix)
+    if [[ -n "$SHA" && ! "$SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+      die "--sha must be a full 40-character commit, got: $SHA"
+    fi
+    ;;
   comment)
     [[ -n "$BODY_FILE" ]] || die "comment needs --body-file"
     [[ -r "$BODY_FILE" && -f "$BODY_FILE" ]] || die "--body-file is not a readable file: $BODY_FILE"
@@ -319,7 +325,13 @@ merge_write() {
 
 write() {
   case "$VERB" in
-    autofix) gh_write pr comment "$PR" --repo "$REPO" --body "$AUTOFIX_TRIGGER" ;;
+    autofix)
+      local body="$AUTOFIX_TRIGGER"
+      if [[ -n "$SHA" ]]; then
+        body="$body"$'\n'"<!-- agent-loop-autofix-head: $SHA -->"
+      fi
+      gh_write pr comment "$PR" --repo "$REPO" --body "$body"
+      ;;
     review)  gh_write pr comment "$PR" --repo "$REPO" --body "$REVIEW_TRIGGER" ;;
     comment) gh_write pr comment "$PR" --repo "$REPO" --body-file "$BODY_FILE" ;;
     label)   gh_write pr edit "$PR" --repo "$REPO" --add-label "$ADD_LABEL" ;;

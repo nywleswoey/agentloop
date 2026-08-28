@@ -863,6 +863,7 @@ check "one state line per pull request" test "$(grep -cE '^[0-9TZ:-]+ pr nywlesw
 # worker deleted the chain runs unbroken from the loop to the CLI argv, which is
 # the only reason the line below is observable at all.
 check_grep "gh-axi pr comment 204 --repo nywleswoey/automation --body @coderabbitai autofix" "$STUB_CALLS"
+check_grep "<!-- agent-loop-autofix-head: 204d204d204d204d204d204d204d204d204d204d -->" "$STUB_CALLS"
 check "exactly one autofix trigger this pass" test "$(grep -cF 'body @coderabbitai autofix' "$STUB_CALLS")" -eq 1
 
 # The trigger's text is spelled twice — once in the seam, which *writes* it, and
@@ -940,19 +941,18 @@ check_status 0 "$STATUS"
 check_grep "pr nywleswoey/automation#301 301a301a301a301a301a301a301a301a301a301a assessable review=terminal threads=2 autofix=spent" "$PASS_LOG"
 check "still exactly one trigger after the third pass" test "$(grep -cF 'pr comment 301' "$STUB_CALLS")" -eq 1
 
-# --- pr phase: a failed autofix falls through, unparsed ------------------------------
+# --- pr phase: a status from an earlier head does not spend this one ----------------
 
-# The same world as 206 in the omnibus case above, byte for byte, with only the
-# autofix status comment's prose swapped for the failure shape — which shares no
-# word with the success one. Identical verdict: what makes autofix spent is a
-# status comment newer than the head, never what the comment says.
-setup "a declined autofix falls through to assessable without its prose being read"
+# The same world as 206 in the omnibus case above, with a failed status whose
+# paired trigger records the preceding head. Its `_none_` result is not an input
+# identity, and its newer timestamp cannot suppress autofix on the current head.
+setup "an autofix status for an earlier head does not spend the current head"
 export STUB_WORLD=autofix-failed STUB_NOW=2026-08-27T12:00:00Z
 run_once
 check_status 0 "$STATUS"
-check_grep "pr nywleswoey/automation#206 206f206f206f206f206f206f206f206f206f206f assessable review=terminal threads=3 autofix=spent" "$OUT"
-check "no trigger was posted at a head autofix has already been spent on" \
-  test "$(grep -cF 'body @coderabbitai autofix' "$STUB_CALLS")" -eq 0
+check_grep "pr nywleswoey/automation#206 206f206f206f206f206f206f206f206f206f206f needs-autofix review=terminal threads=3 autofix=unspent action=triggered" "$OUT"
+check "one trigger was posted for the unspent current head" \
+  test "$(grep -cF 'body @coderabbitai autofix' "$STUB_CALLS")" -eq 1
 
 # --- pr phase: configuration order is the axis ---------------------------------------
 

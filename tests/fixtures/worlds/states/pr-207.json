@@ -86,7 +86,7 @@
               "databaseId": 5379000217,
               "createdAt": "2026-08-27T11:00:00Z",
               "updatedAt": "2026-08-27T11:00:00Z",
-              "body": "@coderabbitai autofix",
+              "body": "@coderabbitai autofix\n<!-- agent-loop-autofix-head: 207a207a207a207a207a207a207a207a207a207a -->",
               "author": {
                 "login": "nywleswoey"
               }
