@@ -1,0 +1,73 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "number": 263,
+        "headRefOid": "263d263d263d263d263d263d263d263d263d263d",
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "CLEAN",
+        "files": {
+          "totalCount": 1,
+          "nodes": [
+            {
+              "path": "src/nudge-worked.js"
+            }
+          ]
+        },
+        "commits": {
+          "nodes": [
+            {
+              "commit": {
+                "oid": "263d263d263d263d263d263d263d263d263d263d",
+                "committedDate": "2026-08-27T11:20:00Z",
+                "statusCheckRollup": {
+                  "state": "PENDING",
+                  "contexts": {
+                    "nodes": [
+                      {
+                        "__typename": "StatusContext",
+                        "context": "CodeRabbit",
+                        "state": "SUCCESS",
+                        "description": "Review skipped",
+                        "createdAt": "2026-08-27T11:20:20Z",
+                        "creator": {
+                          "login": "coderabbitai"
+                        }
+                      },
+                      {
+                        "__typename": "StatusContext",
+                        "context": "CodeRabbit",
+                        "state": "PENDING",
+                        "description": "Review in progress",
+                        "createdAt": "2026-08-27T11:58:00Z",
+                        "creator": {
+                          "login": "coderabbitai"
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "reviewThreads": {
+          "nodes": []
+        },
+        "comments": {
+          "nodes": [
+            {
+              "databaseId": 5379000263,
+              "createdAt": "2026-08-27T11:57:00Z",
+              "updatedAt": "2026-08-27T11:57:00Z",
+              "body": "@coderabbitai review",
+              "author": {
+                "login": "nywleswoey"
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

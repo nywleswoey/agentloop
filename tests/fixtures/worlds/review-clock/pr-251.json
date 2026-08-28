@@ -1,0 +1,66 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "number": 251,
+        "headRefOid": "251b251b251b251b251b251b251b251b251b251b",
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "CLEAN",
+        "files": {
+          "totalCount": 1,
+          "nodes": [
+            {
+              "path": "src/queued-check.js"
+            }
+          ]
+        },
+        "commits": {
+          "nodes": [
+            {
+              "commit": {
+                "oid": "251b251b251b251b251b251b251b251b251b251b",
+                "committedDate": "2026-08-27T11:00:00Z",
+                "statusCheckRollup": {
+                  "state": "PENDING",
+                  "contexts": {
+                    "nodes": [
+                      {
+                        "__typename": "CheckRun",
+                        "name": "CodeRabbit",
+                        "status": "QUEUED",
+                        "conclusion": null,
+                        "startedAt": null,
+                        "completedAt": null,
+                        "checkSuite": {
+                          "app": {
+                            "slug": "coderabbitai"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "reviewThreads": {
+          "nodes": []
+        },
+        "comments": {
+          "nodes": [
+            {
+              "databaseId": 5379000251,
+              "createdAt": "2026-08-27T11:00:10Z",
+              "updatedAt": "2026-08-27T11:00:10Z",
+              "body": "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n<!-- recent_review_start -->\n## Walkthrough\n\nA change to the loop.\n<!-- recent_review_end -->\n<!-- final_review_risk_start -->\n**Merge Risk:** _⚪ Minimal_ · up to `251b`\n\nA localized change with no merge-blocking risk beyond normal checks and review.\n<!-- final_review_risk_end -->\n",
+              "author": {
+                "login": "coderabbitai"
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "data": {
+    "repository": {
+      "pullRequests": {
+        "nodes": [
+          {
+            "number": 250,
+            "title": "A review that started and never finished",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/250",
+            "headRefName": "pr-review-running",
+            "headRefOid": "250a250a250a250a250a250a250a250a250a250a",
+            "labels": {
+              "nodes": []
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
+          },
+          {
+            "number": 251,
+            "title": "A check run queued and never started",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/251",
+            "headRefName": "pr-queued-check",
+            "headRefOid": "251b251b251b251b251b251b251b251b251b251b",
+            "labels": {
+              "nodes": []
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
+          }
+        ]
+      }
+    }
+  }
+}

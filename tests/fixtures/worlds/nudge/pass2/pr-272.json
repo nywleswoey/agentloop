@@ -1,0 +1,56 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "number": 272,
+        "headRefOid": "272a272a272a272a272a272a272a272a272a272a",
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "CLEAN",
+        "files": {
+          "totalCount": 1,
+          "nodes": [
+            {
+              "path": "src/nudged.js"
+            }
+          ]
+        },
+        "commits": {
+          "nodes": [
+            {
+              "commit": {
+                "oid": "272a272a272a272a272a272a272a272a272a272a",
+                "committedDate": "2026-08-27T11:50:00Z",
+                "statusCheckRollup": null
+              }
+            }
+          ]
+        },
+        "reviewThreads": {
+          "nodes": []
+        },
+        "comments": {
+          "nodes": [
+            {
+              "databaseId": 5379000272,
+              "createdAt": "2026-08-27T11:55:00Z",
+              "updatedAt": "2026-08-27T11:59:50Z",
+              "body": "@coderabbitai review",
+              "author": {
+                "login": "nywleswoey"
+              }
+            },
+            {
+              "databaseId": 5379000273,
+              "createdAt": "2026-08-27T11:55:20Z",
+              "updatedAt": "2026-08-27T11:55:20Z",
+              "body": "<!-- This is an auto-generated reply by CodeRabbit -->\n\n**Actions performed**\n\nReview triggered.\n\n> Note: CodeRabbit is an incremental review system and does not re-review already reviewed commits.",
+              "author": {
+                "login": "coderabbitai"
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

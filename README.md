@@ -12,7 +12,7 @@ Each pass, in order:
 
 1. **Close-out** — an issue whose pull request has merged gets its checklist ticked, its description updated, its claim label removed, and the issue closed.
 2. **Issues** — queries each project for open issues labelled `ready-for-agent`, skips ones with an open blocker, swaps the label to `agent-in-progress`, and dispatches an Orca worker into a fresh worktree.
-3. **Pull requests** — enumerates every open pull request in each project except drafts and fork heads, derives its state from GitHub alone, logs one line per pull request, comments `@coderabbitai autofix` at the ones carrying unresolved findings, runs the risk gate over the ones that are ready to judge, merges at most one of them per repository, and hands over the ones it will not act on. It spends no worker and no worktree, and it keeps no local state: every pass re-derives from a fresh read.
+3. **Pull requests** — enumerates every open pull request in each project except drafts and fork heads, derives its state from GitHub alone, logs one line per pull request, comments `@coderabbitai review` at the ones CodeRabbit never reviewed and `@coderabbitai autofix` at the ones carrying unresolved findings, runs the risk gate over the ones that are ready to judge, merges at most one of them per repository, and hands over the ones it will not act on. It spends no worker and no worktree, and it keeps no local state: every pass re-derives from a fresh read.
 4. **Sweep** — removes the loop's own finished worktrees.
 
 Between passes it sleeps for `pollIntervalSeconds`.
@@ -35,13 +35,30 @@ Between passes it sleeps for `pollIntervalSeconds`.
 - **The merge names the commit the gate assessed** — never the head as GitHub reports it at the moment of the write. The seam sends it as an assertion GitHub compares against the head, so a push that raced the gate loses with a 409 and escalates instead of being merged unreviewed. Branch deletion needs no key and no call: the repository's delete-on-merge setting is honoured by GitHub on the merge itself.
 - **At most one merge per repository per pass.** A merge changes the base under every other open pull request in that repository, invalidating mergeability, check results and the commit each verdict was scoped to — so the loop merges once and lets the next pass re-derive. The candidates it held are logged as deferred. Other repositories are unaffected, and non-merge actions stay unbounded. A merge GitHub **refuses** escalates as its own kind, `refused`, carrying GitHub's answer verbatim: *I said yes and reality disagreed* is evidence the rubric is wrong. A merge that fails **transiently** is neither escalated nor retried within the pass — the poll interval is the whole of the backoff.
 - **Escalation is a handover, not a notification** — the loop acts as the operator's own account, and GitHub never notifies you of your own actions, so no arrangement of writes can push one. A pull request the loop will not act on gets a comment carrying every reason and the raw values behind it, then the `agent-escalated` label, in that order — the record first, so a missing flag is re-added on a later pass without the record being posted twice. Once escalated at a head commit the loop takes **no further action on that pull request at that commit**. The three ways back in are the ones GitHub already gives you: merge it by hand, push a commit, or convert it to draft. There is no override label; a push is both the fix and the re-engagement.
+- **A pull request CodeRabbit never reviewed is nudged, then handed over.** It counts as unreviewed when either CodeRabbit put nothing at all on the head commit, or there is no merge-risk block anywhere on the pull request — the second clause because a **green CodeRabbit status does not mean the code was reviewed**: a draft gets one too, with a *review skipped* description, and un-drafting is not a push, so the head never moves. The test is for the block's HTML marker rather than for any prose, and a *clean* review still carries the block, so its absence cannot mean a clean review. It is cause-blind, which is also why it catches the rate-limit path's passing check.
+
+  The remedy is a write, because the cause does not clear on its own: CodeRabbit auto-pauses incremental reviews after five reviewed commits and the counter resets only when the pause is lifted, which is a command. So the loop posts `@coderabbitai review`, once per head, and gives it **one poll interval** — command replies arrive in seconds. Past that it hands the pull request over as `stalled`, naming the two causes an operator can act on: CodeRabbit may not be installed on the repository, or the organisation may be out of seats. A pull request that is merely **rate-limited** waits instead of being nudged. **No CodeRabbit prose is parsed anywhere on this path** — the bot's reply is pasted into the handover verbatim and nothing keys on it.
+- **A review that started and never finished is bounded too.** A pending CodeRabbit status with nothing after it is `mergeGateTimeoutSeconds` from the **oldest pending status on the head commit** — not from the commit's own date, because a real pull request sat four and a half hours between its head commit and its review starting, and not from the newest, because the progress statuses land three seconds apart and are phase markers rather than heartbeats. A signal that names no instant of its own — a check run GitHub has queued and not yet started — falls back to the head commit, which can only make the clock run early, and the log line names which origin it used. It escalates as `stuck` rather than `stalled`, and it is never nudged: CodeRabbit has already acknowledged the work, and a pending status is not a pause.
+- **Every derived state has a bounded exit**, and each bound is named with the value it runs on and the timestamp it runs from:
+
+  | State | Bound | Origin |
+  |---|---|---|
+  | `reviewing` | `mergeGateTimeoutSeconds` | oldest pending signal on the head, or the head commit itself when no signal names an instant |
+  | `autofix-in-flight` | `autofixTimeoutSeconds` | the trigger comment |
+  | `nudge-in-flight` | one poll interval | the nudge comment |
+  | `unreviewed`, `needs-autofix` | acts on the pass it is derived | — |
+  | `assessable` | `mergeGateTimeoutSeconds` (V5) | the head commit's date |
+  | `escalated` | the head moving | — |
+  | `rate-limited` | **external** | the fair-usage rolling window |
+
+  `rate-limited` is the one state with no clock of the loop's own, and that is correct rather than a hole: unlike the review pause, the rate limit self-clears as usage ages out.
 - **Log rotation** — one generation, capped at 5 MiB. A loop left running for weeks must not fill the disk.
 
 ### Pull-request writes use one seam
 
 The PR phase triages GitHub state without a worker or worktree and sends each selected action through `pr-writeback.sh`. It creates no local fix commits, worker plans, or plan-confirmation step.
 
-`pr-writeback.sh` is the **only** thing that writes to a pull request: it posts CodeRabbit commands, comments and labels, and performs guarded merges. Its merge verb is the loop's one irreversible unattended write, and `--no-merge` is what holds it.
+`pr-writeback.sh` is the **only** thing that writes to a pull request: it posts CodeRabbit's `autofix` and `review` commands, comments and labels, and performs guarded merges. Its merge verb is the loop's one irreversible unattended write, and `--no-merge` is what holds it.
 
 ---
 

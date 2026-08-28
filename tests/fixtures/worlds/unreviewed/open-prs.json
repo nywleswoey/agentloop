@@ -1,0 +1,74 @@
+{
+  "data": {
+    "repository": {
+      "pullRequests": {
+        "nodes": [
+          {
+            "number": 260,
+            "title": "A green status that means no review ran",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/260",
+            "headRefName": "pr-false-green",
+            "headRefOid": "260a260a260a260a260a260a260a260a260a260a",
+            "labels": {
+              "nodes": []
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
+          },
+          {
+            "number": 261,
+            "title": "Rate limited, with a passing check",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/261",
+            "headRefName": "pr-throttled",
+            "headRefOid": "261b261b261b261b261b261b261b261b261b261b",
+            "labels": {
+              "nodes": []
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
+          },
+          {
+            "number": 262,
+            "title": "Nothing rolled up on the head",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/262",
+            "headRefName": "pr-no-signal",
+            "headRefOid": "262c262c262c262c262c262c262c262c262c262c",
+            "labels": {
+              "nodes": []
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
+          },
+          {
+            "number": 263,
+            "title": "The nudge worked and the review is running",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/263",
+            "headRefName": "pr-nudge-worked",
+            "headRefOid": "263d263d263d263d263d263d263d263d263d263d",
+            "labels": {
+              "nodes": []
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
+          }
+        ]
+      }
+    }
+  }
+}
