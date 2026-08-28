@@ -37,6 +37,8 @@ check_grep() {
   fi
 }
 
+# Assert that a pattern does NOT appear in a file. Inverse of check_grep. Dumps
+# the file contents on failure to help diagnose why the pattern was present.
 check_no_grep() {
   local pattern="$1" file="$2"
   if grep -qF -- "$pattern" "$file" 2>/dev/null; then
@@ -48,6 +50,8 @@ check_no_grep() {
   fi
 }
 
+# Assert that a command's exit status matches the expected value. Special value
+# "nonzero" matches any non-zero exit status.
 check_status() {
   local expected="$1" actual="$2"
   if [[ "$expected" == "nonzero" ]]; then

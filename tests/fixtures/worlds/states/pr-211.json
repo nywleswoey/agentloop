@@ -4,6 +4,16 @@
       "pullRequest": {
         "number": 211,
         "headRefOid": "211e211e211e211e211e211e211e211e211e211e",
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "CLEAN",
+        "files": {
+          "totalCount": 1,
+          "nodes": [
+            {
+              "path": "src/new-thing.js"
+            }
+          ]
+        },
         "commits": {
           "nodes": [
             {
