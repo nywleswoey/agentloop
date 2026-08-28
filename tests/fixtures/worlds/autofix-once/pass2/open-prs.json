@@ -1,0 +1,22 @@
+{
+  "data": {
+    "repository": {
+      "pullRequests": {
+        "nodes": [
+          {
+            "number": 301,
+            "title": "Findings to fix once",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/301",
+            "headRefName": "pr-once",
+            "headRefOid": "301a301a301a301a301a301a301a301a301a301a",
+            "labels": {
+              "nodes": []
+            }
+          }
+        ]
+      }
+    }
+  }
+}

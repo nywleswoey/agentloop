@@ -1,7 +1,7 @@
 {
   "pollIntervalSeconds": 300,
   "maxWorkers": 3,
-  "seenListPath": "~/.agent-loop/seen.jsonl",
+  "autofixTimeoutSeconds": 5400,
   "logPath": "~/.agent-loop/agent-loop.log",
   "labels": {
     "ready": "ready-for-agent",

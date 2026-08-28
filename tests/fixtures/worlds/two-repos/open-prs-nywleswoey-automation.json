@@ -1,0 +1,22 @@
+{
+  "data": {
+    "repository": {
+      "pullRequests": {
+        "nodes": [
+          {
+            "number": 501,
+            "title": "First configured repository",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/501",
+            "headRefName": "pr-first",
+            "headRefOid": "501a501a501a501a501a501a501a501a501a501a",
+            "labels": {
+              "nodes": []
+            }
+          }
+        ]
+      }
+    }
+  }
+}

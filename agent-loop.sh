@@ -9,12 +9,18 @@
 # PID lock, Orca runtime readiness, logging, the pass loop — the issue phase,
 # which claims workable `ready-for-agent` issues and dispatches an Orca worker
 # at them, the worktree inventory, which answers who holds a branch and reclaims
-# stale claims at startup, the PR phase, which dispatches a thread-triage worker
-# at open pull requests carrying unresolved review threads, the seen-list, which
-# keeps a thread I left silent out of eligibility until a new comment lands on
-# it, the close-out phase, which ticks, closes and unclaims an issue once its
-# pull request has merged, and the sweep, which removes the loop's own finished
-# worktrees at the end of every pass.
+# stale claims at startup, the PR phase, which is a reducer rather than a
+# dispatcher: it enumerates every open pull request in every configured
+# repository, derives that pull request's state from GitHub alone, logs it, and
+# asks CodeRabbit to fix its own findings, the close-out phase, which ticks,
+# closes and unclaims an issue once its pull request has merged, and the sweep,
+# which removes the loop's own finished worktrees at the end of every pass.
+#
+# The PR phase keeps **no local state at all**. Every pass re-derives from a
+# fresh read, which is what makes "GitHub is the state store" true rather than
+# aspirational: the loop survives a crash, a `--once` run and a machine rebuild
+# for free, and the log line it prints per pull request is the only record a
+# wait leaves.
 #
 # Usage:
 #   ./agent-loop.sh [--once] [--config <path>]
@@ -29,16 +35,33 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_PATH="${AGENT_LOOP_CONFIG:-$SCRIPT_DIR/agent-loop.config.json}"
 LOG_MAX_BYTES="${AGENT_LOOP_LOG_MAX_BYTES:-5242880}"
 RUNTIME_WAIT_SECONDS="${AGENT_LOOP_RUNTIME_WAIT_SECONDS:-60}"
-# How long a reused terminal is given to finish booting its agent before the
-# prompt is typed into it. Bounded, because the loop must never wait on a worker.
-TUI_WAIT_MS="${AGENT_LOOP_TUI_WAIT_MS:-60000}"
 ONCE=false
 BRANCH_REPORT=""
 LOG_PATH=""
-# The seen-list as a JSON array, refilled at the top of every PR phase. Empty
-# until then, so a thread eligibility check that runs before it is loaded
-# filters nothing rather than dying on an unbound variable.
-SEEN_JSON='[]'
+
+# What the PR phase recognises on GitHub. All four are CodeRabbit's surface
+# rather than the loop's, and all four are undocumented HTML markers or product
+# strings, so they are spelled once, here, where a change to any of them is one
+# edit.
+#
+# The autofix trigger is spelled a second time in pr-writeback.sh, and the two
+# copies are not a duplication to collapse. The seam owns what is *written* —
+# its own constant, so a typo is an argument error rather than a silent no-op.
+# This one is what the loop *recognises*, and it deliberately matches more: a
+# trigger the operator typed into the GitHub UI by hand is an autofix in flight
+# exactly as much as one the seam posted, and the loop must see it or it will
+# fire a second run on top of it.
+AUTOFIX_TRIGGER='@coderabbitai autofix'
+AUTOFIX_STATUS_MARKER='<!-- This is an auto-generated comment: autofix status by CodeRabbit -->'
+# The legacy commit-status context. Measured: on this account CodeRabbit reports
+# review progress through the legacy status API and emits *zero* check runs,
+# while its own changelog says check runs are now the default surface. So both
+# are read, and either one terminal is terminal — one extra field on a read the
+# phase already makes, against a default that could flip under the loop.
+CODERABBIT_STATUS_CONTEXT='CodeRabbit'
+# GraphQL renders a bot actor's login without the `[bot]` suffix REST puts on
+# it, so this is matched as a prefix rather than compared whole.
+CODERABBIT_LOGIN='coderabbitai'
 # Reset at the top of every pass. Initialised here only because the close-out
 # that runs before the first pass bumps it too, and `set -u` would kill it
 # otherwise — what it counts before the first pass is discarded, which is why
@@ -66,8 +89,6 @@ Environment overrides (for tests and troubleshooting):
   AGENT_LOOP_CONFIG                 default config path
   AGENT_LOOP_LOG_MAX_BYTES          log size cap before rotation (default 5 MiB)
   AGENT_LOOP_RUNTIME_WAIT_SECONDS   how long to wait for the Orca runtime (default 60)
-  AGENT_LOOP_TUI_WAIT_MS            how long a reused terminal gets to boot its
-                                    agent before the prompt is typed (default 60000)
 
 Requires: jq, git, orca, gh-axi
 EOF
@@ -141,23 +162,33 @@ load_config() {
   [[ -f "$CONFIG_PATH" ]] || die "config not found: $CONFIG_PATH"
   jq empty "$CONFIG_PATH" 2>/dev/null || die "config is not valid JSON: $CONFIG_PATH"
 
+  # The seen-list is gone with the PR worker that wrote it, and a key nothing
+  # reads is a key that rots. Unknown keys are otherwise ignored on purpose —
+  # enumerating every valid one would be machinery to keep in sync forever, and
+  # it would forbid an operator keeping a note in their own file — so this one
+  # dead key is named explicitly instead. It is deletable once no config in the
+  # world still carries it.
+  #
+  # It adds no failure event of its own: an old config already stops on the
+  # missing `autofixTimeoutSeconds` below. Checked first all the same, because
+  # this is the message that says what to *do*.
+  jq -e 'has("seenListPath") | not' "$CONFIG_PATH" >/dev/null 2>&1 \
+    || die "config still names seenListPath, which no longer exists: remove the key. The PR phase keeps no local state — every pass re-derives from GitHub. ($CONFIG_PATH)"
+
   POLL_INTERVAL=$(jq -r '.pollIntervalSeconds // empty' "$CONFIG_PATH")
   MAX_WORKERS=$(jq -r '.maxWorkers // empty' "$CONFIG_PATH")
-  SEEN_LIST_PATH=$(expand_tilde "$(jq -r '.seenListPath // empty' "$CONFIG_PATH")")
+  AUTOFIX_TIMEOUT=$(jq -r '.autofixTimeoutSeconds // empty' "$CONFIG_PATH")
   LABEL_READY=$(jq -r '.labels.ready // empty' "$CONFIG_PATH")
   LABEL_CLAIMED=$(jq -r '.labels.claimed // empty' "$CONFIG_PATH")
   PROJECT_COUNT=$(jq -r '.projects | length' "$CONFIG_PATH" 2>/dev/null || echo 0)
 
   require_positive_int pollIntervalSeconds "$POLL_INTERVAL"
   require_positive_int maxWorkers "$MAX_WORKERS"
-  require_field seenListPath "$SEEN_LIST_PATH"
-  # The daemon never writes the file — the workers do — but it is the daemon
-  # that knows the path is configured, so it is the daemon that makes sure a
-  # worker has somewhere to append to. A directory that will not be created is
-  # not fatal: the seen-list is disposable, and a loop that cannot keep one is
-  # a loop that re-triages, not a loop that stops.
-  mkdir -p "$(dirname "$SEEN_LIST_PATH")" \
-    || log "could not create the seen-list directory for: $SEEN_LIST_PATH"
+  # Required, not defaulted. This config has no defaults anywhere — every key in
+  # it is required and a missing one is fatal — and the number itself is an
+  # admitted guess off a single seventeen-minute sample, so defaulting it would
+  # add the file's first default *and* hide the guess behind it.
+  require_positive_int autofixTimeoutSeconds "$AUTOFIX_TIMEOUT"
   require_field labels.ready "$LABEL_READY"
   require_field labels.claimed "$LABEL_CLAIMED"
   [[ "$PROJECT_COUNT" -gt 0 ]] || die "config lists no projects: $CONFIG_PATH"
@@ -288,8 +319,10 @@ validate_config() {
 
 # The Orca repo id a configured GitHub repository maps to, or nothing when the
 # config does not list it — which is how "not this loop's business" is said.
-# Both global pull-request reads name repositories by `<owner>/<name>` and
-# nothing else, so both come back through here.
+# The close-out read is global and names repositories by `<owner>/<name>` and
+# nothing else, so it comes back through here. The open-pull-request read no
+# longer needs it: it runs per configured repository, so everything it returns
+# is in scope by construction.
 orca_id_for_project() {
   local i
   for (( i = 0; i < PROJECT_COUNT; i++ )); do
@@ -400,10 +433,13 @@ count_live_workers() {
   printf '%s' "$count"
 }
 
-# maxWorkers is one budget for the whole loop rather than a quota per phase, so
-# a quiet issue backlog leaves the capacity free for PR work. A worker is a
-# worktree the loop created (`agent-loop-` prefix) whose agent is still going;
-# `done` agents are finished work waiting to be swept, not spent budget.
+# maxWorkers now governs the issue phase alone. It used to be one budget for
+# the whole loop, spent by both phases; the PR phase spends no worktree, no
+# checkout and no agent any more, so gating it on a worktree budget would be a
+# category error — and worse, a long-running issue would stall every pull
+# request in every repository behind it. A worker is a worktree the loop created
+# (`agent-loop-` prefix) whose agent is still going; `done` agents are finished
+# work waiting to be swept, not spent budget.
 count_active_workers() {
   count_live_workers '^agent-loop-'
 }
@@ -432,11 +468,15 @@ worktree_for_branch() {
 #   foreign-dirty  a checkout the loop did not create, tree not clean
 #   unknown        the question could not be answered — see below
 #
-# Cleanliness is part of the answer because the PR phase reuses a clean foreign
-# worktree in place — normally my own checkout of a branch I was developing —
-# and must never drop an agent on top of edits in progress. `unknown` exists so
-# that a git that would not answer, or a loop worktree Orca has lost and can
-# therefore no longer be reused by id, is never mistaken for a clean one.
+# Cleanliness is part of the answer because `--branch-report` is asked *"is
+# anyone actually working on this?"*, and a clean checkout of a branch nobody
+# has touched is a different answer from one with edits in progress. `unknown`
+# exists so that a git that would not answer, or a loop worktree Orca has lost,
+# is never mistaken for a clean one.
+#
+# The PR phase used to be the other caller: it reused a clean foreign worktree
+# in place rather than cutting a second checkout. That phase spends no checkout
+# at all now, so the report is the whole of it.
 branch_state() {
   local repo="$1" branch="$2" path dirty
 
@@ -491,9 +531,11 @@ branch_report() {
 # The worktree a dispatch asked for is `agent-loop-<type>-<number>-<title-slug>`,
 # and a name collision appends `-2` — so the number is anchored on both sides, or
 # issue 1 would find issue 11's worker and stay claimed forever. The types are
-# spelled out rather than matched as `[a-z]+`, which would let the PR phase's
-# own `agent-loop-pr-17` answer for issue 17. `issue` is the name dispatches
-# used before the type was part of it, and still names live workers.
+# spelled out rather than matched as `[a-z]+`, which would let an
+# `agent-loop-pr-17` answer for issue 17. The PR phase that cut those is gone,
+# but the ones it left on disk are not, and `pr` must stay off this list for as
+# long as any of them survive. `issue` is the name dispatches used before the
+# type was part of it, and still names live workers.
 ISSUE_BRANCH_TYPES='feat|fix|chore|docs|refactor|test|perf|build|ci|issue'
 
 issue_has_live_worker() {
@@ -701,14 +743,6 @@ issue_phase_project() {
 
 # --- worktree sweep ----------------------------------------------------------
 
-# Worktrees the PR phase dropped a fresh worker into this pass. The sweep reads
-# the snapshot the pass opened with, where such a worktree is still the `done`
-# one it was a moment ago — without this it would remove a checkout that has a
-# worker in it, which is the one thing the sweep must never do.
-sweep_exempt() {
-  grep -qxF "$(resolve_path "$1")" <<< "$SWEEP_EXEMPT"
-}
-
 # Orca reaps nothing, so each pass ends with the loop sweeping up after itself.
 # A worktree is removed only when the loop created it, its agent has finished,
 # its tree is clean, and everything committed is on the remote. Anything else is
@@ -719,11 +753,6 @@ sweep_worktrees() {
     # Ownership is asked first: a worktree of mine is out of scope before any
     # other question is put to it, and before git is run against it at all.
     is_loop_worktree "$path" || continue
-
-    if sweep_exempt "$path"; then
-      log "sweep skipped $path: a worker was dispatched into it this pass"
-      continue
-    fi
 
     if [[ "$state" == "live" ]]; then
       log "sweep skipped $path: its agent is still going"
@@ -774,327 +803,309 @@ sweep_worktrees() {
 
 # --- pr phase ----------------------------------------------------------------
 
-# One global read. `author:<me>` resolves "mine" from the identity behind the
-# token, so no repository needs a local checkout and adding a project costs a
-# config line — the list is narrowed to the configured repositories by
-# `nameWithOwner` afterwards.
-query_open_prs() {
-  local response
-  response=$(gh_graphql "{ search(query: \"is:pr is:open author:$ME sort:updated-desc\", type: ISSUE, first: 100) { nodes { ... on PullRequest { number title url headRefName repository { nameWithOwner } } } } }") || return 1
-  jq -e '.data.search.nodes | type == "array"' <<< "$response" >/dev/null 2>&1 || return 1
-  # The title comes last: it is the only field that can carry whitespace, so the
-  # reader can take it as the remainder of the line.
-  jq -r '.data.search.nodes[]
-    | select(.number != null)
-    | [.repository.nameWithOwner, .number, .headRefName, .url, (.title // "")]
-    | @tsv' <<< "$response"
-}
+# The phase is a reducer, not a dispatcher. It spends no worktree, no checkout
+# and no agent: it reads GitHub, derives one state per open pull request, logs
+# it, and — for exactly one of those states — asks CodeRabbit to fix its own
+# findings. Nothing is remembered between passes.
 
-# The seen-list as one JSON array, read fresh at the top of every PR phase: the
-# workers dispatched by earlier passes append to it while the loop sleeps.
+# One read per repository, in configuration order. Not the global
+# `is:pr is:open` search the phase used to make: search is an index and lags
+# behind the repository, so a pull request the loop should be acting on can
+# simply be missing from it, and a long repository list eventually runs the
+# query into a length ceiling. Configuration order also becomes the axis the
+# one-merge-per-repository bound will run along.
 #
-# It is disposable by design, so every way of failing to read it lands in the
-# same place — an empty array, a line saying so, and a pass that filters nothing.
-# A single malformed line costs the whole file, which is one repeated sweep of
-# pull requests that were already triaged and nothing worse.
-load_seen_list() {
-  SEEN_JSON='[]'
-  [[ -e "$SEEN_LIST_PATH" ]] || return 0
-  SEEN_JSON=$(jq -s '.' "$SEEN_LIST_PATH" 2>/dev/null) && return 0
-  SEEN_JSON='[]'
-  log "seen-list unreadable, filtering nothing this pass: $SEEN_LIST_PATH"
-}
-
-# A thread is eligible when it is still unresolved, I have never spoken in it —
-# once I have replied it is a human conversation and permanently off-limits —
-# and no seen entry says a worker already triaged it and left it silent. Draft
-# pull requests are not filtered anywhere: draft is a merge gate, not a review
-# gate.
+# **Exactly two exclusions, and both are free on this read.** Drafts, because
+# converting to draft is the operator's hold gesture — GitHub already gives it,
+# so there is no hold label and no config key for one. Fork heads, because
+# untrusted code is never merged unattended. Bots, non-trunk bases and the
+# loop's own repository are deliberately *not* excluded.
 #
-# GitHub's review threads need no `individual_note` test the way GitLab's
-# discussions did: a plain PR comment is not a review thread at all and never
-# appears here.
+# Both exclusions are spelled `== false` rather than `!= true`, which is the
+# fail-closed direction: a field GitHub stopped sending would drop every pull
+# request in the repository, and a phase that logs nothing at all is loud, where
+# a fork head slipping into scope would be silent.
 #
-# The seen entry has to name the thread's newest comment as well as the thread,
-# so the filter lapses the moment a reviewer replies: new information reopens
-# the case.
-count_eligible_threads() {
-  local github="$1" number="$2" owner="${1%%/*}" name="${1##*/}" response
-  response=$(gh_graphql "{ repository(owner: \"$owner\", name: \"$name\") { pullRequest(number: $number) { reviewThreads(first: 100) { nodes { id isResolved comments(first: 100) { nodes { databaseId author { login } } } } } } } }") || return 1
-  jq -e '.data.repository.pullRequest.reviewThreads.nodes | type == "array"' <<< "$response" \
+# `labels` is fetched and not read here: it is what the escalation label's
+# self-heal will ask of a later pass, and asking for it now costs nothing on a
+# read the phase already makes. `author` and `baseRefName` are fetched and read by
+# nothing at all, and that is the point — the scope rule has exactly two
+# exclusions, and neither who opened the pull request nor what it is merging
+# into is one of them.
+query_repo_open_prs() {
+  local github="$1" owner="${1%%/*}" name="${1##*/}" response
+  response=$(gh_graphql "{ repository(owner: \"$owner\", name: \"$name\") { pullRequests(states: OPEN, first: 100, orderBy: {field: UPDATED_AT, direction: DESC}) { nodes { number title url isDraft isCrossRepository author { login } baseRefName headRefName headRefOid labels(first: 50) { nodes { name } } } } } }") || return 1
+  # A GraphQL error can come back as a 200 with a null repository, which would
+  # otherwise read as "this repository has no open pull requests".
+  jq -e '.data.repository.pullRequests.nodes | type == "array"' <<< "$response" \
     >/dev/null 2>&1 || return 1
-  jq --arg me "$ME" --arg project "$github" --argjson pr "$number" --argjson seen "$SEEN_JSON" '
-    [ .data.repository.pullRequest.reviewThreads.nodes[]
-      | select(.isResolved != true)
-      | select(all(.comments.nodes[]?; .author.login != $me))
-      | . as $thread
-      | ([$thread.comments.nodes[]?.databaseId] | max) as $last
-      | select(
-          $seen
-          | any(.project == $project
-                and .pr == $pr
-                and .thread == $thread.id
-                and .lastCommentId == $last)
-          | not)
-    ] | length' <<< "$response"
+  # ponytail: one page, so a repository with more than a hundred open pull
+  # requests silently drops the least recently updated of them. The same cap the
+  # global search this replaced had. Page if a repository ever gets that busy.
+  jq -r '.data.repository.pullRequests.nodes[]?
+    | select(.number != null)
+    | select(.isDraft == false)
+    | select(.isCrossRepository == false)
+    | .number' <<< "$response"
 }
 
-# Everything the loop leaves on disk for one PR worker — its brief and, later,
-# the plan the worker writes — lives beside the log rather than in the checkout.
-# A linked worktree's `.git` is a file, not a directory, so there is nowhere
-# inside the checkout to put them that git will not notice.
-pr_work_path() {
-  printf '%s/agent-loop-pr-%s-%s' "$(dirname "$LOG_PATH")" "$1" "$2"
+# Everything the derivation needs about one pull request, in one call: the head
+# commit and its committer date, the whole status-check rollup on that commit —
+# which is the only API that carries legacy statuses and check runs together —
+# the review threads, and the comment timeline.
+#
+# `commits(last: 1)` is the head; `comments(last: 100)` is the *newest* hundred,
+# which is the end of the timeline the freshness tests ask about. The status
+# `description` and the thread `path`/`line` are fetched and read by nothing:
+# the fixtures behind this are whole captures, and a query narrowed to what
+# today's derivation happens to use would couple them silently to it.
+query_pr_state() {
+  local github="$1" number="$2" owner="${1%%/*}" name="${1##*/}" response
+  response=$(gh_graphql "{ repository(owner: \"$owner\", name: \"$name\") { pullRequest(number: $number) { number headRefOid commits(last: 1) { nodes { commit { oid committedDate statusCheckRollup { state contexts(first: 100) { nodes { __typename ... on StatusContext { context state description createdAt creator { login } } ... on CheckRun { name status conclusion startedAt completedAt checkSuite { app { slug } } } } } } } } } reviewThreads(first: 100) { nodes { id isResolved isOutdated path line comments(first: 100) { nodes { databaseId createdAt author { login } } } } } comments(last: 100) { nodes { databaseId createdAt updatedAt body author { login } } } } } }") || return 1
+  jq -e '.data.repository.pullRequest != null' <<< "$response" >/dev/null 2>&1 || return 1
+  printf '%s' "$response"
 }
 
-# The worker's whole brief. Both dispatch paths deliver this same text: a fresh
-# worktree takes it as `--prompt`, a reused one reads it from a file.
+# The six facts the state machine runs on, one per line — see the caller for
+# why they are not one tab-separated line:
 #
-# The rule it is built around is that the worker proposes and I dispose — so the
-# only thing here that may write to GitHub is pr-writeback.sh, run against a
-# plan I have confirmed.
-pr_worker_prompt() {
-  local weburl="$1" branch="$2" github="$3" number="$4"
-  local owner="${3%%/*}" name="${3##*/}" plan
-  plan=$(pr_work_path "$number" plan.json)
-  cat <<EOF
-Triage the review threads on pull request $weburl.
-
-Its head branch \`$branch\` is already checked out in this worktree. The
-repository is $github and the pull request number is $number.
-
-List the threads with:
-
-    gh-axi api POST /graphql --field query='{ repository(owner: "$owner", name: "$name") { pullRequest(number: $number) { reviewThreads(first: 100) { nodes { id isResolved isOutdated path line comments(first: 100) { nodes { databaseId author { login } body diffHunk } } } } } } }'
-
-A readable summary of the same review, if you want the diff alongside it:
-
-    gh-axi pr view $number --repo $github --reviews
-
-A thread is eligible when \`isResolved\` is false and **no comment in it was
-authored by \`$ME\`** — once $ME has spoken in a thread it is a human
-conversation and is permanently off-limits to you. Work every eligible thread,
-oldest first. Draft pull requests are in scope.
-
-Record \`git rev-parse HEAD\` before you change anything; that is the plan's
-\`baseSha\`. For each thread, record its node \`id\` as the plan's \`thread\`,
-and the \`databaseId\` of its newest comment as that thread's
-\`lastCommentId\`; the loop uses it to notice when a reviewer has replied to a
-thread you left silent.
-
-Give each eligible thread exactly one verdict:
-
-- **FIX** — it names a concrete, contained change in the diff. Make the change.
-  Run the repo's existing checks (lint, typecheck, tests as the repo provides)
-  scoped to the code you touched. Commit it as one commit for that thread alone,
-  with a message naming the thread's concern, and record the sha. Write one
-  sentence saying what changed. If the checks fail and you cannot fix that, drop
-  the commit and make the thread an ESCALATE instead.
-- **REFUSE** — the premise is wrong: it misreads the code, it is already handled
-  elsewhere, or it describes behaviour the diff does not have. Draft the reply
-  \`**Disagree** — <reasoning and the evidence for it>\`. A REFUSE is never
-  resolved.
-- **ANSWER** — it asks a question about intent, scope or consequence and asks
-  for no change. Prepare nothing.
-- **ESCALATE** — it is valid but needs a decision above you, or is too large for
-  this session. Prepare nothing.
-
-While you prepare, these are absolute:
-
-- Push nothing. Write nothing to GitHub — no comment, no resolve, no
-  \`gh-axi api POST/PATCH/PUT/DELETE\`, no \`gh-axi pr/issue\` subcommand that
-  writes (\`comment\`, \`edit\`, \`review\`, \`merge\`, \`close\`), and no GraphQL
-  \`mutation\` of any kind.
-- Never force-push and never rebase.
-- Stay inside the pull request's diff unless a fix genuinely requires otherwise.
-- Leave the worktree clean: everything you change is committed.
-
-Then write your plan to \`$plan\`:
-
-    {
-      "repo": "$github",
-      "prNumber": $number,
-      "sourceBranch": "$branch",
-      "baseSha": "<the sha you recorded>",
-      "threads": [
-        { "thread": "<node id>", "verdict": "FIX", "lastCommentId": <newest comment databaseId>,
-          "commit": "<sha>", "summary": "<one sentence>", "confirmed": false },
-        { "thread": "<node id>", "verdict": "REFUSE", "lastCommentId": <newest comment databaseId>,
-          "reply": "**Disagree** — ...", "confirmed": false },
-        { "thread": "<node id>", "verdict": "ANSWER", "lastCommentId": <newest comment databaseId>,
-          "confirmed": false }
-      ]
-    }
-
-Then stop and show me one table covering **every** thread you saw: the thread,
-its verdict, the local commit sha if it has one, and the exact reply text you
-propose to post. Ask me to confirm. I may confirm everything, a subset, or
-nothing.
-
-Set \`"confirmed": true\` on exactly what I confirm and nothing else, then run:
-
-    "$SCRIPT_DIR/pr-writeback.sh" --plan "$plan" --seen-list "$SEEN_LIST_PATH"
-
-That script is the only thing that pushes or writes to GitHub. It replays only
-the confirmed fixes onto \`baseSha\`, pushes once to \`$branch\`, posts the
-confirmed replies, and resolves only the confirmed fixes — a rejected fix has
-its commit dropped and comes back as an escalation — so a fix's posted reply
-cites the sha as it landed, which differs from the local one only when something
-was rejected. If I confirm nothing, run it anyway with nothing marked confirmed;
-the pull request stays exactly as it is, and it still records the threads I left
-silent so the loop stops sending workers back at them until a reply lands.
-
-Report what it printed and stop. Do not push, reply or resolve by any other
-means.
-EOF
+#   head        the head commit
+#   headDate    its committer date, ISO-8601
+#   terminal    true when CodeRabbit's review on that commit has finished
+#   threads     unresolved CodeRabbit review threads on the pull request
+#   statusAt    newest autofix-status comment, ISO-8601, empty if none
+#   triggerAt   newest autofix trigger I posted, ISO-8601, empty if none
+#
+# Three judgements are made here and are worth naming:
+#
+# **Terminal is per commit and reads both surfaces.** A legacy status is
+# terminal at `SUCCESS`, `FAILURE` or `ERROR`; `PENDING` and `EXPECTED` are not.
+# A check run is terminal at `COMPLETED`. Either one is enough, and the absence
+# of both is not terminal. `success` means *the review ran*, never *the review
+# found nothing* — a pull request with five findings and a high merge risk
+# carries the same green status as a clean one.
+#
+# **A thread is CodeRabbit's when CodeRabbit opened it.** The first comment's
+# author decides, not any comment's: a thread I opened that the bot replied to
+# is my conversation, not its finding. That is also the bot's own precondition
+# — autofix processes unresolved CodeRabbit threads — so the loop's trigger
+# condition and the bot's are the same predicate, and a metered run that would
+# do nothing cannot be fired by construction.
+#
+# **CodeRabbit comment freshness is the *updated* timestamp; mine is the
+# created one.** CodeRabbit delivers by editing comments it already posted, so
+# a created timestamp can be days stale. My own trigger is never edited, and
+# its creation is the event.
+pr_facts() {
+  jq -r \
+    --arg crctx "$CODERABBIT_STATUS_CONTEXT" \
+    --arg crlogin "$CODERABBIT_LOGIN" \
+    --arg me "$ME" \
+    --arg trigger "$AUTOFIX_TRIGGER" \
+    --arg statusmarker "$AUTOFIX_STATUS_MARKER" '
+    def is_coderabbit: (. // "") | ascii_downcase | startswith($crlogin);
+    .data.repository.pullRequest as $pr
+    | ($pr.commits.nodes[-1].commit // {}) as $head
+    | [ $head.statusCheckRollup.contexts.nodes[]?
+        | if .__typename == "StatusContext" then
+            (if (.context == $crctx or (.creator.login | is_coderabbit))
+             then ((.state // "") | ascii_upcase | IN("SUCCESS","FAILURE","ERROR"))
+             else empty end)
+          elif .__typename == "CheckRun" then
+            (if ((.name // "") == $crctx or (.checkSuite.app.slug | is_coderabbit))
+             then (((.status // "") | ascii_upcase) == "COMPLETED")
+             else empty end)
+          else empty end ] as $terminal
+    | [ $pr.reviewThreads.nodes[]?
+        | select(.isResolved != true)
+        | select(.comments.nodes[0].author.login | is_coderabbit) ] as $threads
+    | [ $pr.comments.nodes[]?
+        | select((.body // "") | contains($statusmarker))
+        | .updatedAt ] as $statuses
+    | [ $pr.comments.nodes[]?
+        | select(((.author.login // "") | ascii_downcase) == ($me | ascii_downcase))
+        | select((.body // "") | contains($trigger))
+        | .createdAt ] as $triggers
+    | [ ($head.oid // ""),
+        ($head.committedDate // ""),
+        (($terminal | any) | tostring),
+        ($threads | length | tostring),
+        ($statuses | max // ""),
+        ($triggers | max // "") ]
+    | .[]'
 }
 
-# A free branch gets a fresh checkout. `--base-branch` is only safe here because
-# the claim check has already established that nobody holds the branch: if it is
-# held elsewhere, Orca silently cuts a new branch named after the directory and
-# reports success.
-#
-# The name is the directory's alone — the checkout lands on the pull request's
-# existing branch, so the title slug here buys a readable `orca worktree ps` and
-# changes no branch. `pr` stays where an issue dispatch puts its change type, so
-# a review worktree is never mistaken for the worker on the issue of that number.
-dispatch_pr_fresh() {
-  local orca_id="$1" number="$2" branch="$3" prompt="$4" title="$5" slug response
-  slug=$(issue_slug "$title")
-  response=$(orca worktree create \
-    --repo "id:$orca_id" \
-    --name "agent-loop-pr-$number${slug:+-$slug}" \
-    --no-parent \
-    --base-branch "$branch" \
-    --agent claude \
-    --prompt "$prompt" \
-    --json) || return 1
-  jq -r '.result.worktree.id // empty' <<< "$response" | grep . || return 1
+# An ISO-8601 instant as epoch seconds, whichever conversion spelling this
+# platform's date takes. Time comes from `date(1)` and from nowhere else in this
+# project — a shell built-in would read the real clock without touching PATH,
+# which is exactly how a timeout test goes green for the wrong reason.
+epoch_of() {
+  [[ -n "$1" ]] || return 1
+  date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$1" +%s 2>/dev/null \
+    || date -u -d "$1" +%s 2>/dev/null
 }
 
-# A branch that is already checked out — by a finished loop worker or by my own
-# hand — gets a new agent terminal in the worktree that holds it, never a second
-# checkout.
+# The one action the phase has. It goes through pr-writeback.sh rather than
+# calling gh-axi here, because the seam is a thing a human can also run by hand
+# and because the trigger's text is the seam's own constant.
 #
-# The brief goes to disk and the terminal is sent one line pointing at it.
-# Verified: `terminal send` writes its text to the pty raw, so every newline in
-# it lands as a press of Enter — a multi-line brief would submit its first line
-# and then feed the agent the remaining hundred as separate messages.
-#
-# The terminal also gets a bounded moment to finish booting first, or the line
-# lands in a TUI that is not listening yet.
-dispatch_pr_reuse() {
-  local path="$1" number="$2" prompt="$3" brief response handle
-  brief=$(pr_work_path "$number" prompt.md)
-  printf '%s\n' "$prompt" > "$brief" || return 1
-  response=$(orca terminal create --worktree "path:$path" --command claude --json) || return 1
-  handle=$(jq -r '.result.terminal.handle // empty' <<< "$response")
-  [[ -n "$handle" ]] || return 1
-  orca terminal wait --terminal "$handle" --for tui-idle --timeout-ms "$TUI_WAIT_MS" --json \
-    >/dev/null 2>&1 || true
-  orca terminal send --terminal "$handle" \
-    --text "Read $brief and do exactly what it says." --enter --json >/dev/null || return 1
-  printf '%s' "$handle"
+# ponytail: the seam's stdout — GitHub's answer, verbatim — and its stderr are
+# dropped; only the exit status reaches the log line. Capture them into the tail
+# if a failed trigger ever needs explaining beyond "it failed".
+post_autofix_trigger() {
+  "$SCRIPT_DIR/pr-writeback.sh" autofix --repo "$1" --pr "$2" >/dev/null 2>&1
 }
 
 pr_phase() {
-  local prs github number branch weburl title
-  load_seen_list
-  if ! prs=$(query_open_prs); then
-    log "pr query failed"
-    SKIPS=$((SKIPS + 1))
-    return 0
-  fi
-  # stdin is closed for the body: gh-axi and orca must not swallow the PR list.
-  while IFS=$'\t' read -r github number branch weburl title; do
-    [[ -n "$github" && -n "$number" ]] || continue
-    pr_phase_one "$github" "$number" "$branch" "$weburl" "$title" < /dev/null
-  done <<< "$prs"
+  local i github
+  for (( i = 0; i < PROJECT_COUNT; i++ )); do
+    github=$(jq -r ".projects[$i].github" "$CONFIG_PATH")
+    pr_phase_project "$github"
+  done
 }
 
+pr_phase_project() {
+  local github="$1" numbers number
+  if ! numbers=$(query_repo_open_prs "$github"); then
+    log "pr query failed: $github"
+    SKIPS=$((SKIPS + 1))
+    return 0
+  fi
+  # stdin is closed for the body: gh-axi must not swallow the PR list.
+  while IFS= read -r number; do
+    [[ -n "$number" ]] || continue
+    pr_phase_one "$github" "$number" < /dev/null
+  done <<< "$numbers"
+}
+
+# One pull request, one pass, at most one action — and exactly one log line
+# whichever way it goes. That line is the tested interface and, with no local
+# state anywhere, the only record a wait leaves: a positional head naming the
+# repository, the number, the commit and the state, then a `key=value` tail
+# carrying the values the state was derived from. The tail is what keeps a new
+# reason from being a suite-wide edit.
 pr_phase_one() {
-  local github="$1" number="$2" branch="$3" weburl="$4" title="$5"
-  local orca_id="" repo eligible state path prompt handle worktree_id
+  local github="$1" number="$2"
+  local response head head_date terminal threads status_at trigger_at
+  local now head_epoch status_epoch trigger_epoch spent in_flight age status
+  local state review kv
 
-  # A pull request in a repository the config does not list is not this loop's
-  # business, and there is no Orca repo id to build a worktree from either.
-  orca_id=$(orca_id_for_project "$github")
-  [[ -n "$orca_id" ]] || return 0
-
-  if ! eligible=$(count_eligible_threads "$github" "$number"); then
-    log "thread query failed: $github#$number"
+  if ! response=$(query_pr_state "$github" "$number"); then
+    log "pr state query failed: $github#$number"
     SKIPS=$((SKIPS + 1))
     return 0
   fi
-  if [[ "$eligible" == "0" ]]; then
-    log "pr $github#$number skipped: no eligible threads"
-    SKIPS=$((SKIPS + 1))
-    return 0
-  fi
+  # One value per line, not one tab-separated line: two of the six are routinely
+  # empty, and bash's `read` folds a run of tabs into a single delimiter — so a
+  # pull request with no autofix status would silently have its trigger read as
+  # its status, and every one of them would look spent.
+  #
+  # `|| true`, because a jq that answered nothing leaves `read` at end of input
+  # and `set -e` would take the whole daemon down over one unreadable pull
+  # request. The empty head below is what says so instead.
+  head=""; head_date=""; terminal=""; threads=0; status_at=""; trigger_at=""
+  {
+    read -r head
+    read -r head_date
+    read -r terminal
+    read -r threads
+    read -r status_at
+    read -r trigger_at
+  } < <(pr_facts <<< "$response") || true
 
-  repo=$(repo_path "$orca_id")
-  if [[ -z "$repo" ]]; then
-    log "pr $github#$number skipped: orcaRepoId does not resolve: $orca_id"
-    SKIPS=$((SKIPS + 1))
-    return 0
-  fi
-
-  # The claim is the checkout: whoever holds the branch decides what happens.
-  IFS=$'\t' read -r state path < <(branch_state "$repo" "$branch")
-  case "$state" in
-    loop-live)
-      log "pr $github#$number skipped: branch $branch held by a live worker ($path)"
-      SKIPS=$((SKIPS + 1))
-      return 0
-      ;;
-    foreign-dirty)
-      log "pr $github#$number skipped: branch $branch held by a worktree with uncommitted changes ($path)"
-      SKIPS=$((SKIPS + 1))
-      return 0
-      ;;
-    unknown)
-      log "pr $github#$number skipped: could not determine who holds branch $branch"
-      SKIPS=$((SKIPS + 1))
-      return 0
-      ;;
-  esac
-
-  # Checked here rather than once per pass: each dispatch spends a slot, and a
-  # candidate arriving at a full budget waits for a later pass.
-  if (( ACTIVE_WORKERS >= MAX_WORKERS )); then
-    log "pr $github#$number deferred: worker budget full ($ACTIVE_WORKERS/$MAX_WORKERS)"
+  # The head commit and its date are the origin every comparison below is made
+  # against, so a pull request that will not yield them is not guessed at: an
+  # unparseable date read as epoch zero would make every comment newer than the
+  # head and every autofix look spent.
+  head_epoch=$(epoch_of "$head_date") || head_epoch=""
+  if [[ -z "$head" || -z "$head_epoch" ]]; then
+    log "pr state unreadable: $github#$number"
     SKIPS=$((SKIPS + 1))
     return 0
   fi
 
-  prompt=$(pr_worker_prompt "$weburl" "$branch" "$github" "$number")
+  now=$(date -u +%s)
+  # Empty when the comment is not there and empty when its timestamp would not
+  # parse, which are the same thing to everything below: a comparison that
+  # cannot be made is not made.
+  status_epoch=$(epoch_of "$status_at") || status_epoch=""
+  trigger_epoch=$(epoch_of "$trigger_at") || trigger_epoch=""
 
-  if [[ "$state" == "free" ]]; then
-    if ! worktree_id=$(dispatch_pr_fresh "$orca_id" "$number" "$branch" "$prompt" "$title"); then
-      log "dispatch failed for pr $github#$number"
-      SKIPS=$((SKIPS + 1))
-      return 0
+  # **Autofix is spent on this head** when the newest autofix-status comment is
+  # newer than the head commit. Autofix pushes its commit and *then* posts the
+  # status naming it, so a status newer than the head means autofix has already
+  # been attempted here. Two properties fall out and both are the point: the
+  # trigger fires at most once per head commit, so a poll loop cannot burn a
+  # metered review budget; and a failed or declined autofix needs no parsing at
+  # all — it pushes nothing, so the head never moves, but its status comment
+  # still lands newer than the head and the pull request falls straight through.
+  spent=unspent
+  if [[ -n "$status_epoch" ]] && (( status_epoch > head_epoch )); then
+    spent=spent
+  fi
+
+  # In flight is the trigger paired with the answer: my trigger newer than the
+  # head, and no autofix status posted since it. Unresolved threads cannot
+  # bound this — autofix does not resolve the threads it fixes, which is the
+  # decisive constraint on the whole design.
+  in_flight=false
+  age=0
+  if [[ -n "$trigger_epoch" ]] && (( trigger_epoch > head_epoch )); then
+    if [[ -z "$status_epoch" ]] || (( trigger_epoch > status_epoch )); then
+      in_flight=true
+      age=$(( now - trigger_epoch ))
     fi
-    log "dispatched pr $github#$number ($eligible eligible threads) -> worktree $worktree_id"
+  fi
+
+  # First match wins.
+  review=terminal
+  [[ "$terminal" == "true" ]] || review=pending
+  kv="review=$review threads=$threads autofix=$spent"
+
+  if [[ "$review" != "terminal" ]]; then
+    # ponytail: unbounded, and the only unbounded state left. #32 splits the
+    # pull requests CodeRabbit never looked at out of this one and bounds what
+    # remains by the merge-gate clock.
+    state=reviewing
+  elif $in_flight; then
+    kv="$kv age=$age bound=$AUTOFIX_TIMEOUT"
+    if (( age <= AUTOFIX_TIMEOUT )); then
+      state=autofix-in-flight
+    else
+      # ponytail: logged only. #29 builds the handover this escalates through.
+      state=autofix-stalled
+    fi
+  elif (( threads > 0 )) && [[ "$spent" == "unspent" ]]; then
+    state=needs-autofix
+    status=0
+    post_autofix_trigger "$github" "$number" || status=$?
+    if (( status == 0 )); then
+      kv="$kv action=triggered"
+    else
+      # Nothing is remembered, so nothing has to be unwound: the next pass
+      # re-derives, finds autofix still unspent on the same head, and fires
+      # again. The poll interval is the whole of the backoff. It still counts
+      # against the pass, because `pass end` is where a run that achieved
+      # nothing is supposed to say so.
+      kv="$kv action=failed rc=$status"
+      SKIPS=$((SKIPS + 1))
+    fi
   else
-    if ! handle=$(dispatch_pr_reuse "$path" "$number" "$prompt"); then
-      log "dispatch failed for pr $github#$number, reusing $path"
-      SKIPS=$((SKIPS + 1))
-      return 0
-    fi
-    log "dispatched pr $github#$number ($eligible eligible threads) -> terminal $handle in $path"
-    SWEEP_EXEMPT+="$(resolve_path "$path")"$'\n'
+    # ponytail: logged only. #30 hands this to the risk gate.
+    state=assessable
   fi
 
-  ACTIVE_WORKERS=$((ACTIVE_WORKERS + 1))
-  DISPATCHES=$((DISPATCHES + 1))
+  log "pr $github#$number $head $state $kv"
 }
 
 # --- close-out phase ---------------------------------------------------------
 
-# Merged pull requests, the same one global read as the open-PR query: no
-# repository needs a local checkout, and the list is narrowed to the configured
-# repositories by `nameWithOwner` afterwards.
+# Merged pull requests, one global search narrowed to the configured
+# repositories by `nameWithOwner` afterwards. The open-pull-request read used to
+# be the same shape and no longer is — it runs per repository now — but this one
+# deliberately did not widen with it: the branch name is the only
+# pull-request-to-issue link there is, and `author:$ME` is what keeps the
+# resolver looking at branches this loop cut.
 #
 # ponytail: one page, so an issue whose pull request has fallen past the 100
 # most recently updated merges is never closed out. Page, or filter on
@@ -1252,7 +1263,6 @@ run_pass() {
   DISPATCHES=0
   SKIPS=0
   SWEEPS=0
-  SWEEP_EXEMPT=""
   # A budget that failed open would dispatch a fresh maxWorkers on top of the
   # workers it failed to see.
   local inventory=true

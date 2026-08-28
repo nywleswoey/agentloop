@@ -43,8 +43,10 @@ setup() {
   : > "$STUB_CALLS"
   export STUB_ORCA_STATUS=ready STUB_ISSUES=none STUB_ORCA_PS=idle
   export STUB_CLAIMED=none STUB_WORKTREES=none STUB_DIRTY="" STUB_UNPUSHED=""
-  export STUB_PRS=none STUB_THREADS=eligible STUB_MERGED=none
+  export STUB_WORLD=none STUB_MERGED=none
   unset AGENT_LOOP_LOG_MAX_BYTES STUB_GH_FAIL STUB_ORCA_FAIL STUB_GIT_FAIL
+  # Multi-pass cases number their passes from here.
+  PASS_N=0
   # Unfrozen unless a case says otherwise, so the stub `date` is the real one
   # and a freeze can never leak from the case before.
   unset STUB_NOW
@@ -54,13 +56,13 @@ setup() {
   write_config "nywleswoey/automation" "repo-aaa"
 }
 
-# write_config <github-full-name> <orca-repo-id> [poll-interval-seconds] [max-workers]
+# write_config <github-full-name> <orca-repo-id> [poll-interval-seconds] [max-workers] [autofix-timeout]
 write_config() {
   cat > "$CONFIG" <<JSON
 {
   "pollIntervalSeconds": ${3:-300},
   "maxWorkers": ${4:-3},
-  "seenListPath": "$WORK/seen.jsonl",
+  "autofixTimeoutSeconds": ${5:-5400},
   "logPath": "$LOG",
   "labels": { "ready": "ready-for-agent", "claimed": "agent-in-progress" },
   "projects": [
@@ -68,6 +70,24 @@ write_config() {
   ]
 }
 JSON
+}
+
+# replay <world> <frozen-instant> — one pass against a whole-world snapshot,
+# with the pass's own output kept in $PASS_LOG.
+#
+# A multi-pass case moves between captured worlds rather than letting the stub
+# simulate what the previous pass changed. Simulating would bake in an
+# assumption about when GitHub stamps a write and how CodeRabbit words its
+# answer, and the suite would then be testing the loop against that assumption
+# rather than against GitHub. $STUB_CALLS is deliberately *not* reset between
+# passes: what a later pass must not do is measured against everything the
+# earlier ones did.
+replay() {
+  export STUB_WORLD="$1" STUB_NOW="$2"
+  run_once
+  PASS_N=$((PASS_N + 1))
+  PASS_LOG="$WORK/pass-$PASS_N.log"
+  cp "$OUT" "$PASS_LOG"
 }
 
 # run_once [extra args...] — captures stdout+stderr in $OUT, status in $STATUS
@@ -750,199 +770,319 @@ check_status 0 "$STATUS"
 check_grep "worker inventory unreadable, skipping the sweep" "$OUT"
 check_no_grep "worktree rm" "$STUB_CALLS"
 
-# --- pr phase ------------------------------------------------------------------
+# --- pr phase: scope --------------------------------------------------------------
 
-# One pass over a fixture where every branch state in the claim table is
-# represented at once, so the phase is asserted as a whole rather than one
-# hand-picked case at a time. maxWorkers is raised out of the way — the budget
-# has its own case below.
-setup "the PR phase dispatches, reuses or skips by who holds the source branch"
-write_config "nywleswoey/automation" "repo-aaa" 300 9
-export STUB_PRS=branches STUB_WORKTREES=branches STUB_ORCA_PS=branches
+# One pass over a world carrying every state the phase can derive at once, so
+# the reducer is asserted whole rather than one hand-picked case at a time.
+# `maxWorkers` is left at its default and the inventory is the busy one, which
+# is the point of the last two assertions in this case.
+setup "the PR phase derives, logs and acts on every open pull request"
+export STUB_WORLD=states STUB_NOW=2026-08-27T12:00:00Z
 run_once
 check_status 0 "$STATUS"
 
-# 101 — nobody holds pr-free: a fresh worktree, checked out at the PR's own
-# head branch. The PR title slugs onto the directory name, which is the
-# worktree's alone — the branch is the PR's and does not change.
-check_grep "orca worktree create --repo id:repo-aaa --name agent-loop-pr-101-agent-loop-pr-phase --no-parent --base-branch pr-free --agent claude --prompt " "$STUB_CALLS"
-check_grep "dispatched pr nywleswoey/automation#101 (2 eligible threads) -> worktree repo-aaa::/tmp/stub/automation/agent-loop-pr-101" "$OUT"
+# Per repository, not through the global search index. Search lags the
+# repository it indexes, so a pull request the loop should be acting on can
+# simply be missing from it.
+check_grep 'repository(owner: "nywleswoey", name: "automation") { pullRequests(states: OPEN' "$STUB_CALLS"
+check_no_grep 'is:pr is:open' "$STUB_CALLS"
+# The labels the escalation self-heal will want, fetched on the read that is
+# already being made.
+check_grep 'labels(first: 50) { nodes { name } }' "$STUB_CALLS"
 
-# 102 — a loop worker is working on pr-live.
-check_grep "pr nywleswoey/automation#102 skipped: branch pr-live held by a live worker (/tmp/stub/automation/agent-loop-pr-13)" "$OUT"
+# 201 is a draft — the operator's hold gesture — and 202's head is on a fork.
+# Both are excluded on the enumeration read, so neither is ever read again: the
+# stub errors out on a pull request its world does not carry, which is what
+# turns "no state line" into a fact rather than an absence.
+check_no_grep "#201" "$OUT"
+check_no_grep "#202" "$OUT"
+check_no_grep "pullRequest(number: 201)" "$STUB_CALLS"
+check_no_grep "pullRequest(number: 202)" "$STUB_CALLS"
 
-# 103 — a finished loop worktree holds pr-done: a new terminal in it, never a
-# second checkout of the branch.
-check_grep "orca terminal create --worktree path:/tmp/stub/automation/agent-loop-pr-14 --command claude --json" "$STUB_CALLS"
-check_grep "dispatched pr nywleswoey/automation#103 (2 eligible threads) -> terminal term_stub_0001 in /tmp/stub/automation/agent-loop-pr-14" "$OUT"
+# --- pr phase: the state log ------------------------------------------------------
 
-# 104 — my own clean checkout of my-branch is reused in place.
-check_grep "orca terminal create --worktree path:/tmp/stub/automation/my-own-checkout --command claude --json" "$STUB_CALLS"
-check_grep "dispatched pr nywleswoey/automation#104 (2 eligible threads) -> terminal term_stub_0001 in /tmp/stub/automation/my-own-checkout" "$OUT"
+# One line per pull request per pass: repository, number, commit and state
+# positionally, then the values that state was derived from. With no local
+# state anywhere this line is the only record a wait leaves.
 
-# 105 — every thread on it is resolved, an individual note, or one I have spoken
-# in, so there is nothing to dispatch a worker at.
-check_grep "pr nywleswoey/automation#105 skipped: no eligible threads" "$OUT"
+# 203 — CodeRabbit is still looking at the head commit. Its rollup also carries
+# a green CI status, which is not CodeRabbit's and does not answer for it: the
+# review that has to be terminal is the reviewer's own.
+check_grep "pr nywleswoey/automation#203 203c203c203c203c203c203c203c203c203c203c reviewing review=pending threads=0 autofix=unspent" "$OUT"
 
-# 106 — a worker parked waiting for my confirmation still holds pr-waiting.
-check_grep "pr nywleswoey/automation#106 skipped: branch pr-waiting held by a live worker (/tmp/stub/automation/agent-loop-pr-15)" "$OUT"
+# 204 — the review finished with unresolved findings and no autofix has been
+# attempted at this head. Two of its four threads count: one is resolved, and
+# one I opened myself, which is a conversation rather than a finding.
+check_grep "pr nywleswoey/automation#204 204d204d204d204d204d204d204d204d204d204d needs-autofix review=terminal threads=2 autofix=unspent action=triggered" "$OUT"
 
-# 107 — a clean checkout Orca does not manage at all is still reused in place.
-check_grep "orca terminal create --worktree path:/Users/stub/dev/automation-hotfix --command claude --json" "$STUB_CALLS"
+# 205 — reviewed, nothing unresolved to fix.
+check_grep "pr nywleswoey/automation#205 205e205e205e205e205e205e205e205e205e205e assessable review=terminal threads=0 autofix=unspent" "$OUT"
 
-# 108 — a loop worktree Orca has lost is not guessed at.
-check_grep "pr nywleswoey/automation#108 skipped: could not determine who holds branch pr-lost" "$OUT"
+# 206 — autofix already ran at this head. Its findings are *still* unresolved,
+# because autofix does not resolve what it fixes, and it is assessable anyway:
+# unresolved threads are input to the fix trigger and to nothing else.
+check_grep "pr nywleswoey/automation#206 206f206f206f206f206f206f206f206f206f206f assessable review=terminal threads=3 autofix=spent" "$OUT"
 
-# 900 lives in a repository the config does not list.
-check_no_grep "#900" "$OUT"
-check_no_grep "pullRequest(number: 900)" "$STUB_CALLS"
+# 207 — triggered an hour ago, CodeRabbit has not answered, still inside the
+# bound.
+check_grep "pr nywleswoey/automation#207 207a207a207a207a207a207a207a207a207a207a autofix-in-flight review=terminal threads=2 autofix=unspent age=3600 bound=5400" "$OUT"
 
-# Reuse never cuts a second checkout of a branch that is already out.
-check "exactly one worktree was created" test "$(grep -cF 'worktree create' "$STUB_CALLS")" -eq 1
-check "three terminals were created" test "$(grep -cF 'orca terminal create' "$STUB_CALLS")" -eq 3
-# The line is sent only after the reused terminal has finished booting.
-check_grep "orca terminal wait --terminal term_stub_0001 --for tui-idle --timeout-ms 60000 --json" "$STUB_CALLS"
-check "each reused terminal was sent one line" test "$(grep -cF 'orca terminal send --terminal term_stub_0001' "$STUB_CALLS")" -eq 3
-# `terminal send` writes raw to the pty, so every newline in its text is a press
-# of Enter — the brief goes to a file and the terminal is sent one line.
-check_grep "orca terminal send --terminal term_stub_0001 --text Read $WORK/agent-loop-pr-103-prompt.md and do exactly what it says. --enter --json" "$STUB_CALLS"
-check "the brief was written for the reused worktree" test -s "$WORK/agent-loop-pr-103-prompt.md"
-check_grep "Triage the review threads on pull request https://github.com/nywleswoey/automation/pull/103" "$WORK/agent-loop-pr-103-prompt.md"
-# The prompt carries the PR, its branch, and the write-back script that is the
-# only thing allowed to write to GitHub.
-check_grep "https://github.com/nywleswoey/automation/pull/101" "$STUB_CALLS"
-check_grep "pr-writeback.sh\" --plan \"$WORK/agent-loop-pr-101-plan.json\" --seen-list \"$WORK/seen.jsonl\"" "$STUB_CALLS"
-# The daemon itself writes nothing to any PR — it dispatches and walks away.
-check_no_grep "addPullRequestReviewThreadReply" "$STUB_CALLS"
-check_no_grep "resolveReviewThread" "$STUB_CALLS"
+# 208 and 212 — opened by a bot, and merging into a release branch rather than
+# trunk. Neither is an exclusion: the rule has exactly two, and these are the
+# two most often mistaken for a third.
+check_grep "pr nywleswoey/automation#208 208b208b208b208b208b208b208b208b208b208b assessable review=terminal threads=0 autofix=unspent" "$OUT"
+check_grep "pr nywleswoey/automation#212 212f212f212f212f212f212f212f212f212f212f assessable review=terminal threads=0 autofix=unspent" "$OUT"
 
-# agent-loop-pr-14 was reused a moment ago, so the sweep must leave it alone
-# even though the pass's snapshot still shows its old agent as finished.
-check_grep "sweep skipped /tmp/stub/automation/agent-loop-pr-14: a worker was dispatched into it this pass" "$OUT"
-check_no_grep "swept /tmp/stub/automation/agent-loop-pr-14" "$OUT"
-check_grep "pass end dispatches=4 skips=4 sweeps=0" "$OUT"
+# 209 and 210 — CodeRabbit reporting through a check run and no legacy status at
+# all, which is the surface its own changelog says is now the default and which
+# this account does not in fact emit. Both are read, either one terminal is
+# terminal, and the pair differs only in the check run's status.
+check_grep "pr nywleswoey/automation#209 209c209c209c209c209c209c209c209c209c209c assessable review=terminal threads=0 autofix=unspent" "$OUT"
+check_grep "pr nywleswoey/automation#210 210d210d210d210d210d210d210d210d210d210d reviewing review=pending threads=0 autofix=unspent" "$OUT"
 
-setup "a PR whose branch is held by a dirty foreign worktree is skipped and logged"
-write_config "nywleswoey/automation" "repo-aaa" 300 9
-export STUB_PRS=branches STUB_WORKTREES=branches STUB_ORCA_PS=branches
-export STUB_DIRTY="/tmp/stub/automation/my-own-checkout"
-run_once
-check_status 0 "$STATUS"
-check_grep "pr nywleswoey/automation#104 skipped: branch my-branch held by a worktree with uncommitted changes (/tmp/stub/automation/my-own-checkout)" "$OUT"
-check_no_grep "orca terminal create --worktree path:/tmp/stub/automation/my-own-checkout" "$STUB_CALLS"
-check_grep "pass end dispatches=3 skips=5 sweeps=0" "$OUT"
+# 211 — nothing rolled up on the head commit at all, which is what a pull
+# request CodeRabbit has never looked at reports. Absence is a real state, not a
+# read that failed: one real pull request sat in exactly this shape for four and
+# a half hours.
+#
+# ponytail: it lands in `reviewing` and waits forever. #32 splits it out as its
+# own state, nudges it, and bounds what remains.
+check_grep "pr nywleswoey/automation#211 211e211e211e211e211e211e211e211e211e211e reviewing review=pending threads=0 autofix=unspent" "$OUT"
 
-setup "a PR whose every thread already has a note from me is not dispatched"
-export STUB_PRS=branches STUB_WORKTREES=branches STUB_ORCA_PS=branches
-export STUB_THREADS=105
-write_config "nywleswoey/automation" "repo-aaa" 300 9
-run_once
-check_status 0 "$STATUS"
-check_grep "pr nywleswoey/automation#101 skipped: no eligible threads" "$OUT"
+# The commit named is the head, never a commit out of CodeRabbit's prose. The
+# autofix status comment on 206 names a different one on purpose.
+check_no_grep "dec0dec0dec0dec0dec0dec0dec0dec0dec0dec0" "$OUT"
+
+# Exactly one line per pull request, and exactly one action across the pass.
+check "one state line per pull request" test "$(grep -cE '^[0-9TZ:-]+ pr nywleswoey/automation#' "$OUT")" -eq 10
+
+# --- pr phase: the action goes through the real seam --------------------------------
+
+# The loop has never once executed pr-writeback.sh: it used to embed the command
+# as text in a worker's prompt and this suite grepped that string. With the
+# worker deleted the chain runs unbroken from the loop to the CLI argv, which is
+# the only reason the line below is observable at all.
+check_grep "gh-axi pr comment 204 --repo nywleswoey/automation --body @coderabbitai autofix" "$STUB_CALLS"
+check "exactly one autofix trigger this pass" test "$(grep -cF 'body @coderabbitai autofix' "$STUB_CALLS")" -eq 1
+
+# The trigger's text is spelled twice — once in the seam, which *writes* it, and
+# once in the loop, which *recognises* it — and that is deliberate: the loop has
+# to see a trigger the operator typed by hand as well as one the seam posted.
+# But if the two ever disagreed the loop would post one string and look for
+# another, find autofix never spent, and fire again every pass forever against a
+# metered budget. This project has already been bitten once by two copies of one
+# thing drifting apart, so the copies are pinned to each other here — through a
+# real run of the seam, so what is compared is the argv that reached the CLI and
+# not a second reading of the source.
+LOOP_TRIGGER=$(sed -n "s/^AUTOFIX_TRIGGER='\(.*\)'$/\1/p" "$SCRIPT")
+check "the loop names a trigger at all" test -n "$LOOP_TRIGGER"
+check_grep "--body $LOOP_TRIGGER" "$STUB_CALLS"
+
+# The phase spends no worktree, no checkout and no agent, so `orca terminal`
+# has left the daemon entirely.
 check_no_grep "worktree create" "$STUB_CALLS"
-check_no_grep "terminal create" "$STUB_CALLS"
-check_grep "pass end dispatches=0 skips=8 sweeps=1" "$OUT"
+check_no_grep "orca terminal" "$STUB_CALLS"
+# Nothing the loop does resolves a review thread on my behalf.
+check_no_grep "resolveReviewThread" "$STUB_CALLS"
+check_no_grep "addPullRequestReviewThreadReply" "$STUB_CALLS"
 
-setup "PR dispatch spends the same worker budget as the issue phase"
-# orca-ps-branches carries two live loop workers, so maxWorkers 3 leaves exactly
-# one slot for the four PRs that would otherwise be dispatched.
-export STUB_PRS=branches STUB_WORKTREES=branches STUB_ORCA_PS=branches
+# --- pr phase: the autofix clock, proven by a mutant twin ---------------------------
+
+# The same world at two frozen instants either side of the bound. Nothing but
+# $STUB_NOW differs, so whatever differs in the verdict is caused by the clock
+# and by nothing else.
+
+setup "an autofix inside its bound is in flight"
+export STUB_WORLD=states STUB_NOW=2026-08-27T12:29:59Z
 run_once
 check_status 0 "$STATUS"
-check "exactly one PR worker was dispatched" test "$(grep -cF 'dispatched pr ' "$OUT")" -eq 1
-check_grep "pr nywleswoey/automation#103 deferred: worker budget full (3/3)" "$OUT"
-check_grep "pr nywleswoey/automation#104 deferred: worker budget full (3/3)" "$OUT"
-check_grep "pr nywleswoey/automation#107 deferred: worker budget full (3/3)" "$OUT"
+check_grep "#207 207a207a207a207a207a207a207a207a207a207a autofix-in-flight review=terminal threads=2 autofix=unspent age=5399 bound=5400" "$OUT"
+check_no_grep "autofix-stalled" "$OUT"
 
-setup "a failed PR query is logged and the pass continues"
-export STUB_PRS=branches STUB_GH_FAIL=prs
+setup "the same autofix one second past its bound is stalled"
+export STUB_WORLD=states STUB_NOW=2026-08-27T12:30:01Z
 run_once
 check_status 0 "$STATUS"
-check_grep "pr query failed" "$OUT"
+check_grep "#207 207a207a207a207a207a207a207a207a207a207a autofix-stalled review=terminal threads=2 autofix=unspent age=5401 bound=5400" "$OUT"
+check_no_grep "autofix-in-flight" "$OUT"
+# A stalled autofix is logged and otherwise left alone: no second trigger, and
+# no escalation until #29 builds one.
+check "no trigger was posted for the stalled pull request" \
+  test "$(grep -cF 'pr comment 207' "$STUB_CALLS")" -eq 0
+
+# --- pr phase: once per head, proven across three replayed passes --------------------
+
+# The strongest form of the sensitivity proof the spec asks for: the same
+# assertion at successive passes with opposite verdicts, against captured worlds
+# rather than a simulated one.
+
+setup "the autofix trigger fires at most once per head commit"
+PASS_N=0
+
+# Pass one: reviewed, findings unresolved, autofix never attempted here.
+replay autofix-once/pass1 2026-08-27T12:00:00Z
+check_status 0 "$STATUS"
+check_grep "pr nywleswoey/automation#301 301a301a301a301a301a301a301a301a301a301a needs-autofix review=terminal threads=2 autofix=unspent action=triggered" "$PASS_LOG"
+check "the trigger was posted once" test "$(grep -cF 'pr comment 301' "$STUB_CALLS")" -eq 1
+
+# Pass two: my trigger is on the timeline, CodeRabbit has not answered, and the
+# head has not moved. The findings are still unresolved — so the fire condition
+# on its own would fire again here.
+replay autofix-once/pass2 2026-08-27T12:30:00Z
+check_status 0 "$STATUS"
+check_grep "pr nywleswoey/automation#301 301a301a301a301a301a301a301a301a301a301a autofix-in-flight review=terminal threads=2 autofix=unspent age=1795 bound=5400" "$PASS_LOG"
+check "still exactly one trigger after the second pass" test "$(grep -cF 'pr comment 301' "$STUB_CALLS")" -eq 1
+
+# Pass three: autofix answered, pushed nothing, and left every finding
+# unresolved. Spent on this head all the same.
+replay autofix-once/pass3 2026-08-27T13:00:00Z
+check_status 0 "$STATUS"
+check_grep "pr nywleswoey/automation#301 301a301a301a301a301a301a301a301a301a301a assessable review=terminal threads=2 autofix=spent" "$PASS_LOG"
+check "still exactly one trigger after the third pass" test "$(grep -cF 'pr comment 301' "$STUB_CALLS")" -eq 1
+
+# --- pr phase: a failed autofix falls through, unparsed ------------------------------
+
+# The same world as 206 in the omnibus case above, byte for byte, with only the
+# autofix status comment's prose swapped for the failure shape — which shares no
+# word with the success one. Identical verdict: what makes autofix spent is a
+# status comment newer than the head, never what the comment says.
+setup "a declined autofix falls through to assessable without its prose being read"
+export STUB_WORLD=autofix-failed STUB_NOW=2026-08-27T12:00:00Z
+run_once
+check_status 0 "$STATUS"
+check_grep "pr nywleswoey/automation#206 206f206f206f206f206f206f206f206f206f206f assessable review=terminal threads=3 autofix=spent" "$OUT"
+check "no trigger was posted at a head autofix has already been spent on" \
+  test "$(grep -cF 'body @coderabbitai autofix' "$STUB_CALLS")" -eq 0
+
+# --- pr phase: configuration order is the axis ---------------------------------------
+
+setup "pull requests are enumerated per repository, in configuration order"
+cat > "$CONFIG" <<JSON
+{
+  "pollIntervalSeconds": 300,
+  "maxWorkers": 3,
+  "autofixTimeoutSeconds": 5400,
+  "logPath": "$LOG",
+  "labels": { "ready": "ready-for-agent", "claimed": "agent-in-progress" },
+  "projects": [
+    { "github": "nywleswoey/automation", "orcaRepoId": "repo-aaa" },
+    { "github": "nywleswoey/other", "orcaRepoId": "repo-bbb" }
+  ]
+}
+JSON
+export STUB_WORLD=two-repos STUB_NOW=2026-08-27T12:00:00Z
+run_once
+check_status 0 "$STATUS"
+check_grep "pr nywleswoey/automation#501 501a501a501a501a501a501a501a501a501a501a assessable" "$OUT"
+check_grep "pr nywleswoey/other#502 502b502b502b502b502b502b502b502b502b502b assessable" "$OUT"
+check "the first configured repository is enumerated first" \
+  test "$(call_line 'name: "automation") { pullRequests(states: OPEN')" \
+     -lt "$(call_line 'name: "other") { pullRequests(states: OPEN')"
+
+# --- pr phase: the worker budget does not gate it -------------------------------------
+
+setup "a full worker budget does not stop the PR phase"
+# orca-ps-busy carries maxWorkers live loop workers, so the issue phase has
+# nothing left to spend — and the PR phase spends none of it, because it opens
+# no worktree, no checkout and no agent.
+export STUB_ORCA_PS=busy STUB_ISSUES=workable
+export STUB_WORLD=states STUB_NOW=2026-08-27T12:00:00Z
+run_once
+check_status 0 "$STATUS"
+check_grep "worker budget full" "$OUT"
+check_grep "#204 204d204d204d204d204d204d204d204d204d204d needs-autofix" "$OUT"
+check_grep "gh-axi pr comment 204 --repo nywleswoey/automation --body @coderabbitai autofix" "$STUB_CALLS"
+check_no_grep "pr nywleswoey/automation#204 deferred" "$OUT"
+
+# --- pr phase: failures are logged, the pass survives ----------------------------------
+
+setup "a failed enumeration is logged and the pass continues"
+export STUB_WORLD=states STUB_GH_FAIL=prs
+run_once
+check_status 0 "$STATUS"
+check_grep "pr query failed: nywleswoey/automation" "$OUT"
 check_grep "pass end dispatches=0 skips=1 sweeps=1" "$OUT"
 
-setup "a failed thread query is logged and the PR is left alone"
-write_config "nywleswoey/automation" "repo-aaa" 300 9
-export STUB_PRS=branches STUB_WORKTREES=branches STUB_ORCA_PS=branches
-export STUB_GH_FAIL=threads
+setup "a failed per-pull-request read leaves that pull request alone"
+export STUB_WORLD=states STUB_GH_FAIL=pr-state STUB_NOW=2026-08-27T12:00:00Z
 run_once
 check_status 0 "$STATUS"
-check_grep "thread query failed: nywleswoey/automation#101" "$OUT"
-check_no_grep "worktree create" "$STUB_CALLS"
+check_grep "pr state query failed: nywleswoey/automation#203" "$OUT"
+check_no_grep "body @coderabbitai autofix" "$STUB_CALLS"
 
-# --- seen-list ------------------------------------------------------------------
-
-# The eligible-thread fixture carries two threads: PRRT_thread001, whose newest note is
-# 900001, and PRRT_thread002, whose newest is 900003. A seen entry matching both is
-# what a worker leaves behind after triaging PR 101 and getting no reply.
-SEEN_101_CURRENT='{"project":"nywleswoey/automation","pr":101,"thread":"PRRT_thread001","lastCommentId":900001,"verdict":"ANSWER"}
-{"project":"nywleswoey/automation","pr":101,"thread":"PRRT_thread002","lastCommentId":900003,"verdict":"ESCALATE"}'
-
-setup "a thread with a matching seen entry and an unchanged newest note is filtered out"
-write_config "nywleswoey/automation" "repo-aaa" 300 9
-export STUB_PRS=branches STUB_WORKTREES=branches STUB_ORCA_PS=branches
-printf '%s\n' "$SEEN_101_CURRENT" > "$WORK/seen.jsonl"
+setup "a failed trigger is recorded on the state line and re-fired next pass"
+export STUB_WORLD=states STUB_GH_FAIL=pr-comment STUB_NOW=2026-08-27T12:00:00Z
 run_once
 check_status 0 "$STATUS"
-check_grep "pr nywleswoey/automation#101 skipped: no eligible threads" "$OUT"
-check_no_grep "agent-loop-pr-101" "$STUB_CALLS"
-# The entries name PR 101 alone, so every other PR is dispatched as before.
-check_grep "dispatched pr nywleswoey/automation#103 (2 eligible threads)" "$OUT"
+check_grep "#204 204d204d204d204d204d204d204d204d204d204d needs-autofix review=terminal threads=2 autofix=unspent action=failed rc=1" "$OUT"
+# Nothing is remembered, so nothing has to be unwound. The next pass re-derives,
+# finds autofix still unspent on the same head, and fires again.
+export STUB_GH_FAIL=""
+run_once
+check_status 0 "$STATUS"
+check_grep "#204 204d204d204d204d204d204d204d204d204d204d needs-autofix review=terminal threads=2 autofix=unspent action=triggered" "$OUT"
 
-setup "a newer note on the thread makes it eligible again"
-write_config "nywleswoey/automation" "repo-aaa" 300 9
-export STUB_PRS=branches STUB_WORKTREES=branches STUB_ORCA_PS=branches
-# Both entries name a note that is no longer the newest one on the thread.
-cat > "$WORK/seen.jsonl" <<'JSON'
-{"project":"nywleswoey/automation","pr":101,"thread":"PRRT_thread001","lastCommentId":900000,"verdict":"ANSWER"}
-{"project":"nywleswoey/automation","pr":101,"thread":"PRRT_thread002","lastCommentId":900002,"verdict":"ESCALATE"}
+setup "no open pull requests means no per-pull-request traffic"
+run_once
+check_status 0 "$STATUS"
+check_grep 'repository(owner: "nywleswoey", name: "automation") { pullRequests(states: OPEN' "$STUB_CALLS"
+check_no_grep "statusCheckRollup" "$STUB_CALLS"
+check_no_grep "body @coderabbitai autofix" "$STUB_CALLS"
+check_grep "pass end dispatches=0 skips=0 sweeps=1" "$OUT"
+
+# --- config: the seen list is gone ------------------------------------------------------
+
+# A key nothing reads would otherwise rot in the operator's file forever, since
+# unknown keys are deliberately ignored.
+setup "a config still naming the deleted seen list fails at startup"
+cat > "$CONFIG" <<JSON
+{
+  "pollIntervalSeconds": 300,
+  "maxWorkers": 3,
+  "autofixTimeoutSeconds": 5400,
+  "seenListPath": "$WORK/seen.jsonl",
+  "logPath": "$LOG",
+  "labels": { "ready": "ready-for-agent", "claimed": "agent-in-progress" },
+  "projects": [
+    { "github": "nywleswoey/automation", "orcaRepoId": "repo-aaa" }
+  ]
+}
 JSON
 run_once
-check_status 0 "$STATUS"
-check_grep "dispatched pr nywleswoey/automation#101 (2 eligible threads)" "$OUT"
+check_status nonzero "$STATUS"
+check_grep "config still names seenListPath" "$OUT"
+check "no pass ran" test "$(grep -cF 'pass start' "$OUT")" -eq 0
 
-setup "a seen entry for another pull request does not filter this one"
-write_config "nywleswoey/automation" "repo-aaa" 300 9
-export STUB_PRS=branches STUB_WORKTREES=branches STUB_ORCA_PS=branches
-printf '%s\n' "${SEEN_101_CURRENT//\"pr\":101/\"pr\":999}" > "$WORK/seen.jsonl"
+setup "the autofix timeout is required, not defaulted"
+cat > "$CONFIG" <<JSON
+{
+  "pollIntervalSeconds": 300,
+  "maxWorkers": 3,
+  "logPath": "$LOG",
+  "labels": { "ready": "ready-for-agent", "claimed": "agent-in-progress" },
+  "projects": [
+    { "github": "nywleswoey/automation", "orcaRepoId": "repo-aaa" }
+  ]
+}
+JSON
+run_once
+check_status nonzero "$STATUS"
+check_grep "config is missing autofixTimeoutSeconds" "$OUT"
+check "no pass ran" test "$(grep -cF 'pass start' "$OUT")" -eq 0
+
+setup "the loop keeps no local state for the PR phase"
+export STUB_WORLD=states STUB_NOW=2026-08-27T12:00:00Z
 run_once
 check_status 0 "$STATUS"
-check_grep "dispatched pr nywleswoey/automation#101 (2 eligible threads)" "$OUT"
-
-setup "a missing seen-list filters nothing and does not stop the pass"
-write_config "nywleswoey/automation" "repo-aaa" 300 9
-export STUB_PRS=branches STUB_WORKTREES=branches STUB_ORCA_PS=branches
-check "no seen-list on disk" test ! -f "$WORK/seen.jsonl"
-run_once
-check_status 0 "$STATUS"
-check_grep "dispatched pr nywleswoey/automation#101 (2 eligible threads)" "$OUT"
-
-setup "an unreadable seen-list filters nothing and does not stop the pass"
-write_config "nywleswoey/automation" "repo-aaa" 300 9
-export STUB_PRS=branches STUB_WORKTREES=branches STUB_ORCA_PS=branches
-printf 'not json at all\n' > "$WORK/seen.jsonl"
-run_once
-check_status 0 "$STATUS"
-check_grep "seen-list unreadable, filtering nothing this pass: $WORK/seen.jsonl" "$OUT"
-check_grep "dispatched pr nywleswoey/automation#101 (2 eligible threads)" "$OUT"
-
-setup "the daemon never writes the seen-list itself"
-write_config "nywleswoey/automation" "repo-aaa" 300 9
-export STUB_PRS=branches STUB_WORKTREES=branches STUB_ORCA_PS=branches
-run_once
-check_status 0 "$STATUS"
-check_grep "dispatched pr nywleswoey/automation#101" "$OUT"
-# Only a worker whose confirmation prompt I have answered writes an entry, and
-# the write-back script is the only thing that writes one.
-check "the loop created no seen-list" test ! -f "$WORK/seen.jsonl"
-
-setup "no open PRs means no PR traffic"
-run_once
-check_status 0 "$STATUS"
-check_grep 'gh-axi api POST graphql --field query={ search(query: "is:pr is:open author:nywleswoey sort:updated-desc"' "$STUB_CALLS"
-check_no_grep "reviewThreads" "$STUB_CALLS"
-check_no_grep "dispatched mr" "$OUT"
-check_grep "pass end dispatches=0 skips=0 sweeps=1" "$OUT"
+check_grep "#207 207a207a207a207a207a207a207a207a207a207a autofix-in-flight" "$OUT"
+# The phase used to leave three kinds of file beside the log: a seen list, a
+# worker brief and a triage plan. A wait now leaves the log line above and
+# nothing else, which is what makes the loop survive a crash, a `--once` run and
+# a machine rebuild for free.
+check "no seen list was written" \
+  test "$(find "$WORK" -maxdepth 1 -name '*.jsonl' | wc -l | tr -d ' ')" -eq 0
+check "no worker brief or triage plan was written" \
+  test "$(find "$WORK" -maxdepth 1 -name 'agent-loop-pr-*' | wc -l | tr -d ' ')" -eq 0
 
 # --- close-out phase -------------------------------------------------------------
 
@@ -1012,13 +1152,14 @@ check "exactly four issues were closed" test "$(grep -cF 'gh-axi issue close ' "
 check "one close-out line per issue" test "$(grep -cF 'closed out nywleswoey/automation#17' "$OUT")" -eq 1
 
 setup "an unmerged pull request leaves its issue alone"
-# One open pull request, from the very branch the close-out phase reads issues
-# out of: it must never reach the phase, because the phase asks GitHub for
-# `state=merged` and nothing else.
-export STUB_PRS=openissue STUB_WORKTREES=branches STUB_ORCA_PS=branches
+# One open pull request, on the very branch the close-out phase reads issues out
+# of: it must never reach the phase, because the phase asks GitHub for
+# `state=merged` and nothing else. The PR phase does see it, which is what makes
+# the close-out's silence a fact rather than an empty pass.
+export STUB_WORLD=open-issue-branch STUB_NOW=2026-08-27T12:00:00Z
 run_once
 check_status 0 "$STATUS"
-check_grep "dispatched pr nywleswoey/automation#301" "$OUT"
+check_grep "pr nywleswoey/automation#401 aaee17aaee17aaee17aaee17aaee17aaee17aaee assessable" "$OUT"
 check_no_grep "gh-axi issue close" "$STUB_CALLS"
 check_no_grep "issues/17 " "$STUB_CALLS"
 check_no_grep "closed out" "$OUT"
@@ -1069,6 +1210,44 @@ run_once
 check_status 0 "$STATUS"
 check_no_grep "issues/" "$STUB_CALLS"
 check_no_grep "closed out" "$OUT"
+
+setup "the close-out query does not widen with the PR phase's scope"
+run_once
+check_status 0 "$STATUS"
+# The open-pull-request read widened to every pull request in a configured
+# repository. This one did not, and keeps its author filter: the branch name is
+# the only pull-request-to-issue link there is, and the resolver behind it
+# already drops a branch naming no issue.
+check_grep 'query={ search(query: "is:pr is:merged author:nywleswoey sort:updated-desc"' "$STUB_CALLS"
+
+# --- the deleted machinery ------------------------------------------------------
+
+# The PR phase used to spend a worktree, a checkout and an Orca worker to
+# produce fixes CodeRabbit writes itself from a one-line comment. Everything
+# that served it is gone, and a grep is the cheapest guard against a piece of it
+# coming back on the coat-tails of an unrelated change. Asserted on the source
+# because these are absences, and an absence has no behaviour to observe.
+
+setup "nothing of the PR worker survives in the daemon"
+# `SEEN_LIST_PATH` is the one that matters: it is what the daemon read the
+# configured path into, so its absence is the absence of every use of the seen
+# list. `seenListPath` itself deliberately survives, in the tombstone that
+# refuses a config still naming it, and is asserted by that config case above
+# rather than counted here.
+for _gone in SEEN_LIST_PATH SEEN_JSON load_seen_list count_eligible_threads \
+             pr_worker_prompt dispatch_pr_fresh dispatch_pr_reuse pr_work_path \
+             SWEEP_EXEMPT AGENT_LOOP_TUI_WAIT_MS; do
+  check "$_gone is gone from agent-loop.sh" \
+    test "$(grep -cF "$_gone" "$SCRIPT")" -eq 0
+done
+# `orca terminal` leaves the daemon entirely; only worktree creation survives,
+# in the issue phase.
+for _verb in create send wait; do
+  check "orca terminal $_verb is gone from agent-loop.sh" \
+    test "$(grep -cE "orca terminal +$_verb" "$SCRIPT")" -eq 0
+done
+check "the issue phase still creates worktrees" \
+  test "$(grep -cF 'orca worktree create' "$SCRIPT")" -eq 1
 
 # --- result ------------------------------------------------------------------
 

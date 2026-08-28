@@ -267,7 +267,7 @@ echo "== $CURRENT"
 # injected rendering is named by $STUB_GH_ERROR and any of them would do here.
 # What must hold whichever one arrives is that gh_graphql forwards whatever
 # gh_json saw, unaltered.
-QUERY='{ search(query: "is:pr is:open author:nywleswoey", type: ISSUE, first: 100) { nodes { ... on PullRequest { number } } } }'
+QUERY='{ repository(owner: "nywleswoey", name: "automation") { pullRequests(states: OPEN, first: 100) { nodes { number } } } }'
 
 export STUB_GH_FAIL=prs
 

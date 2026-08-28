@@ -1,0 +1,22 @@
+{
+  "data": {
+    "repository": {
+      "pullRequests": {
+        "nodes": [
+          {
+            "number": 206,
+            "title": "Autofix declined here",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/206",
+            "headRefName": "pr-fixed",
+            "headRefOid": "206f206f206f206f206f206f206f206f206f206f",
+            "labels": {
+              "nodes": []
+            }
+          }
+        ]
+      }
+    }
+  }
+}

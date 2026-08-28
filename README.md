@@ -1,6 +1,6 @@
 # agent-loop
 
-A bash daemon that polls GitHub and dispatches [Orca](https://orca.computer) agent workers at anything workable — issues labelled ready, and pull requests carrying unresolved review threads.
+A bash daemon that polls GitHub, dispatches [Orca](https://orca.computer) agent workers at issues labelled ready, and drives CodeRabbit's own autofix at the findings on open pull requests.
 
 Started by hand, runs until Ctrl-C. Every decision it makes is one log line, so silence means nothing happened rather than something was swallowed.
 
@@ -12,18 +12,18 @@ Each pass, in order:
 
 1. **Close-out** — an issue whose pull request has merged gets its checklist ticked, its description updated, its claim label removed, and the issue closed.
 2. **Issues** — queries each project for open issues labelled `ready-for-agent`, skips ones with an open blocker, swaps the label to `agent-in-progress`, and dispatches an Orca worker into a fresh worktree.
-3. **Pull requests** — finds open PRs with unresolved review threads that the loop has not already triaged, and dispatches a thread-triage worker at them.
+3. **Pull requests** — enumerates every open pull request in each project except drafts and fork heads, derives its state from GitHub alone, logs one line per pull request, and comments `@coderabbitai autofix` at the ones carrying unresolved findings. It spends no worker and no worktree, and it keeps no local state: every pass re-derives from a fresh read.
 4. **Sweep** — removes the loop's own finished worktrees.
 
 Between passes it sleeps for `pollIntervalSeconds`.
 
 ### Guard rails
 
-- **Worker budget** — never more than `maxWorkers` live workers. Checked before *every* dispatch, not once per pass, so a candidate arriving at a full budget waits for a later pass rather than being dropped.
+- **Worker budget** — never more than `maxWorkers` live workers. Checked before *every* issue dispatch, not once per pass, so a candidate arriving at a full budget waits for a later pass rather than being dropped. It governs **issue dispatch only**: the PR phase spends no worktree, no checkout and no agent, so a long-running issue does not stall the pull requests behind it.
 - **Fail closed** — if the worktree inventory can't be read, the budget is treated as full and the sweep is skipped. A budget that failed open would dispatch a fresh `maxWorkers` on top of the workers it couldn't see.
 - **PID lock** — one loop per machine.
 - **Startup reclaim** — an issue left claimed with no live worker (crash, failed dispatch) is handed back to `ready-for-agent` when the loop next starts.
-- **Seen list** — a review thread the loop deliberately left silent is recorded with its newest comment id, so the next pass can tell "already triaged, nothing new" from "never looked at".
+- **Once per head commit** — the autofix trigger fires at most once per head, derived from an autofix-status comment landing newer than the head commit. Reviews are metered, and a poll loop that re-fired every pass would burn that budget; a failed or declined autofix falls through on the same term, with none of CodeRabbit's prose parsed.
 - **Log rotation** — one generation, capped at 5 MiB. A loop left running for weeks must not fill the disk.
 
 ### Nothing is written to GitHub without confirmation
@@ -67,7 +67,7 @@ Then edit `agent-loop.config.json`:
 {
   "pollIntervalSeconds": 300,
   "maxWorkers": 3,
-  "seenListPath": "~/.agent-loop/seen.jsonl",
+  "autofixTimeoutSeconds": 5400,
   "logPath": "~/.agent-loop/agent-loop.log",
   "labels": {
     "ready": "ready-for-agent",
@@ -85,8 +85,8 @@ Then edit `agent-loop.config.json`:
 | Field | Meaning |
 |---|---|
 | `pollIntervalSeconds` | Sleep between passes. |
-| `maxWorkers` | Hard cap on live workers across all projects. |
-| `seenListPath` | Where triaged-and-silent threads are recorded. |
+| `maxWorkers` | Hard cap on live workers across all projects. Governs **issue dispatch only** — the PR phase spends no worker. |
+| `autofixTimeoutSeconds` | How long a triggered autofix has to report before the loop calls it stalled. **Required; nothing defaults it.** An admitted guess: the only measurement behind it is a single 17m 35s run, which the research explicitly declined to derive a timeout from. |
 | `logPath` | Append-only log. Rotated at 5 MiB, one generation kept. |
 | `labels.ready` | Label the loop picks issues up by. |
 | `labels.claimed` | Label the loop swaps in once it claims an issue. |
@@ -123,7 +123,6 @@ For tests and troubleshooting:
 | `AGENT_LOOP_CONFIG` | `agent-loop.config.json` beside the script | Config path. |
 | `AGENT_LOOP_LOG_MAX_BYTES` | `5242880` | Log size cap before rotation. |
 | `AGENT_LOOP_RUNTIME_WAIT_SECONDS` | `60` | How long to wait for the Orca runtime. |
-| `AGENT_LOOP_TUI_WAIT_MS` | `60000` | How long a reused terminal gets to boot its agent before the prompt is typed. |
 
 ---
 
@@ -201,6 +200,7 @@ tests/
   test-gh.sh                      the seam's error classifier
   bin/                            stub git, gh-axi, orca, date
   fixtures/                       canned CLI responses
+    worlds/                       whole-world snapshots, one per replayed pass
 ```
 
 ---

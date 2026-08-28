@@ -1,0 +1,43 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "number": 401,
+        "headRefOid": "aaee17aaee17aaee17aaee17aaee17aaee17aaee",
+        "commits": {
+          "nodes": [
+            {
+              "commit": {
+                "oid": "aaee17aaee17aaee17aaee17aaee17aaee17aaee",
+                "committedDate": "2026-08-27T09:00:00Z",
+                "statusCheckRollup": {
+                  "state": "SUCCESS",
+                  "contexts": {
+                    "nodes": [
+                      {
+                        "__typename": "StatusContext",
+                        "context": "CodeRabbit",
+                        "state": "SUCCESS",
+                        "description": "Review completed",
+                        "createdAt": "2026-08-27T09:01:00Z",
+                        "creator": {
+                          "login": "coderabbitai"
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "reviewThreads": {
+          "nodes": []
+        },
+        "comments": {
+          "nodes": []
+        }
+      }
+    }
+  }
+}

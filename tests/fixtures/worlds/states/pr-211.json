@@ -1,0 +1,27 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "number": 211,
+        "headRefOid": "211e211e211e211e211e211e211e211e211e211e",
+        "commits": {
+          "nodes": [
+            {
+              "commit": {
+                "oid": "211e211e211e211e211e211e211e211e211e211e",
+                "committedDate": "2026-08-27T11:40:00Z",
+                "statusCheckRollup": null
+              }
+            }
+          ]
+        },
+        "reviewThreads": {
+          "nodes": []
+        },
+        "comments": {
+          "nodes": []
+        }
+      }
+    }
+  }
+}
