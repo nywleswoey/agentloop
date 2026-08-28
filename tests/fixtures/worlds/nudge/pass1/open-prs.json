@@ -1,0 +1,26 @@
+{
+  "data": {
+    "repository": {
+      "pullRequests": {
+        "nodes": [
+          {
+            "number": 272,
+            "title": "CodeRabbit has never looked at this",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/272",
+            "headRefName": "pr-nudged",
+            "headRefOid": "272a272a272a272a272a272a272a272a272a272a",
+            "labels": {
+              "nodes": []
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
+          }
+        ]
+      }
+    }
+  }
+}

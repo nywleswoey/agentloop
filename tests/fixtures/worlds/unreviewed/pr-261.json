@@ -1,0 +1,66 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "number": 261,
+        "headRefOid": "261b261b261b261b261b261b261b261b261b261b",
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "CLEAN",
+        "files": {
+          "totalCount": 1,
+          "nodes": [
+            {
+              "path": "src/throttled.js"
+            }
+          ]
+        },
+        "commits": {
+          "nodes": [
+            {
+              "commit": {
+                "oid": "261b261b261b261b261b261b261b261b261b261b",
+                "committedDate": "2026-08-27T11:32:00Z",
+                "statusCheckRollup": {
+                  "state": "SUCCESS",
+                  "contexts": {
+                    "nodes": [
+                      {
+                        "__typename": "CheckRun",
+                        "name": "CodeRabbit",
+                        "status": "COMPLETED",
+                        "conclusion": "SUCCESS",
+                        "startedAt": "2026-08-27T11:32:10Z",
+                        "completedAt": "2026-08-27T11:32:12Z",
+                        "checkSuite": {
+                          "app": {
+                            "slug": "coderabbitai"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "reviewThreads": {
+          "nodes": []
+        },
+        "comments": {
+          "nodes": [
+            {
+              "databaseId": 5379000261,
+              "createdAt": "2026-08-27T11:00:00Z",
+              "updatedAt": "2026-08-27T11:33:00Z",
+              "body": "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->\n> [!WARNING]\n> ## Rate limit exceeded\n>\n> @nywleswoey has exceeded the limit for the number of files or hunks that can be reviewed per hour. Please try again in 23 minutes and 41 seconds before requesting another review.\n",
+              "author": {
+                "login": "coderabbitai"
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

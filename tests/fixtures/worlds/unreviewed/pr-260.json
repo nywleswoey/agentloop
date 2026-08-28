@@ -1,0 +1,53 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "number": 260,
+        "headRefOid": "260a260a260a260a260a260a260a260a260a260a",
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "CLEAN",
+        "files": {
+          "totalCount": 1,
+          "nodes": [
+            {
+              "path": "src/false-green.js"
+            }
+          ]
+        },
+        "commits": {
+          "nodes": [
+            {
+              "commit": {
+                "oid": "260a260a260a260a260a260a260a260a260a260a",
+                "committedDate": "2026-08-27T11:30:00Z",
+                "statusCheckRollup": {
+                  "state": "SUCCESS",
+                  "contexts": {
+                    "nodes": [
+                      {
+                        "__typename": "StatusContext",
+                        "context": "CodeRabbit",
+                        "state": "SUCCESS",
+                        "description": "Review skipped",
+                        "createdAt": "2026-08-27T11:30:20Z",
+                        "creator": {
+                          "login": "coderabbitai"
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "reviewThreads": {
+          "nodes": []
+        },
+        "comments": {
+          "nodes": []
+        }
+      }
+    }
+  }
+}

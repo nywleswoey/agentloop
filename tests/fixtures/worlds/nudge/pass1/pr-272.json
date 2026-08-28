@@ -1,0 +1,37 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "number": 272,
+        "headRefOid": "272a272a272a272a272a272a272a272a272a272a",
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "CLEAN",
+        "files": {
+          "totalCount": 1,
+          "nodes": [
+            {
+              "path": "src/nudged.js"
+            }
+          ]
+        },
+        "commits": {
+          "nodes": [
+            {
+              "commit": {
+                "oid": "272a272a272a272a272a272a272a272a272a272a",
+                "committedDate": "2026-08-27T11:50:00Z",
+                "statusCheckRollup": null
+              }
+            }
+          ]
+        },
+        "reviewThreads": {
+          "nodes": []
+        },
+        "comments": {
+          "nodes": []
+        }
+      }
+    }
+  }
+}

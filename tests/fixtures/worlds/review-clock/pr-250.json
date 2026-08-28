@@ -2,18 +2,15 @@
   "data": {
     "repository": {
       "pullRequest": {
-        "number": 203,
-        "headRefOid": "203c203c203c203c203c203c203c203c203c203c",
+        "number": 250,
+        "headRefOid": "250a250a250a250a250a250a250a250a250a250a",
         "mergeable": "MERGEABLE",
         "mergeStateStatus": "CLEAN",
         "files": {
-          "totalCount": 2,
+          "totalCount": 1,
           "nodes": [
             {
-              "path": "agent-loop.config.example.json"
-            },
-            {
-              "path": "tests/lib.sh"
+              "path": "src/slow-review.js"
             }
           ]
         },
@@ -21,8 +18,8 @@
           "nodes": [
             {
               "commit": {
-                "oid": "203c203c203c203c203c203c203c203c203c203c",
-                "committedDate": "2026-08-27T11:55:00Z",
+                "oid": "250a250a250a250a250a250a250a250a250a250a",
+                "committedDate": "2026-08-27T07:00:00Z",
                 "statusCheckRollup": {
                   "state": "PENDING",
                   "contexts": {
@@ -32,7 +29,7 @@
                         "context": "ci/build",
                         "state": "SUCCESS",
                         "description": "Build succeeded",
-                        "createdAt": "2026-08-27T11:56:05Z",
+                        "createdAt": "2026-08-27T07:01:00Z",
                         "creator": {
                           "login": "github-actions"
                         }
@@ -41,8 +38,8 @@
                         "__typename": "StatusContext",
                         "context": "CodeRabbit",
                         "state": "PENDING",
-                        "description": "Review in progress",
-                        "createdAt": "2026-08-27T11:56:10Z",
+                        "description": "Review started",
+                        "createdAt": "2026-08-27T11:00:00Z",
                         "creator": {
                           "login": "coderabbitai"
                         }
@@ -52,7 +49,7 @@
                         "context": "CodeRabbit",
                         "state": "PENDING",
                         "description": "Analyzing changes",
-                        "createdAt": "2026-08-27T11:56:13Z",
+                        "createdAt": "2026-08-27T11:00:03Z",
                         "creator": {
                           "login": "coderabbitai"
                         }
@@ -70,10 +67,10 @@
         "comments": {
           "nodes": [
             {
-              "databaseId": 5379000203,
-              "createdAt": "2026-08-27T11:56:20Z",
-              "updatedAt": "2026-08-27T11:56:20Z",
-              "body": "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n<!-- review_stack_entry_start -->\n> Change Stack: 1 of 1\n<!-- review_stack_entry_end -->\n<!-- recent_review_start -->\n## Walkthrough\n\nThe pass loop grows a state log.\n<!-- recent_review_end -->\n<!-- final_review_risk_start -->\n**Merge Risk:** _⚪ Minimal_ · up to `203c2`\n\nA localized change with no merge-blocking risk beyond normal checks and review.\n<!-- final_review_risk_end -->\n<!-- pre_merge_checks_walkthrough_start -->\n<details>\n<summary>🚥 Pre-merge checks | ✅ 5</summary>\n</details>\n<!-- pre_merge_checks_walkthrough_end -->\n<!-- tips_start -->\n<details>\n<summary>📜 Recent review details</summary>\n\nConfiguration used: defaults\nReview profile: CHILL\nPlan: Pro Plus\n</details>\n<!-- tips_end -->\n",
+              "databaseId": 5379000250,
+              "createdAt": "2026-08-27T07:05:00Z",
+              "updatedAt": "2026-08-27T07:05:00Z",
+              "body": "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n<!-- recent_review_start -->\n## Walkthrough\n\nA change to the loop.\n<!-- recent_review_end -->\n<!-- final_review_risk_start -->\n**Merge Risk:** _⚪ Minimal_ · up to `250a2`\n\nA localized change with no merge-blocking risk beyond normal checks and review.\n<!-- final_review_risk_end -->\n<!-- tips_start -->\n<details>\n<summary>📜 Recent review details</summary>\n\nConfiguration used: defaults\nReview profile: CHILL\nPlan: Pro Plus\n</details>\n<!-- tips_end -->\n",
               "author": {
                 "login": "coderabbitai"
               }

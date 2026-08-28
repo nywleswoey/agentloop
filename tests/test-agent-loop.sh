@@ -808,8 +808,10 @@ check_no_grep "pullRequest(number: 202)" "$STUB_CALLS"
 
 # 203 — CodeRabbit is still looking at the head commit. Its rollup also carries
 # a green CI status, which is not CodeRabbit's and does not answer for it: the
-# review that has to be terminal is the reviewer's own.
-check_grep "pr nywleswoey/automation#203 203c203c203c203c203c203c203c203c203c203c reviewing review=pending threads=0 autofix=unspent" "$OUT"
+# review that has to be terminal is the reviewer's own. Two CodeRabbit statuses
+# three seconds apart carry the appended-status shape, and the clock runs from
+# the older of them.
+check_grep "pr nywleswoey/automation#203 203c203c203c203c203c203c203c203c203c203c reviewing review=pending threads=0 autofix=unspent age=230 bound=3600 origin=pending" "$OUT"
 
 # 204 — the review finished with unresolved findings and no autofix has been
 # attempted at this head. Two of its four threads count: one is resolved, and
@@ -842,16 +844,24 @@ check_grep "pr nywleswoey/automation#212 212f212f212f212f212f212f212f212f212f212
 # this account does not in fact emit. Both are read, either one terminal is
 # terminal, and the pair differs only in the check run's status.
 check_grep "pr nywleswoey/automation#209 209c209c209c209c209c209c209c209c209c209c assessable review=terminal threads=0 autofix=unspent verdict=merge risk=ok checks=ok mergeability=ok blast=ok" "$OUT"
-check_grep "pr nywleswoey/automation#210 210d210d210d210d210d210d210d210d210d210d reviewing review=pending threads=0 autofix=unspent" "$OUT"
+# 210's head is two and a half hours old and its check run started ninety
+# seconds ago, which is the shape the review clock's origin was chosen for: a
+# bound run from `headDate` would have expired this pull request the instant a
+# legitimate review began.
+check_grep "pr nywleswoey/automation#210 210d210d210d210d210d210d210d210d210d210d reviewing review=pending threads=0 autofix=unspent age=100 bound=3600 origin=pending" "$OUT"
 
-# 211 — nothing rolled up on the head commit at all, which is what a pull
-# request CodeRabbit has never looked at reports. Absence is a real state, not a
-# read that failed: one real pull request sat in exactly this shape for four and
-# a half hours.
+# 211 — nothing rolled up on the head commit at all and no merge-risk block
+# anywhere on the pull request, which is what a pull request CodeRabbit has
+# never looked at reports. Absence is a real state, not a read that failed: one
+# real pull request sat in exactly this shape for four and a half hours.
 #
-# ponytail: it lands in `reviewing` and waits forever. #32 splits it out as its
-# own state, nudges it, and bounds what remains.
-check_grep "pr nywleswoey/automation#211 211e211e211e211e211e211e211e211e211e211e reviewing review=pending threads=0 autofix=unspent" "$OUT"
+# Both routes into the predicate hold at once here, and the tail says so rather
+# than a second state name being invented for the pair.
+check_grep "pr nywleswoey/automation#211 211e211e211e211e211e211e211e211e211e211e unreviewed review=pending threads=0 autofix=unspent route=no-signal,no-block action=nudged" "$OUT"
+# The remedy is a write, because the cause does not clear on its own: the
+# review pause resets its counter only when the pause is lifted, and lifting it
+# is a command.
+check_grep "gh-axi pr comment 211 --repo nywleswoey/automation --body @coderabbitai review" "$STUB_CALLS"
 
 # The commit named is the head, never a commit out of CodeRabbit's prose. The
 # autofix status comment on 206 names a different one on purpose.
@@ -889,6 +899,13 @@ LOOP_TRIGGER=$(sed -n "s/^AUTOFIX_TRIGGER='\(.*\)'$/\1/p" "$SCRIPT")
 check "the loop names a trigger at all" test -n "$LOOP_TRIGGER"
 check_grep "--body $LOOP_TRIGGER" "$STUB_CALLS"
 
+# The review nudge is spelled twice for the same reason and drifts the same way,
+# except worse: the loop would nudge every pass forever, having never once
+# recognised what it posted.
+LOOP_NUDGE=$(sed -n "s/^REVIEW_TRIGGER='\(.*\)'$/\1/p" "$SCRIPT")
+check "the loop names a review nudge at all" test -n "$LOOP_NUDGE"
+check_grep "--body $LOOP_NUDGE" "$STUB_CALLS"
+
 # The phase spends no worktree, no checkout and no agent, so `orca terminal`
 # has left the daemon entirely.
 check_no_grep "worktree create" "$STUB_CALLS"
@@ -920,6 +937,178 @@ check_no_grep "autofix-in-flight" "$OUT"
 # did not answer is not the command to send again.
 check "no second trigger was posted for the stalled pull request" \
   test "$(grep -cF 'pr comment 207 --repo nywleswoey/automation --body @coderabbitai autofix' "$STUB_CALLS")" -eq 0
+
+# --- pr phase: the unreviewed predicate ---------------------------------------------
+
+# `U` is two clauses — no CodeRabbit signal on the head, or no merge-risk block
+# anywhere on the pull request — and this world separates them, because a
+# predicate whose clauses are only ever true together is one clause wearing two
+# names.
+setup "a pull request CodeRabbit never reviewed is unreviewed by either route"
+export STUB_WORLD=unreviewed STUB_NOW=2026-08-27T12:00:00Z
+run_once
+check_status 0 "$STATUS"
+
+# 260 — the false green. A `success` CodeRabbit status does not mean the code
+# was reviewed: a draft gets one too, with a *review skipped* description, and
+# un-drafting is not a push, so the head never moves. The discriminator is the
+# **absent artifact**, not the status and not the description — the description
+# is captured in the fixture and nothing reads it.
+check_grep "pr nywleswoey/automation#260 260a260a260a260a260a260a260a260a260a260a unreviewed review=terminal threads=0 autofix=unspent route=no-block action=nudged" "$OUT"
+check_grep "gh-axi pr comment 260 --repo nywleswoey/automation --body @coderabbitai review" "$STUB_CALLS"
+# The green status did not reach the gate, so the gate's tripwire never fired.
+check_no_grep "#260 260a260a260a260a260a260a260a260a260a260a assessable" "$OUT"
+
+# 261 — the rate-limit path posts a *passing check*, which is a second and
+# independent route to the same false green. The predicate is cause-blind, so it
+# catches this one too — and the rate-limit marker is tested first, so a
+# throttled reviewer waits instead of escalating the queue.
+check_grep "pr nywleswoey/automation#261 261b261b261b261b261b261b261b261b261b261b rate-limited review=terminal threads=0 autofix=unspent route=no-block" "$OUT"
+check "a throttled pull request is not nudged" \
+  test "$(grep -cF 'pr comment 261 --repo nywleswoey/automation --body @coderabbitai review' "$STUB_CALLS")" -eq 0
+check_no_grep "#261 261b261b261b261b261b261b261b261b261b261b assessable" "$OUT"
+
+# 262 — nothing rolled up on the head, and a merge-risk block still on the pull
+# request from the head before it. The first clause holds alone.
+check_grep "pr nywleswoey/automation#262 262c262c262c262c262c262c262c262c262c262c unreviewed review=pending threads=0 autofix=unspent route=no-signal action=nudged" "$OUT"
+check_grep "gh-axi pr comment 262 --repo nywleswoey/automation --body @coderabbitai review" "$STUB_CALLS"
+
+# 263 — what a nudge that **worked** leaves behind. The skipped-review green
+# status is still on the head, because un-drafting is not a push and the head
+# never moved, and the review the nudge started has landed a pending status
+# beside it. Terminal is decided by the **newest** signal, so this is a review in
+# progress; decided by *any* signal it would read as finished, stay unreviewed,
+# and be handed over one poll interval into a review that was running.
+check_grep "pr nywleswoey/automation#263 263d263d263d263d263d263d263d263d263d263d reviewing review=pending threads=0 autofix=unspent age=120 bound=3600 origin=pending" "$OUT"
+check "a review that started is not nudged again" \
+  test "$(grep -cF 'pr comment 263 --repo nywleswoey/automation --body @coderabbitai review' "$STUB_CALLS")" -eq 0
+check_no_grep "#263 263d263d263d263d263d263d263d263d263d263d nudge" "$OUT"
+
+# The block test is per **pull request**, not per head, which is what leaves V1
+# untouched: a block that is present but stale stays the gate's call exactly as
+# written. Nothing here was merged and nothing was handed over.
+check "nothing was merged" test "$(grep -cE 'pulls/[0-9]+/merge' "$STUB_CALLS")" -eq 0
+check_no_grep "action=escalated" "$OUT"
+check "one state line per pull request" \
+  test "$(grep -cE '^[0-9TZ:-]+ pr nywleswoey/automation#' "$OUT")" -eq 4
+
+# --- pr phase: the nudge chain ------------------------------------------------------
+
+# Three whole-world snapshots: the nudge, the wait, and the handover — then the
+# head moving and the whole thing starting again. The bound is one poll interval
+# and there is no new config key behind it.
+setup "an unreviewed pull request is nudged once, then handed over"
+PASS_N=0
+
+# Pass one: no status, no block, no nudge. The loop writes.
+replay nudge/pass1 2026-08-27T11:50:30Z
+check_status 0 "$STATUS"
+check_grep "pr nywleswoey/automation#272 272a272a272a272a272a272a272a272a272a272a unreviewed review=pending threads=0 autofix=unspent route=no-signal,no-block action=nudged" "$PASS_LOG"
+check_grep "gh-axi pr comment 272 --repo nywleswoey/automation --body @coderabbitai review" "$STUB_CALLS"
+# The incremental review command, not the resume command: it is the measured
+# one, and it cleared a real four-and-a-half-hour wedge.
+check_no_grep "@coderabbitai resume" "$STUB_CALLS"
+
+# Pass two: the nudge is on the timeline and CodeRabbit has said nothing that
+# reaches the head. One second inside the bound.
+#
+# The nudge comment was created at 11:55:00 and edited at 11:59:50. The created
+# timestamp is the tested one — correct here specifically because **the loop
+# authors it**; the updated-timestamp binding is about comments CodeRabbit
+# edits. Read the updated one and this pass would be nine seconds old.
+replay nudge/pass2 2026-08-27T11:59:59Z
+check_status 0 "$STATUS"
+check_grep "pr nywleswoey/automation#272 272a272a272a272a272a272a272a272a272a272a nudge-in-flight review=pending threads=0 autofix=unspent route=no-signal,no-block age=299 bound=300" "$PASS_LOG"
+check "once per head: no second nudge" \
+  test "$(grep -cF 'pr comment 272 --repo nywleswoey/automation --body @coderabbitai review' "$STUB_CALLS")" -eq 1
+check_no_grep "action=escalated" "$PASS_LOG"
+
+# The mutant twin: the same world two seconds later, past the bound.
+setup "the same nudge one second past its bound is handed over"
+PASS_N=0
+replay nudge/pass2 2026-08-27T12:00:01Z
+check_status 0 "$STATUS"
+check_grep "pr nywleswoey/automation#272 272a272a272a272a272a272a272a272a272a272a nudge-stalled review=pending threads=0 autofix=unspent route=no-signal,no-block age=301 bound=300 action=escalated kind=stalled label=added" "$PASS_LOG"
+check_no_grep "nudge-in-flight" "$PASS_LOG"
+check "the stalled nudge is not sent again" \
+  test "$(grep -cF 'pr comment 272 --repo nywleswoey/automation --body @coderabbitai review' "$STUB_CALLS")" -eq 0
+
+BODY="$STUB_STATE/pr-body-272.txt"
+check "the escalation body was captured" test -f "$BODY"
+# `stalled`, not `stuck`: a command was triggered and CodeRabbit never answered.
+check "the first line names the kind" \
+  test "$(head -1 "$BODY")" = '**Escalated — `stalled`:** a CodeRabbit command was triggered and CodeRabbit never reported inside its bound.'
+# The bound is cause-blind, so the documented non-triggers are never tracked —
+# but the two the operator can actually do something about are named.
+check_grep "not be installed on this repository, or the organisation may be out of seats" "$BODY"
+check_grep "age=301s bound=300s nudge=2026-08-27T11:55:00Z" "$BODY"
+# No CodeRabbit prose is parsed. The reply is read once, here, and shipped
+# verbatim as a raw value — nothing keys on it.
+check_grep "CodeRabbit's reply to the nudge, verbatim and unparsed" "$BODY"
+check_grep "**Actions performed**" "$BODY"
+check_grep "Review triggered." "$BODY"
+
+# Pass three: the head moved. The handover names the commit before it, the nudge
+# is now older than the head, and the pull request is nudged again — which is
+# the stated cost of a one-shot command.
+setup "a new head is nudged again"
+PASS_N=0
+replay nudge/pass3 2026-08-27T12:15:00Z
+check_status 0 "$STATUS"
+check_grep "pr nywleswoey/automation#272 272b272b272b272b272b272b272b272b272b272b unreviewed review=pending threads=0 autofix=unspent route=no-signal,no-block action=nudged" "$PASS_LOG"
+check_grep "gh-axi pr comment 272 --repo nywleswoey/automation --body @coderabbitai review" "$STUB_CALLS"
+check_no_grep "272b272b272b272b272b272b272b272b272b272b escalated" "$PASS_LOG"
+
+# --- pr phase: the review clock, proven by a mutant twin ----------------------------
+
+# A pending status with nothing after it. This is a gate-style defer — *a signal
+# not yet computed* is its exact definition — so it reuses the gate's key. Its
+# **origin** is not the gate's: a real pull request sat four and a half hours
+# between its head commit and its review starting.
+#
+# The head here is at 07:00 and the review started at 11:00. A clock from
+# `headDate` would read 17999 seconds at the first instant below and hand the
+# pull request over while CodeRabbit was working on it.
+
+setup "a review inside the gate clock is still reviewing"
+export STUB_WORLD=review-clock STUB_NOW=2026-08-27T11:59:59Z
+run_once
+check_status 0 "$STATUS"
+check_grep "pr nywleswoey/automation#250 250a250a250a250a250a250a250a250a250a250a reviewing review=pending threads=0 autofix=unspent age=3599 bound=3600 origin=pending" "$OUT"
+check_no_grep "review-stuck" "$OUT"
+# **No nudge on this path.** CodeRabbit has already acknowledged the work, the
+# command is documented for the paused case, and a pending status is not a
+# pause.
+check_no_grep "@coderabbitai review" "$STUB_CALLS"
+
+# 251 — a check run GitHub queued and never started, so its `startedAt` is null
+# and the signal names no instant of its own. The head is the fallback origin,
+# and the line says which one it used: a bound whose origin is not on the record
+# cannot be checked against it.
+check_grep "pr nywleswoey/automation#251 251b251b251b251b251b251b251b251b251b251b reviewing review=pending threads=0 autofix=unspent age=3599 bound=3600 origin=head" "$OUT"
+
+setup "the same review one second past the gate clock is stuck"
+export STUB_WORLD=review-clock STUB_NOW=2026-08-27T12:00:01Z
+run_once
+check_status 0 "$STATUS"
+# Oldest pending, not newest. The two progress statuses land three seconds
+# apart: read the newer one and this is 3598 seconds old and still reviewing.
+check_grep "pr nywleswoey/automation#250 250a250a250a250a250a250a250a250a250a250a review-stuck review=pending threads=0 autofix=unspent age=3601 bound=3600 origin=pending action=escalated kind=stuck label=added" "$OUT"
+check_no_grep "reviewing review=pending" "$OUT"
+check_no_grep "@coderabbitai review" "$STUB_CALLS"
+# 251's twin. No state in this phase waits without a bound, including the one
+# whose signal reports no timestamp at all.
+check_grep "pr nywleswoey/automation#251 251b251b251b251b251b251b251b251b251b251b review-stuck review=pending threads=0 autofix=unspent age=3601 bound=3600 origin=head action=escalated kind=stuck label=added" "$OUT"
+
+BODY="$STUB_STATE/pr-body-250.txt"
+check "the escalation body was captured" test -f "$BODY"
+# `stuck`, not `stalled`, and the kind is what tells the operator whether to
+# read the diff: CodeRabbit answered and is still thinking.
+check "the first line names the kind" \
+  test "$(head -1 "$BODY")" = '**Escalated — `stuck`:** signals are still undecided past the merge-gate timeout.'
+check_grep "| ok | CodeRabbit acknowledged this commit — the review started | \`oldest-pending=2026-08-27T11:00:00Z origin=pending head=2026-08-27T07:00:00Z\` |" "$BODY"
+check_grep "| no | the review has not finished inside the gate clock | \`age=3601s bound=3600s\` |" "$BODY"
+check_grep "<!-- agent-loop-escalated: 250a250a250a250a250a250a250a250a250a250a -->" "$BODY"
 
 # --- pr phase: the handover ----------------------------------------------------------
 
