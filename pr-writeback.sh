@@ -163,10 +163,12 @@ prose.
 EOF
 }
 
-# Every word this script says for itself goes to stderr, so stdout stays the
-# response and nothing else.
+# Print a message to stderr prefixed with "pr-writeback:". Every word this
+# script says for itself goes to stderr, so stdout stays the response and
+# nothing else.
 say() { printf 'pr-writeback: %s\n' "$*" >&2; }
 
+# Print an error message to stderr and exit with status 1.
 die() { say "$@"; exit 1; }
 
 # --- arguments ----------------------------------------------------------------

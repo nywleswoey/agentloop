@@ -111,6 +111,8 @@ Requires: jq, git, orca, gh-axi
 EOF
 }
 
+# Verify all required commands are available on PATH. Fails with a fatal error
+# if any tool is missing.
 require_tools() {
   local tool
   for tool in jq git orca gh-axi; do
@@ -129,8 +131,9 @@ source "$SCRIPT_DIR/gh.sh"
 
 # --- logging -----------------------------------------------------------------
 
-# Every decision the loop makes is one line, on stdout and appended to the log
-# file, so silence means nothing happened rather than something was swallowed.
+# Log a message with ISO-8601 timestamp to both stdout and the log file. Every
+# decision the loop makes is one line, on stdout and appended to the log file,
+# so silence means nothing happened rather than something was swallowed.
 log() {
   local line
   line="$(date -u '+%Y-%m-%dT%H:%M:%SZ') $*"
@@ -140,7 +143,8 @@ log() {
   printf '%s\n' "$line" >> "$LOG_PATH"
 }
 
-# Keep one generation. A loop left running for weeks must not fill the disk.
+# Rotate the log file if it exceeds LOG_MAX_BYTES. Keep one generation. A loop
+# left running for weeks must not fill the disk.
 rotate_log() {
   [[ -f "$LOG_PATH" ]] || return 0
   local size
@@ -149,6 +153,7 @@ rotate_log() {
   mv -f "$LOG_PATH" "$LOG_PATH.1"
 }
 
+# Log a fatal error and exit with status 1.
 die() {
   log "fatal: $*"
   exit 1
@@ -156,6 +161,8 @@ die() {
 
 # --- config ------------------------------------------------------------------
 
+# Expand tilde prefix in a path to the user's home directory. Paths without
+# tilde are returned unchanged.
 expand_tilde() {
   case "$1" in
     "~/"*) printf '%s' "$HOME/${1#\~/}" ;;
@@ -163,11 +170,15 @@ expand_tilde() {
   esac
 }
 
+# Verify a config field is present and non-empty. Dies with a fatal error if
+# the field is missing or empty.
 require_field() {
   local name="$1" value="$2"
   [[ -n "$value" ]] || die "config is missing $name: $CONFIG_PATH"
 }
 
+# Verify a config field is a positive integer. Dies with a fatal error if the
+# field is missing, empty, or not a positive integer.
 require_positive_int() {
   local name="$1" value="$2"
   require_field "$name" "$value"
@@ -247,8 +258,9 @@ acquire_lock() {
   trap shutdown INT TERM HUP
 }
 
-# Create the lockfile only if it does not already exist, so the check and the
-# claim are one atomic step rather than two racing ones.
+# Create the lockfile atomically only if it does not already exist, so the
+# check and the claim are one atomic step rather than two racing ones. Returns
+# 0 on success, non-zero if the lock could not be created.
 write_lock() {
   set -o noclobber
   { printf '%s\n' "$$" > "$LOCK_PATH"; } 2>/dev/null
@@ -257,13 +269,16 @@ write_lock() {
   return "$created"
 }
 
+# Remove the lockfile if it exists and belongs to this process. Safe to call
+# even if no lock was acquired.
 release_lock() {
   [[ -n "${LOCK_PATH:-}" && -f "$LOCK_PATH" ]] || return 0
   [[ "$(cat "$LOCK_PATH" 2>/dev/null || true)" == "$$" ]] || return 0
   rm -f "$LOCK_PATH"
 }
 
-# Ctrl-C releases the lock and exits. Workers already dispatched keep running.
+# Signal handler: release the lock and exit gracefully. Ctrl-C releases the
+# lock and exits. Workers already dispatched keep running.
 shutdown() {
   log "shutting down"
   [[ -n "${SLEEP_PID:-}" ]] && kill "$SLEEP_PID" 2>/dev/null || true
@@ -367,12 +382,15 @@ load_identity() {
 
 # --- orca runtime ------------------------------------------------------------
 
+# Check whether the Orca runtime is reachable. Returns 0 if reachable, non-zero
+# otherwise.
 runtime_reachable() {
   [[ "$(orca status --json 2>/dev/null | jq -r '.result.runtime.reachable // false')" == "true" ]]
 }
 
-# Re-checked before every pass: an Orca restart mid-run must not turn every
-# later pass into a stream of failed dispatches.
+# Ensure the Orca runtime is reachable, starting it if needed. Re-checked
+# before every pass: an Orca restart mid-run must not turn every later pass
+# into a stream of failed dispatches.
 ensure_runtime() {
   runtime_reachable && return 0
   log "orca runtime not reachable, starting it"
@@ -435,15 +453,17 @@ worktree_state() {
   done < <(orca_worktrees)
 }
 
-# The loop signs its work in the only place that survives everything: the
-# directory name. Ownership is asked here and nowhere else, so a worktree of
-# mine can never be mistaken for one of the loop's.
+# Check whether a worktree path belongs to the loop by its directory name. The
+# loop signs its work in the only place that survives everything: the directory
+# name. Ownership is asked here and nowhere else, so a worktree of mine can
+# never be mistaken for one of the loop's.
 is_loop_worktree() {
   [[ "${1##*/}" == agent-loop-* ]]
 }
 
-# count_live_workers <basename-regex> — live agents sitting in a worktree whose
-# directory name matches.
+# Count live workers in worktrees whose directory name matches the given regex.
+# Prints the count. count_live_workers <basename-regex> — live agents sitting
+# in a worktree whose directory name matches.
 count_live_workers() {
   local state path count=0
   while IFS=$'\t' read -r state path; do
@@ -455,13 +475,14 @@ count_live_workers() {
   printf '%s' "$count"
 }
 
-# maxWorkers now governs the issue phase alone. It used to be one budget for
-# the whole loop, spent by both phases; the PR phase spends no worktree, no
-# checkout and no agent any more, so gating it on a worktree budget would be a
-# category error — and worse, a long-running issue would stall every pull
-# request in every repository behind it. A worker is a worktree the loop created
-# (`agent-loop-` prefix) whose agent is still going; `done` agents are finished
-# work waiting to be swept, not spent budget.
+# Count active workers: loop-owned worktrees with agents still running. Prints
+# the count. maxWorkers now governs the issue phase alone. It used to be one
+# budget for the whole loop, spent by both phases; the PR phase spends no
+# worktree, no checkout and no agent any more, so gating it on a worktree
+# budget would be a category error — and worse, a long-running issue would
+# stall every pull request in every repository behind it. A worker is a
+# worktree the loop created (`agent-loop-` prefix) whose agent is still going;
+# `done` agents are finished work waiting to be swept, not spent budget.
 count_active_workers() {
   count_live_workers '^agent-loop-'
 }
@@ -560,6 +581,8 @@ branch_report() {
 # type was part of it, and still names live workers.
 ISSUE_BRANCH_TYPES='feat|fix|chore|docs|refactor|test|perf|build|ci|issue'
 
+# Check whether an issue number has a live worker already running. Returns 0 if
+# a worker exists, non-zero otherwise.
 issue_has_live_worker() {
   [[ "$(count_live_workers '^agent-loop-('"$ISSUE_BRANCH_TYPES"')-'"$1"'(-.*)?$')" != "0" ]]
 }
@@ -631,6 +654,7 @@ query_ready_issues() {
     | [.number, .url, change_type, (.title // "")] | @tsv'
 }
 
+# Query all claimed issues in a repository. Prints issue numbers, one per line.
 query_claimed_issues() {
   query_issues_by_label "$1" "$LABEL_CLAIMED" | jq -r '.data.repository.issues.nodes[]?.number'
 }
@@ -658,9 +682,12 @@ swap_labels() {
   gh-axi issue edit "$2" --repo "$1" --add-label "$3" --remove-label "$4" >/dev/null 2>&1
 }
 
-# The label swap is the claim: it is what tells the next pass, and any second
-# daemon, that this issue is taken.
+# Claim an issue by swapping its label from ready to claimed. The label swap is
+# the claim: it is what tells the next pass, and any second daemon, that this
+# issue is taken.
 claim_issue() { swap_labels "$1" "$2" "$LABEL_CLAIMED" "$LABEL_READY"; }
+
+# Release an issue by swapping its label from claimed back to ready.
 release_issue() { swap_labels "$1" "$2" "$LABEL_READY" "$LABEL_CLAIMED"; }
 
 # --- issue phase -------------------------------------------------------------
@@ -697,6 +724,8 @@ dispatch_issue() {
   jq -r '.result.worktree.id // empty' <<< "$response" | grep . || return 1
 }
 
+# Run the issue phase for all configured projects. Claims workable issues and
+# dispatches Orca workers at them, respecting the maxWorkers budget.
 issue_phase() {
   local i github orca_id
   for (( i = 0; i < PROJECT_COUNT; i++ )); do
@@ -706,6 +735,8 @@ issue_phase() {
   done
 }
 
+# Run the issue phase for one project. Queries ready issues, checks blockers,
+# respects the worker budget, claims issues and dispatches workers at them.
 issue_phase_project() {
   local github="$1" orca_id="$2" issues number weburl type title blockers worktree_id
 
@@ -1187,6 +1218,9 @@ escalate() {
   return 0
 }
 
+# Run the PR phase for all configured projects. Enumerates open pull requests,
+# derives state from GitHub, logs it, and triggers CodeRabbit autofix or
+# escalates when appropriate.
 pr_phase() {
   local i github
   for (( i = 0; i < PROJECT_COUNT; i++ )); do
@@ -1195,6 +1229,8 @@ pr_phase() {
   done
 }
 
+# Run the PR phase for one project. Queries open pull requests and processes
+# each one through pr_phase_one.
 pr_phase_project() {
   local github="$1" numbers number labelled
   if ! numbers=$(query_repo_open_prs "$github"); then
@@ -1462,6 +1498,8 @@ tick_checklist() {
   sed 's/^\([[:space:]]*\)- \[ \]/\1- [x]/'
 }
 
+# Run the closeout phase: query merged pull requests authored by this loop,
+# identify their corresponding issues, tick checklists, and close them.
 closeout_phase() {
   local prs github prnumber branch
   if ! prs=$(query_merged_prs); then
@@ -1529,6 +1567,8 @@ closeout_one() {
 
 # --- pass --------------------------------------------------------------------
 
+# Run one complete pass: load the worktree inventory, run closeout, issue, and
+# PR phases, then sweep finished worktrees. Logs pass start, end, and summary.
 run_pass() {
   log "pass start"
   DISPATCHES=0
