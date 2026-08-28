@@ -48,8 +48,13 @@
 #   stdout      the write's response, verbatim — gh-axi answers a refusal on
 #               stdout too, and those `error:`/`code:` lines are exactly what
 #               the loop's escalation comment pastes
-#   stderr      this script's own words — the usage text, and one outcome line
-#               prefixed `pr-writeback:` — for a human running it by hand
+#   stderr      this script's own words — one outcome line prefixed
+#               `pr-writeback:`, and the usage text when an argument is wrong —
+#               for a human running it by hand
+#
+# `--help` is the one exception, and it is deliberate: it prints usage to
+# **stdout** and exits 0, because a human who asked for the usage text is not
+# reading an error and should be able to pipe it.
 #
 # For the four reversible verbs a failed write and a bad argument share exit 1
 # deliberately: the loop's posture to both is the same — log it, re-derive next
@@ -161,7 +166,7 @@ Exit codes:
 2 is never used, so it cannot collide with gh-axi's own exit codes.
 
 stdout carries GitHub's response verbatim; stderr carries this script's own
-prose.
+prose. This text is the exception: --help writes it to stdout and exits 0.
 EOF
 }
 

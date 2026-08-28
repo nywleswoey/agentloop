@@ -1947,6 +1947,51 @@ check_grep "pass end dispatches=0 skips=0 sweeps=1" "$OUT"
 
 # A key nothing reads would otherwise rot in the operator's file forever, since
 # unknown keys are deliberately ignored.
+# The example config is a shipped artifact, and the one piece of documentation
+# that can be wrong in a way prose cannot: an operator copies it and the loop
+# refuses to start. It is checked against the config `write_config` writes —
+# which every passing case in this suite starts the loop on, so it is the shape
+# the loop is *known* to accept — rather than against a second written-down copy
+# of the rules, which would be one more thing to keep in sync.
+setup "the example config carries the shape the loop requires"
+EXAMPLE="$ROOT/agent-loop.config.example.json"
+key_shape() {
+  # Every scalar's path, with array indices flattened, so two configs carrying a
+  # different number of projects still compare by shape rather than by size.
+  jq -r '[paths(scalars)
+          | map(if type == "number" then "[]" else . end)
+          | join(".")] | unique | .[]' "$1" 2>/dev/null
+}
+EXAMPLE_KEYS=$(key_shape "$EXAMPLE")
+KNOWN_GOOD_KEYS=$(key_shape "$CONFIG")
+# A bare string comparison would report only its own label, where the rest of
+# this suite dumps what it found. The differing key goes in the label instead.
+KEY_DIFF=$(diff <(printf '%s\n' "$KNOWN_GOOD_KEYS") <(printf '%s\n' "$EXAMPLE_KEYS") \
+  | grep -E '^[<>]' | tr '\n' ' ')
+check "the example config is valid JSON with keys in it" test -n "$EXAMPLE_KEYS"
+check "the example config carries exactly the keys the loop requires${KEY_DIFF:+ — $KEY_DIFF}" \
+  test "$EXAMPLE_KEYS" = "$KNOWN_GOOD_KEYS"
+# The dead seen-list key gets no assertion of its own. It would be a *negative*
+# one standing alone, which is the shape this suite refuses everywhere else —
+# and it would pass for the wrong reason on an unparseable example, where jq
+# prints nothing and `check` does not abort. The comparison above already
+# carries it: a config still naming `seenListPath` differs in shape and says so.
+
+# The method the example suggests has to be one the loop will actually start on,
+# and that is a claim about behaviour rather than about the source. So it is
+# asserted the way the two cases above assert it — by starting the loop on a
+# config carrying that method. Reading `MERGE_METHODS=` out of the script would
+# be the project's *second* assertion over its own source, and the README says
+# there is one.
+setup "the merge method the example suggests is one the loop starts on"
+EXAMPLE="$ROOT/agent-loop.config.example.json"
+write_config "nywleswoey/automation" "repo-aaa" 300 3 5400 3600 \
+  "$(jq -r '.projects[0].mergeMethod' "$EXAMPLE")"
+run_once
+check_status 0 "$STATUS"
+check_grep "merging by $(jq -r '.projects[0].mergeMethod' "$EXAMPLE")" "$OUT"
+check_grep "pass end" "$OUT"
+
 setup "a config still naming the deleted seen list fails at startup"
 cat > "$CONFIG" <<JSON
 {
