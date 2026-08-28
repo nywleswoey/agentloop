@@ -12,7 +12,7 @@ Each pass, in order:
 
 1. **Close-out** — an issue whose pull request has merged gets its checklist ticked, its description updated, its claim label removed, and the issue closed.
 2. **Issues** — queries each project for open issues labelled `ready-for-agent`, skips ones with an open blocker, swaps the label to `agent-in-progress`, and dispatches an Orca worker into a fresh worktree.
-3. **Pull requests** — enumerates every open pull request in each project except drafts and fork heads, derives its state from GitHub alone, logs one line per pull request, and comments `@coderabbitai autofix` at the ones carrying unresolved findings. It spends no worker and no worktree, and it keeps no local state: every pass re-derives from a fresh read.
+3. **Pull requests** — enumerates every open pull request in each project except drafts and fork heads, derives its state from GitHub alone, logs one line per pull request, comments `@coderabbitai autofix` at the ones carrying unresolved findings, and hands over the ones it will not act on. It spends no worker and no worktree, and it keeps no local state: every pass re-derives from a fresh read.
 4. **Sweep** — removes the loop's own finished worktrees.
 
 Between passes it sleeps for `pollIntervalSeconds`.
@@ -24,6 +24,7 @@ Between passes it sleeps for `pollIntervalSeconds`.
 - **PID lock** — one loop per machine.
 - **Startup reclaim** — an issue left claimed with no live worker (crash, failed dispatch) is handed back to `ready-for-agent` when the loop next starts.
 - **Once per head commit** — the autofix trigger records its input head, and the matching autofix-status comment spends that head. Reviews are metered, and a poll loop that re-fired every pass would burn that budget; generated output commits and failure prose are never used as the input identity.
+- **Escalation is a handover, not a notification** — the loop acts as the operator's own account, and GitHub never notifies you of your own actions, so no arrangement of writes can push one. A pull request the loop will not act on gets a comment carrying every reason and the raw values behind it, then the `agent-escalated` label, in that order — the record first, so a missing flag is re-added on a later pass without the record being posted twice. Once escalated at a head commit the loop takes **no further action on that pull request at that commit**. The three ways back in are the ones GitHub already gives you: merge it by hand, push a commit, or convert it to draft. There is no override label; a push is both the fix and the re-engagement.
 - **Log rotation** — one generation, capped at 5 MiB. A loop left running for weeks must not fill the disk.
 
 ### Pull-request writes use one seam
@@ -48,8 +49,9 @@ both scripts source it rather than carrying their own copy. Labels are written
 as deltas (`issue edit --add-label/--remove-label`) rather than as a whole set,
 which is what keeps the claim a single atomic call.
 
-The loop creates its two labels in each configured repository at startup if they
-are not already there.
+The loop creates its three labels — the two in the config, and the constant
+`agent-escalated` — in each configured repository at startup if they are not
+already there.
 
 ---
 
