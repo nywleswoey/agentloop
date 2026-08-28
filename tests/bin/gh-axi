@@ -22,17 +22,16 @@
 #                                the claimed-issue query the startup reclaim
 #                                makes, from claimed-$STUB_CLAIMED.json
 #                                (default: none)
-#                              is:pr is:open
-#                                the global open-PR search, from
-#                                prs-$STUB_PRS.json (default: none)
+#                              pullRequests(states: OPEN
+#                                the PR phase's per-repository enumeration,
+#                                answered out of the world directory — see
+#                                $STUB_WORLD below
+#                              pullRequest(number: N) ... statusCheckRollup
+#                                everything the PR phase derives one pull
+#                                request's state from, also out of the world
 #                              is:pr is:merged
 #                                the close-out phase's search, from
 #                                merged-$STUB_MERGED.json (default: none)
-#                              reviewThreads
-#                                the thread list, from threads-<number>.json
-#                                when that fixture exists and from
-#                                threads-$STUB_THREADS.json (default: eligible)
-#                                otherwise
 #   api /repos/<o>/<n>       repo resolution, only for repos listed in
 #                            repos.txt; anything else 404s like the real CLI
 #   api /repos/<o>/<n>/labels
@@ -67,8 +66,24 @@
 #                            reports it closed
 #   label create --name ...  the loop's own two labels
 #
+# $STUB_WORLD names a directory under fixtures/worlds (default: "none") holding
+# **one whole-world snapshot**: `open-prs.json` for the enumeration, or
+# `open-prs-<owner>-<name>.json` when a case configures more than one
+# repository, and `pr-<number>.json` for each pull request in it.
+#
+# A multi-pass case moves $STUB_WORLD from one captured world to the next rather
+# than having this stub simulate what the previous pass changed. A simulator
+# would have to invent when GitHub stamps a write and how CodeRabbit words its
+# answer, and the suite would then be validating the loop against *this file's*
+# assumptions instead of against GitHub.
+#
+# A pull request with no `pr-<number>.json` behind it is a hard error rather
+# than an empty answer: the enumeration exclusions are proven by the reads that
+# never happen, and an exclusion that silently stopped working would otherwise
+# look like a pass.
+#
 # $STUB_GH_FAIL names a command that must fail: "issues", "claim", "prs",
-# "merged", "issue", "body", "close", "threads", "blockers", "labels",
+# "pr-state", "merged", "issue", "body", "close", "blockers", "labels",
 # "pr-comment", "pr-edit" or "merge". $STUB_GH_ERROR names which rendering it
 # fails with, from fixtures/gh-error-<name>.txt. $STUB_GH_STDERR makes that
 # failure gh-axi's own rather than GitHub's — reported on stderr, with stdout
@@ -256,23 +271,40 @@ if [[ "$path" == "graphql" || "$path" == "/graphql" ]]; then
       fi
     done
   fi
+  world="$STUB_FIXTURES/worlds/${STUB_WORLD:-none}"
   case "$query" in
-    *reviewThreads*)
-      fail_if threads
-      number=$(sed -n 's/.*pullRequest(number: \([0-9]*\)).*/\1/p' <<< "$query")
-      if [[ -f "$STUB_FIXTURES/threads-$number.json" ]]; then
-        emit_file "$STUB_FIXTURES/threads-$number.json"
+    *'pullRequests(states: OPEN'*)
+      fail_if prs
+      # Per repository, so which repository was asked decides the answer. The
+      # unsuffixed file is the single-repository case every fixture but one uses.
+      # Both read off the one `repository(owner: …, name: …)` prefix, in a
+      # single anchored expression. A bare `.*name: "` would be greedy and pick
+      # the last such argument in the document, which is right only for as long
+      # as there is exactly one.
+      repo=$(sed -n 's/.*repository(owner: "\([^"]*\)", name: "\([^"]*\)").*/\1\/\2/p' <<< "$query")
+      owner="${repo%%/*}"
+      name="${repo##*/}"
+      if [[ -f "$world/open-prs-$owner-$name.json" ]]; then
+        emit_file "$world/open-prs-$owner-$name.json"
+      elif [[ -f "$world/open-prs.json" ]]; then
+        emit_file "$world/open-prs.json"
       else
-        emit_file "$STUB_FIXTURES/threads-${STUB_THREADS:-eligible}.json"
+        echo "stub gh-axi: no open-prs fixture in $world for $owner/$name" >&2
+        exit 1
       fi
+      ;;
+    *statusCheckRollup*)
+      fail_if pr-state
+      number=$(sed -n 's/.*pullRequest(number: \([0-9]*\)).*/\1/p' <<< "$query")
+      # Fail-closed: a read of a pull request this world does not carry means
+      # the phase looked at one it was supposed to have excluded.
+      [[ -f "$world/pr-$number.json" ]] \
+        || { echo "stub gh-axi: no pr-$number fixture in $world" >&2; exit 1; }
+      emit_file "$world/pr-$number.json"
       ;;
     *'is:pr is:merged'*)
       fail_if merged
       emit_file "$STUB_FIXTURES/merged-${STUB_MERGED:-none}.json"
-      ;;
-    *'is:pr is:open'*)
-      fail_if prs
-      emit_file "$STUB_FIXTURES/prs-${STUB_PRS:-none}.json"
       ;;
     *'labels: ["agent-in-progress"]'*)
       fail_if issues

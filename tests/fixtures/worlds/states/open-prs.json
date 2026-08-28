@@ -1,0 +1,214 @@
+{
+  "data": {
+    "repository": {
+      "pullRequests": {
+        "nodes": [
+          {
+            "number": 201,
+            "title": "WIP: half a thought",
+            "isDraft": true,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/201",
+            "headRefName": "wip-draft",
+            "headRefOid": "201a201a201a201a201a201a201a201a201a201a",
+            "labels": {
+              "nodes": []
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
+          },
+          {
+            "number": 202,
+            "title": "Drive-by from a fork",
+            "isDraft": false,
+            "isCrossRepository": true,
+            "url": "https://github.com/nywleswoey/automation/pull/202",
+            "headRefName": "patch-1",
+            "headRefOid": "202b202b202b202b202b202b202b202b202b202b",
+            "labels": {
+              "nodes": [
+                {
+                  "name": "bug"
+                }
+              ]
+            },
+            "author": {
+              "login": "a-contributor"
+            },
+            "baseRefName": "main"
+          },
+          {
+            "number": 203,
+            "title": "Review still running",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/203",
+            "headRefName": "pr-reviewing",
+            "headRefOid": "203c203c203c203c203c203c203c203c203c203c",
+            "labels": {
+              "nodes": []
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
+          },
+          {
+            "number": 204,
+            "title": "Findings nobody has fixed",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/204",
+            "headRefName": "pr-findings",
+            "headRefOid": "204d204d204d204d204d204d204d204d204d204d",
+            "labels": {
+              "nodes": [
+                {
+                  "name": "ready-for-agent"
+                }
+              ]
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
+          },
+          {
+            "number": 205,
+            "title": "Clean review",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/205",
+            "headRefName": "pr-clean",
+            "headRefOid": "205e205e205e205e205e205e205e205e205e205e",
+            "labels": {
+              "nodes": []
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
+          },
+          {
+            "number": 206,
+            "title": "Autofix already ran here",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/206",
+            "headRefName": "pr-fixed",
+            "headRefOid": "206f206f206f206f206f206f206f206f206f206f",
+            "labels": {
+              "nodes": []
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
+          },
+          {
+            "number": 207,
+            "title": "Autofix is running",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/207",
+            "headRefName": "pr-waiting",
+            "headRefOid": "207a207a207a207a207a207a207a207a207a207a",
+            "labels": {
+              "nodes": []
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
+          },
+          {
+            "number": 208,
+            "title": "Bump a dependency",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "author": {
+              "login": "dependabot"
+            },
+            "url": "https://github.com/nywleswoey/automation/pull/208",
+            "headRefName": "dependabot/npm/lib-2.0.0",
+            "headRefOid": "208b208b208b208b208b208b208b208b208b208b",
+            "labels": {
+              "nodes": [
+                {
+                  "name": "dependencies"
+                }
+              ]
+            },
+            "baseRefName": "main"
+          },
+          {
+            "number": 209,
+            "title": "Reviewed through a check run",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "author": {
+              "login": "nywleswoey"
+            },
+            "url": "https://github.com/nywleswoey/automation/pull/209",
+            "headRefName": "pr-checkrun-done",
+            "headRefOid": "209c209c209c209c209c209c209c209c209c209c",
+            "labels": {
+              "nodes": []
+            },
+            "baseRefName": "main"
+          },
+          {
+            "number": 210,
+            "title": "Check run still running",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "author": {
+              "login": "nywleswoey"
+            },
+            "url": "https://github.com/nywleswoey/automation/pull/210",
+            "headRefName": "pr-checkrun-running",
+            "headRefOid": "210d210d210d210d210d210d210d210d210d210d",
+            "labels": {
+              "nodes": []
+            },
+            "baseRefName": "main"
+          },
+          {
+            "number": 211,
+            "title": "CodeRabbit has never looked at this",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "author": {
+              "login": "nywleswoey"
+            },
+            "url": "https://github.com/nywleswoey/automation/pull/211",
+            "headRefName": "pr-untouched",
+            "headRefOid": "211e211e211e211e211e211e211e211e211e211e",
+            "labels": {
+              "nodes": []
+            },
+            "baseRefName": "main"
+          },
+          {
+            "number": 212,
+            "title": "Onto a release branch, not trunk",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "author": {
+              "login": "nywleswoey"
+            },
+            "url": "https://github.com/nywleswoey/automation/pull/212",
+            "baseRefName": "release/2.1",
+            "headRefName": "pr-nontrunk",
+            "headRefOid": "212f212f212f212f212f212f212f212f212f212f",
+            "labels": {
+              "nodes": []
+            }
+          }
+        ]
+      }
+    }
+  }
+}

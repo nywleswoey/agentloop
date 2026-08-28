@@ -1,0 +1,22 @@
+{
+  "data": {
+    "repository": {
+      "pullRequests": {
+        "nodes": [
+          {
+            "number": 401,
+            "title": "Work on issue 17",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/401",
+            "headRefName": "agent-loop-issue-17",
+            "headRefOid": "aaee17aaee17aaee17aaee17aaee17aaee17aaee",
+            "labels": {
+              "nodes": []
+            }
+          }
+        ]
+      }
+    }
+  }
+}

@@ -69,8 +69,8 @@ run() {
 # the stub's calls is counting writes.
 check_writes() {
   local expected="$1"
-  check "exactly $expected write(s) (got $(grep -c . "$STUB_CALLS"))" \
-    test "$(grep -c . "$STUB_CALLS")" -eq "$expected"
+  check "exactly $expected write(s) (got $(grep -c '^gh-axi ' "$STUB_CALLS"))" \
+    test "$(grep -c '^gh-axi ' "$STUB_CALLS")" -eq "$expected"
 }
 
 # --- autofix --------------------------------------------------------------------
@@ -87,6 +87,20 @@ check_writes 1
 check_grep "created: true" "$OUT"
 check_no_grep "pr-writeback:" "$OUT"
 check_grep "pr-writeback:" "$ERR"
+
+setup "autofix records the input head without changing the command"
+HEAD_SHA=0123456789abcdef0123456789abcdef01234567
+run autofix --repo "$REPO" --pr 12 --sha "$HEAD_SHA"
+check_status 0 "$STATUS"
+check_grep "--body @coderabbitai autofix" "$STUB_CALLS"
+check_grep "<!-- agent-loop-autofix-head: $HEAD_SHA -->" "$STUB_CALLS"
+check_writes 1
+
+setup "autofix refuses an abbreviated input head"
+run autofix --repo "$REPO" --pr 12 --sha 0123456
+check_status 1 "$STATUS"
+check_grep "--sha must be a full 40-character commit" "$ERR"
+check_writes 0
 
 setup "autofix takes no free text at all"
 printf 'not the trigger\n' > "$WORK/body.md"
@@ -305,9 +319,9 @@ for bad in fast-forward SQUASH "squash " ""; do
   check_writes 0
 done
 
-# The merge flags belong to the merge, and the other verbs' flags do not belong
-# to it.
-setup "no other verb takes the assessed commit"
+# The merge method belongs only to merge. A commit identifies either merge's
+# assessed head or autofix's input head; the remaining verbs take neither.
+setup "comment does not take a commit"
 run comment --repo "$REPO" --pr 12 --sha "$ASSESSED_SHA"
 check_status 1 "$STATUS"
 check_grep "--sha is not a flag of comment" "$ERR"

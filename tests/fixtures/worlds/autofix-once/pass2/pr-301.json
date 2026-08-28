@@ -1,0 +1,99 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "number": 301,
+        "headRefOid": "301a301a301a301a301a301a301a301a301a301a",
+        "commits": {
+          "nodes": [
+            {
+              "commit": {
+                "oid": "301a301a301a301a301a301a301a301a301a301a",
+                "committedDate": "2026-08-27T10:00:00Z",
+                "statusCheckRollup": {
+                  "state": "SUCCESS",
+                  "contexts": {
+                    "nodes": [
+                      {
+                        "__typename": "StatusContext",
+                        "context": "CodeRabbit",
+                        "state": "SUCCESS",
+                        "description": "Review completed",
+                        "createdAt": "2026-08-27T10:01:00Z",
+                        "creator": {
+                          "login": "coderabbitai"
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "reviewThreads": {
+          "nodes": [
+            {
+              "id": "PRRT_kwDO301a",
+              "isResolved": false,
+              "isOutdated": false,
+              "path": "agent-loop.sh",
+              "line": 700,
+              "comments": {
+                "nodes": [
+                  {
+                    "databaseId": 3835780001,
+                    "createdAt": "2026-08-27T10:01:10Z",
+                    "author": {
+                      "login": "coderabbitai"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "id": "PRRT_kwDO301b",
+              "isResolved": false,
+              "isOutdated": false,
+              "path": "gh.sh",
+              "line": 60,
+              "comments": {
+                "nodes": [
+                  {
+                    "databaseId": 3835780003,
+                    "createdAt": "2026-08-27T10:01:11Z",
+                    "author": {
+                      "login": "coderabbitai"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "comments": {
+          "nodes": [
+            {
+              "databaseId": 5379000301,
+              "createdAt": "2026-08-27T10:01:20Z",
+              "updatedAt": "2026-08-27T10:01:20Z",
+              "body": "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n<!-- review_stack_entry_start -->\n> Change Stack: 1 of 1\n<!-- review_stack_entry_end -->\n<!-- recent_review_start -->\n## Walkthrough\n\nThe pass loop grows a state log.\n<!-- recent_review_end -->\n<!-- final_review_risk_start -->\n**Merge Risk:** _⚪ Minimal_ · up to `dec0d`\n\nA localized change with no merge-blocking risk beyond normal checks and review.\n<!-- final_review_risk_end -->\n<!-- pre_merge_checks_walkthrough_start -->\n<details>\n<summary>🚥 Pre-merge checks | ✅ 5</summary>\n</details>\n<!-- pre_merge_checks_walkthrough_end -->\n<!-- tips_start -->\n<details>\n<summary>📜 Recent review details</summary>\n\nConfiguration used: defaults\nReview profile: CHILL\nPlan: Pro Plus\n</details>\n<!-- tips_end -->\n",
+              "author": {
+                "login": "coderabbitai"
+              }
+            },
+            {
+              "databaseId": 5379000311,
+              "createdAt": "2026-08-27T12:00:05Z",
+              "updatedAt": "2026-08-27T12:00:05Z",
+              "body": "@coderabbitai autofix\n<!-- agent-loop-autofix-head: 301a301a301a301a301a301a301a301a301a301a -->",
+              "author": {
+                "login": "nywleswoey"
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
