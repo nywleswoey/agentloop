@@ -249,7 +249,7 @@ setup "a workable issue is claimed and dispatched"
 export STUB_ISSUES=workable
 run_once
 check_status 0 "$STATUS"
-check_grep 'gh-axi api POST /graphql --field query={ repository(owner: "nywleswoey", name: "automation") { issues(labels: ["ready-for-agent"], states: OPEN, first: 100)' "$STUB_CALLS"
+check_grep 'gh-axi api POST graphql --field query={ repository(owner: "nywleswoey", name: "automation") { issues(labels: ["ready-for-agent"], states: OPEN, first: 100)' "$STUB_CALLS"
 check_grep "$CLAIM_CALL" "$STUB_CALLS"
 check_grep "$CREATE_CALL" "$STUB_CALLS"
 check "the claim precedes the dispatch" test "$(call_line "$CLAIM_CALL")" -lt "$(call_line "$CREATE_CALL")"
@@ -739,7 +739,7 @@ check "the loop created no seen-list" test ! -f "$WORK/seen.jsonl"
 setup "no open PRs means no PR traffic"
 run_once
 check_status 0 "$STATUS"
-check_grep 'gh-axi api POST /graphql --field query={ search(query: "is:pr is:open author:nywleswoey sort:updated-desc"' "$STUB_CALLS"
+check_grep 'gh-axi api POST graphql --field query={ search(query: "is:pr is:open author:nywleswoey sort:updated-desc"' "$STUB_CALLS"
 check_no_grep "reviewThreads" "$STUB_CALLS"
 check_no_grep "dispatched mr" "$OUT"
 check_grep "pass end dispatches=0 skips=0 sweeps=1" "$OUT"
@@ -760,7 +760,7 @@ setup "the close-out phase ticks and closes what it claimed and nothing else"
 export STUB_MERGED=set
 run_once
 check_status 0 "$STATUS"
-check_grep 'gh-axi api POST /graphql --field query={ search(query: "is:pr is:merged author:nywleswoey sort:updated-desc"' "$STUB_CALLS"
+check_grep 'gh-axi api POST graphql --field query={ search(query: "is:pr is:merged author:nywleswoey sort:updated-desc"' "$STUB_CALLS"
 check_grep "$CLOSE_17" "$STUB_CALLS"
 check_grep "closed out nywleswoey/automation#17: pull request #201 merged" "$OUT"
 # The description write lands before the close, so the tick is on the issue the

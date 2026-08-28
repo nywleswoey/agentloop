@@ -42,6 +42,13 @@
 
 set -euo pipefail
 
+# The seam lives beside the script, so it is found whichever cwd this is run
+# from. `gh_graphql` used to be defined here as well, divergently, and the
+# divergence is why both mutations below spent months never reaching GitHub.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=gh.sh
+source "$SCRIPT_DIR/gh.sh"
+
 PLAN=""
 REPO="$PWD"
 SEEN_LIST=""
@@ -228,47 +235,24 @@ push_branch() {
 
 # --- github ------------------------------------------------------------------
 
-# gh-axi renders every answer as TOON and has no JSON output mode, so what a
-# mutation replied cannot be read back as JSON directly. `tojson | @base64` is
-# the one shape TOON has nothing left to restructure: a single opaque token that
-# decodes to the response byte for byte.
-#
-# It matters here because GitHub answers a refused mutation with a 200 and an
-# `errors` block. Without reading the body back, a thread that was never
-# replied to would report as replied — which is the one thing this script must
-# never get wrong.
-#
-# The path is `graphql`, not `/graphql`. gh hoists --field arguments into
-# GraphQL variables only when the path matches that literal, so the leading
-# slash leaves $thread and $body arriving at GitHub as null and every mutation
-# below refused. Reads elsewhere pass no variables and so never noticed.
-gh_graphql() {
-  # body_arg is optional: resolve_thread takes no reply text, and under
-  # `set -u` a bare $3 aborted the whole run before the mutation was sent.
-  local query="$1" thread="$2" body_arg="${3:-}" response body_val
-  response=$(gh-axi api POST graphql \
-    --field query="$query" --field thread="$thread" ${body_arg:+--field body="$body_arg"} \
-    --full --jq 'tojson|@base64' 2>/dev/null) || return 1
-  [[ "$response" == error:* ]] && return 1
-  body_val=$(sed -n 's/^  body: //p' <<< "$response")
-  [[ -n "$body_val" ]] || return 1
-  response=$(base64 -d <<< "$body_val" 2>/dev/null) || return 1
-  jq -e 'has("errors") | not' <<< "$response" >/dev/null 2>&1
-}
-
 # Both writes are GraphQL mutations, because a review thread is a GraphQL object
 # on GitHub: the node id the worker recorded is the whole address, and the REST
 # reply route would need the thread's first comment id instead.
 #
 # The reply text travels as a GraphQL variable rather than inside the query, so
 # a reviewer's own words can never be read as part of the document.
+#
+# `gh_graphql` comes from gh.sh and answers with the decoded response body,
+# which neither of these has any use for: the mutation either landed or it did
+# not, and the caller's table is the only thing that may reach stdout. Hence
+# the redirect.
 post_comment() {
   local thread="$1" body="$2"
   gh_graphql 'mutation($thread: ID!, $body: String!) {
       addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $thread, body: $body}) {
         comment { databaseId }
       }
-    }' "$thread" "$body"
+    }' --field thread="$thread" --field body="$body" >/dev/null
 }
 
 resolve_thread() {
@@ -277,7 +261,7 @@ resolve_thread() {
       resolveReviewThread(input: {threadId: $thread}) {
         thread { isResolved }
       }
-    }' "$thread"
+    }' --field thread="$thread" >/dev/null
 }
 
 # --- seen-list -----------------------------------------------------------------
