@@ -45,6 +45,9 @@ setup() {
   export STUB_CLAIMED=none STUB_WORKTREES=none STUB_DIRTY="" STUB_UNPUSHED=""
   export STUB_PRS=none STUB_THREADS=eligible STUB_MERGED=none
   unset AGENT_LOOP_LOG_MAX_BYTES STUB_GH_FAIL STUB_ORCA_FAIL STUB_GIT_FAIL
+  # Unfrozen unless a case says otherwise, so the stub `date` is the real one
+  # and a freeze can never leak from the case before.
+  unset STUB_NOW
   CONFIG="$WORK/config.json"
   LOG="$WORK/agent-loop.log"
   LOCK="$WORK/agent-loop.pid"
@@ -210,6 +213,150 @@ check "rotated log exists" test -f "$LOG.1"
 check_grep "xxxxxxxxxx" "$LOG.1"
 check_no_grep "xxxxxxxxxx" "$LOG"
 check_grep "pass start" "$LOG"
+
+# --- the clock the suite controls ---------------------------------------------
+
+# The point of these two is that the stub is load-bearing. A `date` stub nothing
+# depends on passes silently forever, and the states this project is about to
+# grow — an autofix that has been in flight too long, a merge gate with an age
+# bound — are decided entirely by what time it is. If freezing the clock cannot
+# be observed in the loop's own output, none of those can be tested either.
+#
+# Twins: one fixture, one config, one code path, two frozen instants. The only
+# difference between the two cases below is $STUB_NOW, so whatever differs in
+# what they produce is caused by the clock and by nothing else.
+
+setup "a frozen clock reaches the loop's own timestamps"
+# Both twins freeze at instants safely in the past. The unfrozen case below
+# asserts their absence, and an instant near the present would give that
+# assertion a window — a second or a day wide — in which it fails for reasons
+# that have nothing to do with the stub.
+export STUB_NOW=2011-11-11T11:11:11Z
+run_once
+check_status 0 "$STATUS"
+check_grep "2011-11-11T11:11:11Z pass start" "$LOG"
+
+setup "the same fixture at a different instant produces a different log"
+export STUB_NOW=2019-03-04T05:06:07Z
+run_once
+check_status 0 "$STATUS"
+check_grep "2019-03-04T05:06:07Z pass start" "$LOG"
+# The other twin's instant, which the loop must not have produced from anywhere.
+# Without this the pair would still pass if `date` were being read through a
+# route the stub cannot see and both logs carried the real time.
+check_no_grep "2011-11-11T11:11:11Z" "$LOG"
+
+setup "an unfrozen clock is the real one"
+run_once
+check_status 0 "$STATUS"
+check_no_grep "2011-11-11T11:11:11Z" "$LOG"
+check_no_grep "2019-03-04T05:06:07Z" "$LOG"
+check_grep "pass start" "$LOG"
+
+# The invocation every bounded state in the spec is going to make: read now,
+# read a timestamp that came out of a fixture, subtract. Frozen `now` and a
+# conversion have to come from the same `date` and disagree about nothing, which
+# is why the stub freezes only the clock and passes a named instant straight
+# through. Ninety minutes against a 5400-second timeout is the shape an autofix
+# timeout case will take.
+
+# epoch_of <iso-8601> — whichever conversion spelling this platform's date takes.
+# Tried rather than probed for, so this does not carry a second copy of the
+# flavour test that lives in the stub and cannot disagree with it.
+epoch_of() {
+  date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$1" +%s 2>/dev/null \
+    || date -u -d "$1" +%s
+}
+
+setup "a frozen now can be compared against a timestamp out of a fixture"
+export STUB_NOW=2026-08-27T12:00:00Z
+NOW=$(date -u +%s)
+THEN=$(epoch_of 2026-08-27T10:30:00Z)
+check "now reads as the frozen instant" test "$NOW" -eq 1787832000
+check "a named instant is not frozen with it" test "$THEN" -eq 1787826600
+check "the difference is the ninety minutes the fixture describes" \
+  test "$((NOW - THEN))" -eq 5400
+# The conversion answers the same whether the clock is frozen or not: a case
+# that froze time must not thereby change what its own fixtures mean.
+unset STUB_NOW
+check "the same conversion is unaffected by the freeze" \
+  test "$(epoch_of 2026-08-27T10:30:00Z)" -eq "$THEN"
+
+setup "an invocation that only looks like a conversion is still frozen"
+export STUB_NOW=2026-08-27T12:00:00Z
+# BSD's `-j` is a conversion only when it comes with `-f`; alone it is a plain
+# read of the clock, and passing it through would answer it off wall time while
+# the case believes time is frozen.
+if date -u -j '+%Y' >/dev/null 2>&1; then
+  check "-j without -f reads the frozen clock" \
+    test "$(date -u -j '+%Y-%m-%dT%H:%M:%SZ')" = "2026-08-27T12:00:00Z"
+  check "-j with -f still converts" \
+    test "$(date -u -jf '%Y-%m-%dT%H:%M:%SZ' 2020-01-01T00:00:00Z +%s)" -eq 1577836800
+else
+  check "this platform's date has no -j to confuse" true
+fi
+
+setup "an invocation that adjusts now is adjusted from the frozen instant"
+export STUB_NOW=2026-08-27T12:00:00Z
+# `date -v-90m` and `date -d '90 minutes ago'` both *read* the clock — they are
+# not conversions, and handing them to the real date would answer them off wall
+# time while the case believes time is frozen. Silent, and the same failure as
+# reading the clock from a shell built-in.
+if date -u -v-0S +%s >/dev/null 2>&1; then
+  check "a -v adjustment lands on the frozen instant" \
+    test "$(date -u -v-90M '+%Y-%m-%dT%H:%M:%SZ')" = "2026-08-27T10:30:00Z"
+else
+  # GNU date has no -v at all, so there is nothing to get wrong there.
+  check "this platform's date has no -v to adjust" true
+fi
+# The GNU spelling cannot be answered from a frozen instant, so it is refused
+# out loud rather than answered off the real clock.
+date -u -d '90 minutes ago' +%s > "$WORK/relative.txt" 2>&1
+check_status nonzero "$?"
+check_grep "relative to now, which is frozen" "$WORK/relative.txt"
+
+# --- time comes from date(1), and from nowhere else ---------------------------
+
+# The stub only works because every clock read leaves the process. A shell
+# built-in reads the real clock without touching PATH, so one `printf '%(%s)T'`
+# would make a timeout test green against wall time while looking identical to
+# a passing one — the same shape as a call that is well-formed in argv and wrong
+# at the far end.
+#
+# Deliberately one assertion covering both scripts rather than one per suite:
+# it is a single project-wide binding, and a copy in the writeback suite would
+# be the same claim asserted twice.
+
+setup "no script reads the clock by any route but date(1)"
+# Bare names, not `$NAME`: arithmetic context drops the sigil, so `(( SECONDS >
+# n ))` and `${EPOCHSECONDS}` are the spellings a timeout would most naturally
+# be written in and a `\$`-anchored pattern misses both. `_SECONDS` suffixes on
+# config names are safe — the underscore is a word character, so there is no
+# boundary in front of them.
+#
+# Comments are stripped first: this is a claim about code, and a header that
+# names the built-ins in order to forbid them must not fail the check that
+# forbids them.
+#
+# Globbed rather than listed, so a script added at the root later is covered by
+# this the day it lands rather than the day someone remembers to add it here.
+#
+# The limit, stated rather than papered over: this catches the routes that look
+# like ordinary shell and would therefore pass review — the built-ins, and the
+# interpreters someone might reach for to format a timestamp. It cannot catch
+# every conceivable way to read a clock. What makes that acceptable is that any
+# clock read the loop grows will have a frozen-time test of its own, and a read
+# that dodged this stub would fail that test loudly.
+CLOCK_ROUTES='%\(.*\)T|\bEPOCHSECONDS\b|\bEPOCHREALTIME\b|\bSECONDS\b'
+CLOCK_ROUTES="$CLOCK_ROUTES"'|\bsystime\(|/proc/uptime|kern\.boottime'
+# An interpreter only counts when it is being asked for the time. A bare
+# `node` also appears as an English word in the worker prompt, and a check
+# that fires on prose gets deleted rather than fixed.
+CLOCK_ROUTES="$CLOCK_ROUTES"'|(perl|python3?|ruby|node).*(strftime|localtime|gmtime|time\(\)|Date\.now|datetime)'
+for _script in "$ROOT"/*.sh; do
+  check "no clock read but date(1) in ${_script##*/}" \
+    test "$(sed 's/#.*//' "$_script" | grep -cE "$CLOCK_ROUTES")" -eq 0
+done
 
 # --- the loop keeps passing ---------------------------------------------------
 
