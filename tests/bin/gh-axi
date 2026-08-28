@@ -64,7 +64,7 @@
 #                            it byte for byte
 #   issue close <number>     a close, recorded so a later read of the same issue
 #                            reports it closed
-#   label create --name ...  the loop's own two labels
+#   label create --name ...  the loop's own three labels
 #
 # $STUB_WORLD names a directory under fixtures/worlds (default: "none") holding
 # **one whole-world snapshot**: `open-prs.json` for the enumeration, or

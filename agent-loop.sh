@@ -62,6 +62,23 @@ CODERABBIT_STATUS_CONTEXT='CodeRabbit'
 # GraphQL renders a bot actor's login without the `[bot]` suffix REST puts on
 # it, so this is matched as a prefix rather than compared whole.
 CODERABBIT_LOGIN='coderabbitai'
+# The handover's two surfaces, and the loop's own — not CodeRabbit's.
+#
+# The marker is what makes "already escalated at this head" a fact the phase
+# reads for free: it is in the comment timeline the derivation already fetches,
+# so detection costs zero new reads. It is keyed on the head commit **alone** —
+# not on the kind, not on the author. A commit is what a handover is scoped to,
+# and when the head moves the marker stops matching, which is the whole of the
+# re-engagement rule: a push is both the fix and the way back in.
+#
+# The label is the flag rather than the record. One name serves all four kinds
+# so that every escalated pull request across every repository is one
+# open-pull-requests query away, and it is a constant rather than a config key
+# because a per-operator name would make that one query impossible to write
+# down. It is never removed — on merge or otherwise: untidy, and inert.
+ESCALATION_MARKER_PREFIX='<!-- agent-loop-escalated: '
+ESCALATION_MARKER_SUFFIX=' -->'
+LABEL_ESCALATED='agent-escalated'
 # Reset at the top of every pass. Initialised here only because the close-out
 # that runs before the first pass bumps it too, and `set -u` would kill it
 # otherwise — what it counts before the first pass is discarded, which is why
@@ -270,14 +287,19 @@ repo_path() {
 
 # GitHub resolves an issue's labels by name, and a name that does not exist yet
 # is not created for you — unlike GitLab, where first use was enough. So the
-# loop's own two labels are made to exist once, at startup, in every repo it
+# loop's own three labels are made to exist once, at startup, in every repo it
 # polls. Anything already there is left exactly as it is, colour included.
+#
+# The escalation label is here for the same reason the other two are, and the
+# cost of leaving it out is worse: an `--add-label` naming a label that does not
+# exist is refused, so every handover would post its comment and then fail to
+# flag it, forever, on a self-heal that can never land.
 ensure_labels() {
   local repo="$1" existing label response
   response=$(gh_json "/repos/$repo/labels" --paginate) \
     || { log "could not list labels in $repo, assuming they exist"; return 0; }
   existing=$(jq -r '.[].name' <<< "$response")
-  for label in "$LABEL_READY" "$LABEL_CLAIMED"; do
+  for label in "$LABEL_READY" "$LABEL_CLAIMED" "$LABEL_ESCALATED"; do
     grep -qxF "$label" <<< "$existing" && continue
     if gh-axi label create --name "$label" --color ededed \
          --description "agent-loop" --repo "$repo" >/dev/null 2>&1; then
@@ -826,12 +848,13 @@ sweep_worktrees() {
 # request in the repository, and a phase that logs nothing at all is loud, where
 # a fork head slipping into scope would be silent.
 #
-# `labels` is fetched and not read here: it is what the escalation label's
-# self-heal will ask of a later pass, and asking for it now costs nothing on a
-# read the phase already makes. `author` and `baseRefName` are fetched and read by
-# nothing at all, and that is the point — the scope rule has exactly two
-# exclusions, and neither who opened the pull request nor what it is merging
-# into is one of them.
+# `labels` is read for exactly one thing: whether the escalation label is
+# already on this pull request. That is what makes the self-heal free — the
+# comment says whether the handover happened, this says whether it is flagged,
+# and both facts arrive on reads the phase was making anyway. `author` and
+# `baseRefName` are fetched and read by nothing at all, and that is the point —
+# the scope rule has exactly two exclusions, and neither who opened the pull
+# request nor what it is merging into is one of them.
 query_repo_open_prs() {
   local github="$1" owner="${1%%/*}" name="${1##*/}" response
   response=$(gh_graphql "{ repository(owner: \"$owner\", name: \"$name\") { pullRequests(states: OPEN, first: 100, orderBy: {field: UPDATED_AT, direction: DESC}) { nodes { number title url isDraft isCrossRepository author { login } baseRefName headRefName headRefOid labels(first: 50) { nodes { name } } } } } }") || return 1
@@ -842,11 +865,18 @@ query_repo_open_prs() {
   # ponytail: one page, so a repository with more than a hundred open pull
   # requests silently drops the least recently updated of them. The same cap the
   # global search this replaced had. Page if a repository ever gets that busy.
-  jq -r '.data.repository.pullRequests.nodes[]?
+  #
+  # Two fields per pull request, tab-separated: the number, and whether the
+  # escalation label is on it. Neither can be empty, so the pair is safe to read
+  # back with a single `read` — unlike the derivation's facts, three of which
+  # routinely are.
+  jq -r --arg esc "$LABEL_ESCALATED" '.data.repository.pullRequests.nodes[]?
     | select(.number != null)
     | select(.isDraft == false)
     | select(.isCrossRepository == false)
-    | .number' <<< "$response"
+    | [ (.number | tostring),
+        (if ([.labels.nodes[]?.name] | index($esc)) then "labelled" else "unlabelled" end) ]
+    | @tsv' <<< "$response"
 }
 
 # Everything the derivation needs about one pull request, in one call: the head
@@ -855,7 +885,17 @@ query_repo_open_prs() {
 # the review threads, and the comment timeline.
 #
 # `commits(last: 1)` is the head; `comments(last: 100)` is the *newest* hundred,
-# which is the end of the timeline the freshness tests ask about. The status
+# which is the end of the timeline the freshness tests ask about.
+#
+# ponytail: that window changed job with the handover and the change is worth
+# naming. Every other test over it is a *freshness* test — newest-first, so a
+# hundred is always enough — but the escalation marker is an *existence* test,
+# and an escalated pull request that then collects a hundred newer comments
+# would read as never escalated: a duplicate handover, and the loop acting again
+# at a head it handed over. The label cannot stand in, because it is not
+# head-scoped and would suppress the next head's handover instead. Page the
+# comments, or ask for the marker directly, if a pull request ever gets that
+# talkative. The status
 # `description` and the thread `path`/`line` are fetched and read by nothing:
 # the fixtures behind this are whole captures, and a query narrowed to what
 # today's derivation happens to use would couple them silently to it.
@@ -866,7 +906,7 @@ query_pr_state() {
   printf '%s' "$response"
 }
 
-# The seven facts the state machine runs on, one per line — see the caller for
+# The eight facts the state machine runs on, one per line — see the caller for
 # why they are not one tab-separated line:
 #
 #   head        the head commit
@@ -876,8 +916,9 @@ query_pr_state() {
 #   statusAt    newest autofix-status comment, ISO-8601, empty if none
 #   statusHead  input head recorded by that status's trigger, empty if unknown
 #   triggerAt   newest autofix trigger I posted, ISO-8601, empty if none
+#   escalated   true when a handover has already been posted at that head
 #
-# Three judgements are made here and are worth naming:
+# Four judgements are made here and are worth naming:
 #
 # **Terminal is per commit and reads both surfaces.** A legacy status is
 # terminal at `SUCCESS`, `FAILURE` or `ERROR`; `PENDING` and `EXPECTED` are not.
@@ -897,13 +938,23 @@ query_pr_state() {
 # created one.** CodeRabbit delivers by editing comments it already posted, so
 # a created timestamp can be days stale. My own trigger is never edited, and
 # its creation is the event.
+#
+# **The escalation marker is matched on the head commit and on nothing else** —
+# no author test, no timestamp test. The commit is what a handover is scoped to,
+# and a marker naming this head means the record exists whoever put it there:
+# an operator who quoted the comment back has said the same thing the loop said,
+# and a marker naming any other commit is a record of a handover that is over.
+# No timestamp is consulted because a comment cannot predate the commit it
+# names.
 pr_facts() {
   jq -r \
     --arg crctx "$CODERABBIT_STATUS_CONTEXT" \
     --arg crlogin "$CODERABBIT_LOGIN" \
     --arg me "$ME" \
     --arg trigger "$AUTOFIX_TRIGGER" \
-    --arg statusmarker "$AUTOFIX_STATUS_MARKER" '
+    --arg statusmarker "$AUTOFIX_STATUS_MARKER" \
+    --arg escprefix "$ESCALATION_MARKER_PREFIX" \
+    --arg escsuffix "$ESCALATION_MARKER_SUFFIX" '
     def is_coderabbit: (. // "") | ascii_downcase | startswith($crlogin);
     .data.repository.pullRequest as $pr
     | ($pr.commits.nodes[-1].commit // {}) as $head
@@ -934,13 +985,20 @@ pr_facts() {
     | [ $triggers[]
         | select(.createdAt <= ($status.createdAt // "")) ]
         | max_by(.createdAt) as $statusTrigger
+    | (if ($head.oid // "") == "" then false
+       else ([ $pr.comments.nodes[]?
+               | select((.body // "")
+                   | contains($escprefix + $head.oid + $escsuffix)) ]
+             | length) > 0
+       end) as $escalated
     | [ ($head.oid // ""),
         ($head.committedDate // ""),
         (($terminal | any) | tostring),
         ($threads | length | tostring),
         ($status.updatedAt // ""),
         ($statusTrigger.head // ""),
-        ($triggers | map(.createdAt) | max // "") ]
+        ($triggers | map(.createdAt) | max // ""),
+        ($escalated | tostring) ]
     | .[]'
 }
 
@@ -965,6 +1023,170 @@ post_autofix_trigger() {
   "$SCRIPT_DIR/pr-writeback.sh" autofix --repo "$1" --pr "$2" --sha "$3" >/dev/null 2>&1
 }
 
+# --- the handover -------------------------------------------------------------
+#
+# Escalation is a handover, not a notification, and the reason is a fact about
+# GitHub rather than a preference: **the loop acts as the operator's own account,
+# and GitHub never notifies you of your own actions.** No arrangement of writes
+# can push. So the job is not to notify — it is to make an escalated pull
+# request legible in a view the operator already visits, and then to stop
+# touching it.
+#
+# What follows from that is the asymmetry the whole path is built on:
+# **delivery is retried until it lands; the action it reports is never retried.**
+
+# One row of the record. A reason is a verdict, what was judged, and the raw
+# values that produced the judgement — never a conclusion on its own. The rows
+# that **passed** are carried too: an operator reading a handover is owed the
+# complete picture the gate saw, not the subset that said no, because the
+# passing rows are what tell them where *not* to look.
+# The tab is the join, so a tab inside a field would reshape the row into a
+# different one rather than corrupt it visibly — the one failure a record must
+# not have. Nothing produces one today; the substitution is what keeps that
+# true when the raw values start coming from CodeRabbit and GitHub.
+reason() { printf '%s\t%s\t%s' "${1//$'\t'/ }" "${2//$'\t'/ }" "${3//$'\t'/ }"; }
+
+# A table cell. Three characters can break one: the pipe that draws the table,
+# and — because the raw column is rendered inside a code span — the backtick
+# that closes it and the newline that ends the row. Today's values are
+# `key=value` and carry none of them; the kinds still to come paste text
+# CodeRabbit and GitHub wrote, and a record that renders as a broken table is
+# worth less than one that renders as an ugly line.
+md_cell() {
+  # A backtick cannot be escaped inside a code span, so it is substituted rather
+  # than escaped. The pipe can be, and the newline is what ends a row.
+  local tick="'" cell="${1//|/\\|}"
+  cell="${cell//\`/$tick}"
+  printf '%s' "${cell//$'\n'/ }"
+}
+
+# The record itself. Everything head-scoped the loop knows lives here, because
+# with no local state a comment on the pull request is the only place a
+# head-scoped record can live at all.
+#
+# The kind is the first line because it is what tells the operator what to do
+# next — whether to read the diff or go and look at CodeRabbit. Four are
+# defined; after this only `stalled` has a caller, and the other three arrive
+# with the risk gate, the merge and the review nudge.
+escalation_body() {
+  local kind="$1" head="$2" meaning r verdict what raw
+  shift 2
+
+  case "$kind" in
+    escalate) meaning="a veto is present and says no" ;;
+    stuck)    meaning="signals are still undecided past the merge-gate timeout" ;;
+    stalled)  meaning="a CodeRabbit command was triggered and CodeRabbit never reported inside its bound" ;;
+    refused)  meaning="the gate said merge and GitHub said no" ;;
+    # Not reachable from this file, and it still must not lose the record: a
+    # kind with no gloss is worth less to the operator than one with, and worth
+    # far more than a comment that was never posted.
+    *)        meaning="" ;;
+  esac
+
+  if [[ -n "$meaning" ]]; then
+    printf '**Escalated — `%s`:** %s.\n\n' "$kind" "$meaning"
+  else
+    printf '**Escalated — `%s`.**\n\n' "$kind"
+  fi
+
+  printf 'The loop takes no further action on this pull request at `%s` — no merge, no autofix trigger, no nudge — until the head moves.\n\n' "$head"
+
+  printf '| Verdict | What | Raw values |\n|---|---|---|\n'
+  for r in "$@"; do
+    IFS=$'\t' read -r verdict what raw <<< "$r"
+    printf '| %s | %s | `%s` |\n' "$(md_cell "$verdict")" "$(md_cell "$what")" "$(md_cell "$raw")"
+  done
+
+  # The three gestures that already exist, which is what makes this a handover
+  # rather than a notice. There is deliberately no fourth: an override label
+  # would be an unscoped bypass token for the only gate left standing.
+  printf '\n**Ways back in**\n\n'
+  printf -- '- **Merge it by hand.** Close-out still ticks and closes the issue this branch names: it reads merged pull requests from GitHub and cannot tell whose hand pressed the button.\n'
+  printf -- '- **Push a commit.** The head moves, this record stops matching it, and the loop re-derives from scratch on the next pass.\n'
+  printf -- '- **Convert it to draft.** Draft is the hold gesture, and the loop stops seeing this pull request at all.\n\n'
+  printf 'There is no override label. A push is both the fix and the re-engagement.\n\n'
+
+  printf '%s%s%s\n' "$ESCALATION_MARKER_PREFIX" "$head" "$ESCALATION_MARKER_SUFFIX"
+}
+
+# The flag, on its own. Reachable alone because that is what the self-heal is: a
+# pass that finds the record posted and the label missing adds the label and
+# says nothing else.
+add_escalation_label() {
+  "$SCRIPT_DIR/pr-writeback.sh" label --repo "$1" --pr "$2" \
+    --add "$LABEL_ESCALATED" >/dev/null 2>&1
+}
+
+# The handover, in its fixed order: **comment, then label.**
+#
+# That order is not a preference either. It self-heals: a pass that finds the
+# comment posted and the label missing adds the label without re-posting
+# anything, whereas label-then-comment would leave a flagged pull request whose
+# record never landed and post the record again on every pass after.
+#
+# The label is added unconditionally, even when the enumeration already saw it
+# there — a pull request whose previous head was escalated keeps the flag, since
+# it is never removed. Making the second write conditional on a fact from the
+# *other* read would trade one idempotent write for an invariant that no longer
+# holds by inspection: as written, an escalation that returns 0 has always ended
+# with the label on.
+#
+#   0  both landed
+#   1  the comment did not land — nothing was said and nothing is flagged, so
+#      the next pass re-derives and escalates again from scratch
+#   2  the comment landed and the label did not — the record is on the pull
+#      request, so the next pass reads the marker, adds the label, and posts
+#      nothing
+#
+# $ESCALATE_RC carries the seam's own exit status for whichever write failed,
+# because the phase's log line is the only record a failure leaves.
+# The state line's tail for one handover attempt, spelled once. Every kind to
+# come reports its outcome the same three ways, and a switch copied per caller
+# is how two of them end up disagreeing about what `label=failed` means.
+#
+# The skip accounting deliberately stays at the call site: this runs in a
+# command substitution, so an increment made here would die with the subshell.
+escalation_kv() {
+  local kind="$1" status="$2"
+  case "$status" in
+    0) printf 'action=escalated kind=%s label=added' "$kind" ;;
+    # The record is on the pull request and the flag is not. The next pass reads
+    # the marker, adds the label, and posts nothing.
+    2) printf 'action=escalated kind=%s label=failed rc=%s' "$kind" "$ESCALATE_RC" ;;
+    # Nothing was said and nothing is flagged, so there is nothing to unwind:
+    # the next pass re-derives the same failure and escalates again. The poll
+    # interval is the whole of the backoff.
+    *) printf 'action=escalate-failed kind=%s rc=%s' "$kind" "$ESCALATE_RC" ;;
+  esac
+}
+
+ESCALATE_RC=0
+escalate() {
+  local github="$1" number="$2" head="$3" kind="$4"
+  shift 4
+  local body status=0
+  ESCALATE_RC=0
+
+  # Free text travels to the seam as a file: gh-axi would reinterpret a --body
+  # that happened to look like JSON, and this body is a markdown table.
+  body=$(mktemp "${TMPDIR:-/tmp}/agent-loop-escalation.XXXXXX") || { ESCALATE_RC=1; return 1; }
+  if ! escalation_body "$kind" "$head" "$@" > "$body"; then
+    rm -f "$body"
+    ESCALATE_RC=1
+    return 1
+  fi
+
+  "$SCRIPT_DIR/pr-writeback.sh" comment --repo "$github" --pr "$number" \
+    --body-file "$body" >/dev/null 2>&1 || status=$?
+  rm -f "$body"
+  if (( status != 0 )); then ESCALATE_RC=$status; return 1; fi
+
+  status=0
+  add_escalation_label "$github" "$number" || status=$?
+  if (( status != 0 )); then ESCALATE_RC=$status; return 2; fi
+  return 0
+}
+
 pr_phase() {
   local i github
   for (( i = 0; i < PROJECT_COUNT; i++ )); do
@@ -974,16 +1196,16 @@ pr_phase() {
 }
 
 pr_phase_project() {
-  local github="$1" numbers number
+  local github="$1" numbers number labelled
   if ! numbers=$(query_repo_open_prs "$github"); then
     log "pr query failed: $github"
     SKIPS=$((SKIPS + 1))
     return 0
   fi
   # stdin is closed for the body: gh-axi must not swallow the PR list.
-  while IFS= read -r number; do
+  while IFS=$'\t' read -r number labelled; do
     [[ -n "$number" ]] || continue
-    pr_phase_one "$github" "$number" < /dev/null
+    pr_phase_one "$github" "$number" "$labelled" < /dev/null
   done <<< "$numbers"
 }
 
@@ -994,8 +1216,8 @@ pr_phase_project() {
 # carrying the values the state was derived from. The tail is what keeps a new
 # reason from being a suite-wide edit.
 pr_phase_one() {
-  local github="$1" number="$2"
-  local response head head_date terminal threads status_at status_head trigger_at
+  local github="$1" number="$2" labelled="$3"
+  local response head head_date terminal threads status_at status_head trigger_at escalated
   local now head_epoch status_epoch trigger_epoch spent in_flight age status
   local state review kv
 
@@ -1004,7 +1226,7 @@ pr_phase_one() {
     SKIPS=$((SKIPS + 1))
     return 0
   fi
-  # One value per line, not one tab-separated line: three of the seven are routinely
+  # One value per line, not one tab-separated line: three of the eight are routinely
   # empty, and bash's `read` folds a run of tabs into a single delimiter — so a
   # pull request with no autofix status would silently have its trigger read as
   # its status, and every one of them would look spent.
@@ -1013,6 +1235,7 @@ pr_phase_one() {
   # and `set -e` would take the whole daemon down over one unreadable pull
   # request. The empty head below is what says so instead.
   head=""; head_date=""; terminal=""; threads=0; status_at=""; status_head=""; trigger_at=""
+  escalated=false
   {
     read -r head
     read -r head_date
@@ -1021,6 +1244,7 @@ pr_phase_one() {
     read -r status_at
     read -r status_head
     read -r trigger_at
+    read -r escalated
   } < <(pr_facts <<< "$response") || true
 
   # The head commit is the identity used by `spent`, and its date is the origin
@@ -1069,7 +1293,34 @@ pr_phase_one() {
   [[ "$terminal" == "true" ]] || review=pending
   kv="review=$review threads=$threads autofix=$spent"
 
-  if [[ "$review" != "terminal" ]]; then
+  # **Before every other test, and this is the whole of the handover rule.** Once
+  # the loop has escalated this pull request at this head it takes no further
+  # action on it at that head — no merge, no autofix trigger, no nudge — until
+  # the head moves. A handover that kept acting would be a notification, and the
+  # operator would learn to ignore it.
+  #
+  # The one thing that still happens here is **delivery**: the record is posted
+  # and the flag may not be, so a missing label is added. That is the asymmetry
+  # the write order buys — the report is retried until it lands, the action it
+  # reports is never retried.
+  if [[ "$escalated" == "true" ]]; then
+    state=escalated
+    if [[ "$labelled" == "labelled" ]]; then
+      kv="$kv label=present"
+    else
+      status=0
+      add_escalation_label "$github" "$number" || status=$?
+      if (( status == 0 )); then
+        kv="$kv label=added"
+      else
+        # The comment stands whatever happens here, so nothing is lost and
+        # nothing is duplicated: the next pass reads the same marker and tries
+        # the same one write again.
+        kv="$kv label=failed rc=$status"
+        SKIPS=$((SKIPS + 1))
+      fi
+    fi
+  elif [[ "$review" != "terminal" ]]; then
     # ponytail: unbounded, and the only unbounded state left. #32 splits the
     # pull requests CodeRabbit never looked at out of this one and bounds what
     # remains by the merge-gate clock.
@@ -1079,8 +1330,21 @@ pr_phase_one() {
     if (( age <= AUTOFIX_TIMEOUT )); then
       state=autofix-in-flight
     else
-      # ponytail: logged only. #29 builds the handover this escalates through.
+      # The first state with a caller into the handover. A command was
+      # triggered and CodeRabbit never answered inside its bound, which is what
+      # `stalled` means; the row that *passed* goes into the record too, because
+      # "the review finished and the fix did not" is what tells the operator to
+      # go and look at CodeRabbit rather than at the diff.
       state=autofix-stalled
+      status=0
+      escalate "$github" "$number" "$head" stalled \
+        "$(reason ok "CodeRabbit's review finished on this commit" \
+             "review=$review threads=$threads")" \
+        "$(reason no "the autofix trigger has gone unanswered past its bound" \
+             "trigger=$trigger_at age=${age}s bound=${AUTOFIX_TIMEOUT}s head=$head_date")" \
+        || status=$?
+      kv="$kv $(escalation_kv stalled "$status")"
+      (( status == 0 )) || SKIPS=$((SKIPS + 1))
     fi
   elif (( threads > 0 )) && [[ "$spent" == "unspent" ]]; then
     state=needs-autofix

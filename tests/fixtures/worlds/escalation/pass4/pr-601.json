@@ -1,0 +1,108 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "number": 601,
+        "headRefOid": "601b601b601b601b601b601b601b601b601b601b",
+        "commits": {
+          "nodes": [
+            {
+              "commit": {
+                "oid": "601b601b601b601b601b601b601b601b601b601b",
+                "committedDate": "2026-08-27T14:00:00Z",
+                "statusCheckRollup": {
+                  "state": "SUCCESS",
+                  "contexts": {
+                    "nodes": [
+                      {
+                        "__typename": "StatusContext",
+                        "context": "CodeRabbit",
+                        "state": "SUCCESS",
+                        "description": "Review completed",
+                        "createdAt": "2026-08-27T14:02:00Z",
+                        "creator": {
+                          "login": "coderabbitai"
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "reviewThreads": {
+          "nodes": [
+            {
+              "id": "PRRT_kwDO601a",
+              "isResolved": false,
+              "isOutdated": false,
+              "path": "agent-loop.sh",
+              "line": 55,
+              "comments": {
+                "nodes": [
+                  {
+                    "databaseId": 3835770601,
+                    "createdAt": "2026-08-27T10:32:10Z",
+                    "author": {
+                      "login": "coderabbitai"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "id": "PRRT_kwDO601b",
+              "isResolved": false,
+              "isOutdated": false,
+              "path": "agent-loop.sh",
+              "line": 900,
+              "comments": {
+                "nodes": [
+                  {
+                    "databaseId": 3835770602,
+                    "createdAt": "2026-08-27T10:32:11Z",
+                    "author": {
+                      "login": "coderabbitai"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "comments": {
+          "nodes": [
+            {
+              "databaseId": 5379000601,
+              "createdAt": "2026-08-27T10:32:20Z",
+              "updatedAt": "2026-08-27T10:32:20Z",
+              "body": "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n<!-- review_stack_entry_start -->\n> Change Stack: 1 of 1\n<!-- review_stack_entry_end -->\n<!-- recent_review_start -->\n## Walkthrough\n\nThe wait on a stalled autofix gains a bound.\n<!-- recent_review_end -->\n<!-- final_review_risk_start -->\n**Merge Risk:** _⚪ Minimal_ · up to `dec0d`\n\nA localized change with no merge-blocking risk beyond normal checks and review.\n<!-- final_review_risk_end -->\n<!-- pre_merge_checks_walkthrough_start -->\n<details>\n<summary>🚥 Pre-merge checks | ✅ 5</summary>\n</details>\n<!-- pre_merge_checks_walkthrough_end -->\n<!-- tips_start -->\n<details>\n<summary>📜 Recent review details</summary>\n\nConfiguration used: defaults\nReview profile: CHILL\nPlan: Pro Plus\n</details>\n<!-- tips_end -->\n",
+              "author": {
+                "login": "coderabbitai"
+              }
+            },
+            {
+              "databaseId": 5379000611,
+              "createdAt": "2026-08-27T11:00:00Z",
+              "updatedAt": "2026-08-27T11:00:00Z",
+              "body": "@coderabbitai autofix\n<!-- agent-loop-autofix-head: 601a601a601a601a601a601a601a601a601a601a -->",
+              "author": {
+                "login": "nywleswoey"
+              }
+            },
+            {
+              "databaseId": 5379000621,
+              "createdAt": "2026-08-27T12:30:01Z",
+              "updatedAt": "2026-08-27T12:30:01Z",
+              "body": "**Escalated — `stalled`:** a CodeRabbit command was triggered and CodeRabbit never reported inside its bound.\n\nThe loop takes no further action on this pull request at `601a601a601a601a601a601a601a601a601a601a` — no merge, no autofix trigger, no nudge — until the head moves.\n\n| Verdict | What | Raw values |\n|---|---|---|\n| ok | CodeRabbit's review finished on this commit | `review=terminal threads=2` |\n| no | the autofix trigger has gone unanswered past its bound | `trigger=2026-08-27T11:00:00Z age=5401s bound=5400s head=2026-08-27T10:30:00Z` |\n\n**Ways back in**\n\n- **Merge it by hand.** Close-out still ticks and closes the issue this branch names: it reads merged pull requests from GitHub and cannot tell whose hand pressed the button.\n- **Push a commit.** The head moves, this record stops matching it, and the loop re-derives from scratch on the next pass.\n- **Convert it to draft.** Draft is the hold gesture, and the loop stops seeing this pull request at all.\n\nThere is no override label. A push is both the fix and the re-engagement.\n\n<!-- agent-loop-escalated: 601a601a601a601a601a601a601a601a601a601a -->\n",
+              "author": {
+                "login": "nywleswoey"
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

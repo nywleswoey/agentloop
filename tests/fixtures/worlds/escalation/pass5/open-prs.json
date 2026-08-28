@@ -1,0 +1,30 @@
+{
+  "data": {
+    "repository": {
+      "pullRequests": {
+        "nodes": [
+          {
+            "number": 601,
+            "title": "Bound the wait on a stalled autofix",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/601",
+            "headRefName": "issue-99-bound-the-wait",
+            "headRefOid": "601b601b601b601b601b601b601b601b601b601b",
+            "labels": {
+              "nodes": [
+                {
+                  "name": "agent-escalated"
+                }
+              ]
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
+          }
+        ]
+      }
+    }
+  }
+}

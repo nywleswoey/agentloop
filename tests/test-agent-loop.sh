@@ -904,12 +904,162 @@ setup "the same autofix one second past its bound is stalled"
 export STUB_WORLD=states STUB_NOW=2026-08-27T12:30:01Z
 run_once
 check_status 0 "$STATUS"
-check_grep "#207 207a207a207a207a207a207a207a207a207a207a autofix-stalled review=terminal threads=2 autofix=unspent age=5401 bound=5400" "$OUT"
+check_grep "#207 207a207a207a207a207a207a207a207a207a207a autofix-stalled review=terminal threads=2 autofix=unspent age=5401 bound=5400 action=escalated kind=stalled label=added" "$OUT"
 check_no_grep "autofix-in-flight" "$OUT"
-# A stalled autofix is logged and otherwise left alone: no second trigger, and
-# no escalation until #29 builds one.
-check "no trigger was posted for the stalled pull request" \
-  test "$(grep -cF 'pr comment 207' "$STUB_CALLS")" -eq 0
+# A stalled autofix is handed over, never re-triggered: the command CodeRabbit
+# did not answer is not the command to send again.
+check "no second trigger was posted for the stalled pull request" \
+  test "$(grep -cF 'pr comment 207 --repo nywleswoey/automation --body @coderabbitai autofix' "$STUB_CALLS")" -eq 0
+
+# --- pr phase: the handover ----------------------------------------------------------
+
+# Escalation is a handover, not a notification, and the two facts that makes it
+# are asserted here across five replayed passes: once escalated at a head the
+# loop stops acting, and when the head moves it re-derives from scratch.
+
+setup "a stalled autofix is handed over, and the handover is not repeated"
+PASS_N=0
+
+# Pass one: the trigger is a second past its bound and CodeRabbit never
+# answered. The record goes up, then the flag.
+replay escalation/pass1 2026-08-27T12:30:01Z
+check_status 0 "$STATUS"
+check_grep "pr nywleswoey/automation#601 601a601a601a601a601a601a601a601a601a601a autofix-stalled review=terminal threads=2 autofix=unspent age=5401 bound=5400 action=escalated kind=stalled label=added" "$PASS_LOG"
+
+# Comment then label, in that order, both through the real seam. The order is
+# what self-heals: the reverse would flag a pull request whose record never
+# landed and re-post it every pass after.
+check_grep "gh-axi pr comment 601 --repo nywleswoey/automation --body-file " "$STUB_CALLS"
+check_grep "gh-axi pr edit 601 --repo nywleswoey/automation --add-label agent-escalated" "$STUB_CALLS"
+check "the comment is written before the label" \
+  test "$(call_line 'pr comment 601 --repo nywleswoey/automation --body-file')" \
+     -lt "$(call_line 'pr edit 601 --repo nywleswoey/automation --add-label')"
+
+# The record itself. Free text cannot survive the flattened argv line, so the
+# stub keeps the body file byte for byte and it is read back here.
+BODY="$STUB_STATE/pr-body-601.txt"
+check "the escalation body was captured" test -f "$BODY"
+# The kind is the first line, because it is what tells the operator whether to
+# read the diff or go and look at CodeRabbit.
+check "the first line names the kind" \
+  test "$(head -1 "$BODY")" = '**Escalated — `stalled`:** a CodeRabbit command was triggered and CodeRabbit never reported inside its bound.'
+# Every reason, and the raw values behind each — including the condition that
+# **passed**, because the operator is owed the whole picture the phase saw.
+check_grep "| ok | CodeRabbit's review finished on this commit | \`review=terminal threads=2\` |" "$BODY"
+check_grep "| no | the autofix trigger has gone unanswered past its bound | \`trigger=2026-08-27T11:00:00Z age=5401s bound=5400s head=2026-08-27T10:30:00Z\` |" "$BODY"
+# The three gestures that already exist. This is what makes it a handover.
+check_grep "**Merge it by hand.**" "$BODY"
+check_grep "**Push a commit.**" "$BODY"
+check_grep "**Convert it to draft.**" "$BODY"
+check_grep "There is no override label." "$BODY"
+# The marker, stamped with the head and keyed on it alone.
+check_grep "<!-- agent-loop-escalated: 601a601a601a601a601a601a601a601a601a601a -->" "$BODY"
+check_no_grep "<!-- agent-loop-escalated: 601b601b601b601b601b601b601b601b601b601b -->" "$BODY"
+# The captured world the next passes replay carries the loop's own words rather
+# than a paraphrase of them, so a change to the body cannot quietly stop the
+# marker being found.
+check "the world the next pass replays carries the body just posted" \
+  test "$(jq -r '.data.repository.pullRequest.comments.nodes[] | select((.body | contains("agent-loop-escalated"))) | .body' "$FIXTURES/worlds/escalation/pass2/pr-601.json")" = "$(cat "$BODY")"
+
+# Pass two: the record is on the timeline and the flag is on the pull request.
+# Nothing at all happens — no second comment, no merge, no trigger, no nudge.
+replay escalation/pass2 2026-08-27T13:00:00Z
+check_status 0 "$STATUS"
+check_grep "pr nywleswoey/automation#601 601a601a601a601a601a601a601a601a601a601a escalated review=terminal threads=2 autofix=unspent label=present" "$PASS_LOG"
+check "still exactly one escalation comment" \
+  test "$(grep -cF 'pr comment 601 --repo nywleswoey/automation --body-file' "$STUB_CALLS")" -eq 1
+check "still exactly one label add" \
+  test "$(grep -cF 'pr edit 601 --repo nywleswoey/automation --add-label' "$STUB_CALLS")" -eq 1
+# Detection cost nothing: the marker is in the comment timeline the derivation
+# already reads, so no read was made for it.
+check "the head is still read exactly once per pass" \
+  test "$(grep -cF 'pullRequest(number: 601)' "$STUB_CALLS")" -eq 2
+
+# Pass three: the flag is gone — removed by hand, or its write failed — and the
+# record still stands. The label is re-added and nothing is posted. This is the
+# self-heal the write order was chosen for.
+replay escalation/pass3 2026-08-27T13:30:00Z
+check_status 0 "$STATUS"
+check_grep "pr nywleswoey/automation#601 601a601a601a601a601a601a601a601a601a601a escalated review=terminal threads=2 autofix=unspent label=added" "$PASS_LOG"
+check "the label was added a second time" \
+  test "$(grep -cF 'pr edit 601 --repo nywleswoey/automation --add-label agent-escalated' "$STUB_CALLS")" -eq 2
+check "and no second comment was posted" \
+  test "$(grep -cF 'pr comment 601 --repo nywleswoey/automation --body-file' "$STUB_CALLS")" -eq 1
+
+# Pass four: the head moved. The record names the commit before it, so it no
+# longer matches, and the loop re-derives from scratch — right down to acting,
+# which an escalated head forbids. The label is still there and does not stop
+# it: the flag is not the record.
+replay escalation/pass4 2026-08-27T14:05:00Z
+check_status 0 "$STATUS"
+check_grep "pr nywleswoey/automation#601 601b601b601b601b601b601b601b601b601b601b needs-autofix review=terminal threads=2 autofix=unspent action=triggered" "$PASS_LOG"
+check_no_grep "601b601b601b601b601b601b601b601b601b601b escalated" "$PASS_LOG"
+check_grep "gh-axi pr comment 601 --repo nywleswoey/automation --body @coderabbitai autofix" "$STUB_CALLS"
+
+# Pass five: the new head stalls the same way, so it is escalated again — and
+# only because it failed again. The new record names the new commit.
+replay escalation/pass5 2026-08-27T15:35:01Z
+check_status 0 "$STATUS"
+check_grep "pr nywleswoey/automation#601 601b601b601b601b601b601b601b601b601b601b autofix-stalled review=terminal threads=2 autofix=unspent age=5401 bound=5400 action=escalated kind=stalled label=added" "$PASS_LOG"
+check "one escalation per head, and two heads have now failed" \
+  test "$(grep -cF 'pr comment 601 --repo nywleswoey/automation --body-file' "$STUB_CALLS")" -eq 2
+check_grep "<!-- agent-loop-escalated: 601b601b601b601b601b601b601b601b601b601b -->" "$STUB_STATE/pr-body-601.txt"
+
+# The flag is never taken off — not when the head moves, not ever. Removing it
+# would be untidy and inert: the record is the comment, and the label is what
+# makes every escalated pull request in every repository one query away. Five
+# passes and two heads have gone by above, so this negative has a run of real
+# behaviour behind it rather than standing alone.
+check "no label is ever removed from a pull request" \
+  test "$(grep -cE 'gh-axi pr edit .*--remove-label' "$STUB_CALLS")" -eq 0
+
+# --- pr phase: the handover's failure modes -------------------------------------------
+
+# The asymmetry the whole path rests on: delivery is retried until it lands, and
+# the action it reports is never retried. Which half failed decides which.
+
+setup "a handover whose comment never lands says nothing and flags nothing"
+export STUB_WORLD=escalation/pass1 STUB_NOW=2026-08-27T12:30:01Z STUB_GH_FAIL=pr-comment
+run_once
+check_status 0 "$STATUS"
+check_grep "#601 601a601a601a601a601a601a601a601a601a601a autofix-stalled review=terminal threads=2 autofix=unspent age=5401 bound=5400 action=escalate-failed kind=stalled rc=1" "$OUT"
+# The label is the flag on a record that does not exist, so it is not written.
+check_no_grep "pr edit 601 --repo nywleswoey/automation --add-label" "$STUB_CALLS"
+check_grep "pass end dispatches=0 skips=1 sweeps=1" "$OUT"
+# Nothing was said and nothing is flagged, so there is nothing to unwind: the
+# next pass re-derives the same stall and escalates again.
+export STUB_GH_FAIL=""
+run_once
+check_status 0 "$STATUS"
+check_grep "#601 601a601a601a601a601a601a601a601a601a601a autofix-stalled review=terminal threads=2 autofix=unspent age=5401 bound=5400 action=escalated kind=stalled label=added" "$OUT"
+
+setup "a handover whose label never lands keeps the record and is healed next pass"
+export STUB_WORLD=escalation/pass1 STUB_NOW=2026-08-27T12:30:01Z STUB_GH_FAIL=pr-edit
+run_once
+check_status 0 "$STATUS"
+check_grep "#601 601a601a601a601a601a601a601a601a601a601a autofix-stalled review=terminal threads=2 autofix=unspent age=5401 bound=5400 action=escalated kind=stalled label=failed rc=1" "$OUT"
+check_grep "gh-axi pr comment 601 --repo nywleswoey/automation --body-file " "$STUB_CALLS"
+check_grep "pass end dispatches=0 skips=1 sweeps=1" "$OUT"
+# The record landed, so the next pass reads the marker and adds the label alone
+# — which is exactly the world pass3 captures.
+export STUB_GH_FAIL="" STUB_WORLD=escalation/pass3 STUB_NOW=2026-08-27T13:30:00Z
+run_once
+check_status 0 "$STATUS"
+check_grep "#601 601a601a601a601a601a601a601a601a601a601a escalated review=terminal threads=2 autofix=unspent label=added" "$OUT"
+check "the record was posted once across both passes" \
+  test "$(grep -cF 'pr comment 601 --repo nywleswoey/automation --body-file' "$STUB_CALLS")" -eq 1
+
+# --- pr phase: the escalation label exists -------------------------------------------
+
+# `--add-label` naming a label that does not exist is refused, so a handover
+# would post its record and then fail to flag it forever, on a self-heal that
+# can never land. The loop makes it exist for the same reason it makes its other
+# two exist.
+setup "the escalation label is created at startup alongside the loop's own two"
+run_once
+check_status 0 "$STATUS"
+check_grep "gh-axi label create --name agent-escalated" "$STUB_CALLS"
+check_grep "created label agent-escalated in nywleswoey/automation" "$OUT"
 
 # --- pr phase: once per head, proven across three replayed passes --------------------
 
@@ -1096,6 +1246,11 @@ check "no worker brief or triage plan was written" \
 CLOSE_17="gh-axi issue close 17 --repo nywleswoey/automation"
 UNCLAIM_17="gh-axi issue edit 17 --repo nywleswoey/automation --remove-label agent-in-progress"
 
+# Nothing in this build merges anything, so every pull request the close-out
+# reads here was merged by a hand — which is exactly the guarantee an escalated
+# pull request needs. Close-out reads merged pull requests from GitHub and
+# cannot tell whose hand pressed the button, so taking one over by hand does not
+# cost the operator the tick and the close.
 setup "the close-out phase ticks and closes what it claimed and nothing else"
 export STUB_MERGED=set
 run_once
