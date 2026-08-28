@@ -128,6 +128,8 @@ METHOD=""
 # from this one.
 MERGE_METHODS="merge squash rebase"
 
+# Print usage information to stdout showing supported verbs, flags, exit codes,
+# and examples. Called when --help is passed or when argument parsing fails.
 usage() {
   cat <<'EOF'
 Usage: pr-writeback.sh <verb> --repo <owner/name> --pr <n> [flags]
@@ -325,6 +327,9 @@ merge_write() {
     --field "sha=$SHA" --field "merge_method=$METHOD"
 }
 
+# Execute the write operation for the given verb. Dispatches to the appropriate
+# GitHub API call based on VERB (autofix, review, comment, label, or merge).
+# Returns the exit status of the underlying gh-axi or gh_json call.
 write() {
   case "$VERB" in
     autofix)

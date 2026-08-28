@@ -37,6 +37,8 @@ trap 'rm -rf "$SCRATCH"' EXIT
 
 REPO="nywleswoey/agentloop"
 
+# Set up a fresh test case: create working directory, initialize stub state and
+# call log, and reset output captures. Called at the start of each test case.
 setup() {
   CURRENT="$1"
   echo "== $CURRENT"

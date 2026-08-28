@@ -133,6 +133,8 @@ LABEL_ESCALATED='agent-escalated'
 # that close-out reports one line per issue rather than a total.
 SKIPS=0
 
+# Print usage information to stdout showing command syntax, options, environment
+# variables, and required tools. Called when --help is passed or on argument errors.
 usage() {
   cat <<'EOF'
 Usage: agent-loop.sh [--once] [--config <path>]
@@ -234,6 +236,11 @@ require_positive_int() {
     || die "config $name must be a positive integer, got: $value"
 }
 
+# Load and validate the agent loop configuration file. Reads JSON config from
+# CONFIG_PATH, validates required fields, and populates global variables for
+# poll interval, worker limits, timeouts, labels, and project list. Fails fast
+# with descriptive errors if config is missing, invalid JSON, or lacks required
+# fields.
 load_config() {
   [[ -f "$CONFIG_PATH" ]] || die "config not found: $CONFIG_PATH"
   jq empty "$CONFIG_PATH" 2>/dev/null || die "config is not valid JSON: $CONFIG_PATH"
@@ -1255,6 +1262,12 @@ escalation_kv() {
   esac
 }
 
+# Post an escalation handover to a pull request: a comment carrying the verdict
+# table and an escalation label. Runs in two phases (comment then label) to
+# enable self-healing: a pass that finds the comment but no label will add the
+# label without reposting. Returns 0 if both succeed, 1 if comment fails, 2 if
+# comment succeeds but label fails. Sets ESCALATE_RC to the exit code of
+# whichever write failed.
 ESCALATE_RC=0
 escalate() {
   local github="$1" number="$2" head="$3" kind="$4"
@@ -1932,6 +1945,11 @@ closeout_phase() {
   done <<< "$prs"
 }
 
+# Close out a single merged pull request: tick the checklist in the linked
+# issue's description and close the issue. Only acts on open issues with the
+# claimed label that belong to configured projects. Silently skips pull requests
+# opened by hand (branch names no issue) and issues already closed or claimed by
+# hand.
 closeout_one() {
   local github="$1" prnumber="$2" branch="$3"
   local number issue description ticked
