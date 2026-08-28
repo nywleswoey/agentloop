@@ -33,7 +33,9 @@
 #                                the close-out phase's search, from
 #                                merged-$STUB_MERGED.json (default: none)
 #   api /repos/<o>/<n>       repo resolution, only for repos listed in
-#                            repos.txt; anything else 404s like the real CLI
+#                            repos.txt; anything else 404s like the real CLI.
+#                            Carries the three merge-permission booleans, from
+#                            repos.txt's third field
 #   api /repos/<o>/<n>/labels
 #                            the repo's labels, from repos.txt's second field
 #   api /repos/.../issues/<number>
@@ -149,6 +151,17 @@ emit_file() { emit "$(cat "$1")"; }
 # The labels a repo already carries, from repos.txt's second field.
 repo_labels() {
   awk -F'\t' -v r="$1" '$1 == r { print $2 }' "$STUB_FIXTURES/repos.txt"
+}
+
+# The merge methods a repo permits, from repos.txt's **third** field. GitHub
+# exposes no default-merge-method field — only these three booleans saying what
+# is permitted — which is why the loop must be told the method and can only
+# check it against them. A row with no third field permits all three, so the
+# repositories that predate this stay as they were and only the repository that
+# exists to forbid something says so.
+repo_merge_methods() {
+  awk -F'\t' -v r="$1" '$1 == r { print ($3 == "" ? "merge,squash,rebase" : $3) }' \
+    "$STUB_FIXTURES/repos.txt"
 }
 
 if [[ "${1:-}" == "label" ]]; then
@@ -383,7 +396,15 @@ if [[ "$path" == /repos/*/* ]]; then
   repo="${path#/repos/}"
   if awk -F'\t' -v r="$repo" '$1 == r { found = 1 } END { exit !found }' \
        "$STUB_FIXTURES/repos.txt"; then
-    emit "$(jq -nc --arg r "$repo" '{full_name: $r}')"
+    # The three permission booleans come with the repository read the loop
+    # already makes, which is the read the configured merge method is validated
+    # against — so a forbidden method fails at startup rather than at the merge.
+    emit "$(jq -nc --arg r "$repo" --arg m "$(repo_merge_methods "$repo")" '
+      ($m | split(",")) as $allowed
+      | { full_name: $r,
+          allow_merge_commit: ($allowed | index("merge") != null),
+          allow_squash_merge: ($allowed | index("squash") != null),
+          allow_rebase_merge: ($allowed | index("rebase") != null) }')"
     exit 0
   fi
   printf 'error: "gh: Not Found (HTTP 404)"\ncode: NOT_FOUND\n'
