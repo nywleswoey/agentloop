@@ -2,417 +2,226 @@
 #
 # pr-writeback.sh
 #
-# The only thing that pushes a pull-request worker's fixes or writes to a review
-# thread. The worker triages threads, prepares a local commit per fix, writes a
-# plan, and asks the operator to confirm; nothing reaches GitHub until this
-# script is run against a plan whose entries the operator marked `confirmed`.
+# The loop's writes to a pull request, one write per invocation.
 #
-# Keeping every write in one script is what makes "nothing before confirmation"
-# checkable rather than a promise: the worker's own instructions forbid any
-# other push, comment or resolve, and this issues no write for a thread that was
-# not confirmed.
+# "Writeback" is now a slight misnomer — nothing is written *back* to a review
+# thread any more — but the name is what the README, the exit-code contract and
+# the standing decisions all say, so it stays and this comment carries the
+# correction.
 #
-# It is also where the loop's seen-list is written. A thread this run leaves
-# silent — a question, an escalation, a proposal the operator declined — gets one
-# line appended naming the thread and its newest comment, so the next pass can
-# tell "already triaged, nothing new" from "never looked at". Because only this
-# script appends, and only the operator's answer gets it run, a worker still
-# parked for confirmation records nothing at all.
+# The script used to be the far end of a confirmation gate: an Orca worker
+# triaged review threads, prepared a commit per fix, wrote a plan file, and
+# stopped until the operator marked entries `confirmed` and ran this against
+# them. The worker, the plan and the gate are all deleted. What survives is the
+# process boundary itself, on a new and narrower justification: **the merge is
+# the single irreversible unattended write**, and a separate executable is a
+# thing a human can also run by hand.
 #
 # Usage:
-#   ./pr-writeback.sh --plan <plan.json> [--repo <path>] [--seen-list <path>]
+#   pr-writeback.sh autofix --repo <owner/name> --pr <n>
+#   pr-writeback.sh review  --repo <owner/name> --pr <n>
+#   pr-writeback.sh comment --repo <owner/name> --pr <n> --body-file <path>
+#   pr-writeback.sh label   --repo <owner/name> --pr <n> --add <name>
 #
-# Plan shape:
-#   {
-#     "repo": "nywleswoey/automation",
-#     "prNumber": 517,
-#     "sourceBranch": "my-branch",
-#     "baseSha": "<the branch tip before the worker committed anything>",
-#     "threads": [
-#       { "thread": "<node id>", "verdict": "FIX", "lastCommentId": 900001,
-#         "commit": "<local sha>", "summary": "<one sentence>",
-#         "confirmed": true },
-#       { "thread": "<node id>", "verdict": "REFUSE", "lastCommentId": 900002,
-#         "reply": "**Disagree** — ...", "confirmed": false },
-#       { "thread": "<node id>", "verdict": "ANSWER", "lastCommentId": 900003 }
-#     ]
-#   }
+# **Exactly one write per invocation.** That is the whole of the atomicity
+# story: there is no sequence to be caught halfway through, so there is no
+# half-written state to define. `label` in particular is reachable *alone*
+# rather than bundled into an escalation verb, because escalation is
+# comment-then-label and self-heals — a later pass re-adds a missing label
+# without re-posting the comment it flags.
 #
-# Requires: jq, git, gh-axi (authenticated against github.com)
+# **Free text travels as a body file; the seam's own constants travel as
+# literal bodies.** `comment` takes `--body-file` because gh-axi would
+# reinterpret a `--body` that happened to look like JSON, and a file has
+# nothing left to reinterpret — the escalation body carries a markdown table
+# and an HTML marker. `autofix` and `review` are verbs rather than callers of
+# `comment` for the opposite reason: a CodeRabbit command is the seam's own
+# constant, spelled once here, and routing it down the free-text channel would
+# make a typo a silent no-op instead of an argument error.
+#
+# **Three channels cross the process boundary:**
+#
+#   exit code   0 the write landed; 1 an argument error or a failed write
+#   stdout      the write's response, verbatim — gh-axi answers a refusal on
+#               stdout too, and those `error:`/`code:` lines are exactly what
+#               the loop's escalation comment pastes
+#   stderr      this script's own words — the usage text, and one outcome line
+#               prefixed `pr-writeback:` — for a human running it by hand
+#
+# A failed write and a bad argument share exit 1 deliberately: the loop's
+# posture to both is the same — log it, re-derive next pass — so a distinction
+# here is one nothing would read.
+#
+# **Argument validation only.** Whether the pull request is open, a draft, a
+# fork head, mergeable, or in a configured repository is the loop's call.
+# Re-deriving any of it here would be a second gate that could disagree with
+# the first.
+#
+# **No configuration is read at all.** Everything the seam needs arrives on
+# argv, the label name included.
+#
+# Requires: gh-axi (authenticated against github.com), mktemp
 
 set -euo pipefail
 
-# The seam lives beside the script, so it is found whichever cwd this is run
-# from. `gh_graphql` used to be defined here as well, divergently, and the
-# divergence is why both mutations below spent months never reaching GitHub.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=gh.sh
-source "$SCRIPT_DIR/gh.sh"
+# The one string CodeRabbit parses for each command, spelled once. This is the
+# reason `autofix` and `review` are verbs rather than callers of `comment`: the
+# text is the seam's, so it lives in the seam.
+AUTOFIX_TRIGGER='@coderabbitai autofix'
+REVIEW_TRIGGER='@coderabbitai review'
 
-PLAN=""
-REPO="$PWD"
-SEEN_LIST=""
-DROPPED=0
-SURVIVING=0
-ORIGINAL_HEAD=""
-# `<thread node id>\t<sha as it landed on the branch>` per confirmed fix that
-# survived. Keyed by the thread rather than by position, so the reply can never
-# cite another thread's commit.
-PUSHED_MAP=""
+VERB=""
+REPO=""
+PR=""
+BODY_FILE=""
+ADD_LABEL=""
 
 usage() {
   cat <<'EOF'
-Usage: pr-writeback.sh --plan <plan.json> [--repo <path>] [--seen-list <path>]
+Usage: pr-writeback.sh <verb> --repo <owner/name> --pr <n> [flags]
 
-Pushes the confirmed fixes on a pull-request triage plan and posts the confirmed
-replies and resolves. Issues nothing at all for a thread that is not confirmed.
+Makes exactly one write to one pull request and reports what GitHub answered.
 
-Options:
-  --plan <path>        The triage plan the worker wrote and the operator confirmed.
-  --repo <path>        Worktree holding the PR's head branch (default: cwd).
-  --seen-list <path>   Append one line per thread this run leaves silent, so the
-                       loop stops re-dispatching at it until a reply lands.
-                       Nothing is recorded when this is not given.
+Verbs:
+  autofix   Post the CodeRabbit autofix command.
+  review    Post the CodeRabbit review command.
+  comment   Post a comment whose body is read from a file.
+  label     Add a label.
+
+Flags:
+  --repo <owner/name>  The repository on GitHub. Not a path.
+  --pr <n>             The pull-request number.
+  --body-file <path>   comment only: the body, which must not be empty.
+  --add <name>         label only: the label to add.
   -h, --help           Show this message.
+
+Exit codes:
+  0  the write landed
+  1  an argument error, or the write failed
+
+stdout carries GitHub's response verbatim; stderr carries this script's own
+prose.
 EOF
 }
 
-die() {
-  printf 'pr-writeback: %s\n' "$*" >&2
-  exit 1
+# Every word this script says for itself goes to stderr, so stdout stays the
+# response and nothing else.
+say() { printf 'pr-writeback: %s\n' "$*" >&2; }
+
+die() { say "$@"; exit 1; }
+
+# --- arguments ----------------------------------------------------------------
+
+# A flag that belongs to another verb is its own error rather than an unknown
+# one, because `autofix --body-file` is a caller trying to send free text down
+# a channel that does not take it, and saying so is more use than "unknown".
+flag_of() {
+  local flag="$1" verb="$2"
+  [[ "$VERB" == "$verb" ]] || die "$flag is not a flag of ${VERB}"
 }
 
-say() { printf '%s\n' "$*"; }
-
-plan_get() { jq -r "$1" "$PLAN"; }
-
-# --- plan --------------------------------------------------------------------
-
-load_plan() {
-  [[ -f "$PLAN" ]] || die "plan not found: $PLAN"
-  jq empty "$PLAN" 2>/dev/null || die "plan is not valid JSON: $PLAN"
-
-  # `<owner>/<name>` is the whole identifier on GitHub: it addresses the API and
-  # it is what the daemon matches seen-list entries against, so unlike GitLab
-  # there is no second numeric id riding alongside it.
-  PROJECT=$(plan_get '.repo // empty')
-  PR_NUMBER=$(plan_get '.prNumber // empty')
-  SOURCE_BRANCH=$(plan_get '.sourceBranch // empty')
-  BASE_SHA=$(plan_get '.baseSha // empty')
-
-  [[ -n "$PROJECT" ]]       || die "plan is missing repo"
-  [[ -n "$PR_NUMBER" ]]     || die "plan is missing prNumber"
-  [[ -n "$SOURCE_BRANCH" ]] || die "plan is missing sourceBranch"
-  [[ -n "$BASE_SHA" ]]      || die "plan is missing baseSha"
-  [[ "$(plan_get '.threads | type')" == "array" ]] || die "plan is missing a threads array"
-  THREAD_COUNT=$(plan_get '.threads | length')
-
-  # A malformed confirmed entry stops the whole run rather than half-writing a
-  # thread: a FIX with no commit would push nothing and still say "Fixed in".
-  # The jq is run in its own step so a jq that *errors* cannot read as "nothing
-  # was wrong" — an empty answer must mean an empty answer.
-  local bad
-  bad=$(jq -r '
-    .threads[]
-    | select(.confirmed == true)
-    | select(
-        (.thread // "") == ""
-        or (.verdict == "FIX"    and (((.commit // "") == "") or ((.summary // "") == "")))
-        or (.verdict == "REFUSE" and ((.reply // "") == ""))
-        or (([.verdict] | inside(["FIX", "REFUSE", "ANSWER", "ESCALATE"])) | not)
-      )
-    | .thread // "<no thread id>"' "$PLAN") \
-    || die "plan could not be validated: $PLAN"
-  [[ -z "$bad" ]] || die "confirmed thread is incomplete: $(tr '\n' ' ' <<< "$bad")"
-}
-
-# The confirmed fixes in plan order — the order they are replayed onto the
-# branch. `confirmed_fixes` is shas alone, for comparing against the branch;
-# `confirmed_fix_rows` carries the thread each sha belongs to.
-confirmed_fixes() {
-  jq -r '.threads[] | select(.verdict == "FIX" and .confirmed == true) | .commit' "$PLAN"
-}
-
-confirmed_fix_rows() {
-  jq -r '.threads[]
-    | select(.verdict == "FIX" and .confirmed == true)
-    | [.thread, .commit] | @tsv' "$PLAN"
-}
-
-confirmed_count() {
-  jq -r '[.threads[] | select(.confirmed == true)] | length' "$PLAN"
-}
-
-confirmed_fix_count() {
-  jq -r '[.threads[] | select(.verdict == "FIX" and .confirmed == true)] | length' "$PLAN"
-}
-
-# --- git ---------------------------------------------------------------------
-
-git_repo() { git -C "$REPO" "$@"; }
-
-# Shas compare as one space-separated line, so an empty list and a blank line
-# never read differently.
-normalise_shas() { tr '\n' ' ' <<< "${1:-}" | tr -s ' ' | sed 's/^ //; s/ $//'; }
-
-pushed_sha() { awk -F'\t' -v d="$1" '$1 == d { print $2; exit }' <<< "$PUSHED_MAP"; }
-
-# Nothing here may run against a tree carrying work that is not in the plan:
-# rebuilding the branch resets it, and a reset would take uncommitted edits with
-# it. Every confirmed commit must also actually sit between baseSha and HEAD, or
-# the plan is describing a branch this is not.
-check_git_preconditions() {
-  git_repo rev-parse --verify "$BASE_SHA" >/dev/null 2>&1 \
-    || die "baseSha is not a commit in this repo: $BASE_SHA"
-  git_repo merge-base --is-ancestor "$BASE_SHA" HEAD \
-    || die "baseSha is not an ancestor of HEAD: $BASE_SHA"
-
-  local dirty
-  dirty=$(git_repo status --porcelain) || die "could not read the worktree state"
-  [[ -z "$dirty" ]] || die "worktree has uncommitted changes; commit or stash them first"
-
-  local sha
-  while IFS= read -r sha; do
-    [[ -n "$sha" ]] || continue
-    git_repo merge-base --is-ancestor "$sha" HEAD \
-      || die "confirmed commit is not on this branch: $sha"
-    git_repo merge-base --is-ancestor "$BASE_SHA" "$sha" \
-      || die "confirmed commit predates baseSha: $sha"
-  done < <(confirmed_fixes)
-}
-
-# Replay only the confirmed fixes onto baseSha. A rejected fix is simply never
-# picked, so it leaves no revert and no debris behind — and because every commit
-# involved is still unpushed, this rewrites nothing a reviewer has ever seen and
-# the push that follows is still a fast-forward.
-#
-# When the confirmed set already *is* the branch, the branch is left exactly as
-# it stands, so the ordinary "confirm everything" case keeps the very shas the
-# worker showed in its table.
-rebuild_branch() {
-  local wanted current did sha
-  wanted=$(confirmed_fixes)
-  current=$(git_repo rev-list --reverse "$BASE_SHA..HEAD") \
-    || die "could not list the branch's commits"
-
-  if [[ "$(normalise_shas "$wanted")" == "$(normalise_shas "$current")" ]]; then
-    while IFS=$'\t' read -r did sha; do
-      [[ -n "$did" ]] || continue
-      PUSHED_MAP+="$did"$'\t'"$sha"$'\n'
-      SURVIVING=$((SURVIVING + 1))
-    done < <(confirmed_fix_rows)
-    return 0
-  fi
-
-  # Recorded before the reset so a failed push can put the branch back exactly
-  # as the worker left it, rather than leaving the dropped commits reachable
-  # only through the reflog.
-  ORIGINAL_HEAD=$(git_repo rev-parse HEAD)
-  git_repo reset --hard "$BASE_SHA" >/dev/null || die "could not reset the branch to baseSha"
-  while IFS=$'\t' read -r did sha; do
-    [[ -n "$did" ]] || continue
-    if git_repo cherry-pick "$sha" >/dev/null 2>&1; then
-      PUSHED_MAP+="$did"$'\t'"$(git_repo rev-parse HEAD)"$'\n'
-      SURVIVING=$((SURVIVING + 1))
-    else
-      git_repo cherry-pick --abort >/dev/null 2>&1 || true
-      DROPPED=$((DROPPED + 1))
-    fi
-  done < <(confirmed_fix_rows)
-}
-
-# One push, explicitly onto the PR's head branch: an Orca checkout has no
-# upstream, so a bare `git push` has nothing to push to. Never --force.
-push_branch() {
-  if git_repo push origin "HEAD:$SOURCE_BRANCH"; then
-    return 0
-  fi
-  if [[ -n "$ORIGINAL_HEAD" ]] && git_repo reset --hard "$ORIGINAL_HEAD" >/dev/null 2>&1; then
-    say "branch restored to $ORIGINAL_HEAD"
-  fi
-  die "push to $SOURCE_BRANCH failed; nothing was written to GitHub"
-}
-
-# --- github ------------------------------------------------------------------
-
-# Both writes are GraphQL mutations, because a review thread is a GraphQL object
-# on GitHub: the node id the worker recorded is the whole address, and the REST
-# reply route would need the thread's first comment id instead.
-#
-# The reply text travels as a GraphQL variable rather than inside the query, so
-# a reviewer's own words can never be read as part of the document.
-#
-# `gh_graphql` comes from gh.sh and answers with the decoded response body,
-# which neither of these has any use for: the mutation either landed or it did
-# not, and the caller's table is the only thing that may reach stdout. Hence
-# the redirect.
-post_comment() {
-  local thread="$1" body="$2"
-  gh_graphql 'mutation($thread: ID!, $body: String!) {
-      addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $thread, body: $body}) {
-        comment { databaseId }
-      }
-    }' --field thread="$thread" --field body="$body" >/dev/null
-}
-
-resolve_thread() {
-  local thread="$1"
-  gh_graphql 'mutation($thread: ID!) {
-      resolveReviewThread(input: {threadId: $thread}) {
-        thread { isResolved }
-      }
-    }' --field thread="$thread" >/dev/null
-}
-
-# --- seen-list -----------------------------------------------------------------
-
-# One line per thread this run leaves silent, naming the thread and the newest
-# comment on it. The entry stops matching the moment a reviewer replies, so new
-# information reopens the case rather than sealing it.
-#
-# The file is append-only and disposable: losing it costs one repeated sweep of
-# pull requests that were already triaged, and nothing worse. A run given no
-# --seen-list, or a thread whose newest comment the worker did not record,
-# records nothing and says so rather than write a line the daemon could never
-# match.
-record_seen() {
-  local index="$1" verdict="$2" line
-  [[ -n "$SEEN_LIST" ]] || return 0
-  # lastCommentId is read out of the plan rather than passed in, so a comment id
-  # that is not a number stays the plan's problem instead of becoming a shell one.
-  line=$(jq -c --arg project "$PROJECT" --argjson pr "$PR_NUMBER" --arg verdict "$verdict" \
-    ".threads[$index] | select(.lastCommentId != null) | {
-       project: \$project,
-       pr: \$pr,
-       thread: .thread,
-       lastCommentId: .lastCommentId,
-       verdict: \$verdict
-     }" "$PLAN") && [[ -n "$line" ]] \
-    || { say "nothing recorded in the seen-list for thread $index: no lastCommentId"; return 0; }
-  printf '%s\n' "$line" >> "$SEEN_LIST" \
-    || say "seen-list append failed for thread $index: $SEEN_LIST"
-}
-
-# --- write-back ---------------------------------------------------------------
-
-# One pass over the plan, in order. Only a confirmed FIX that made it onto the
-# branch is resolved; a REFUSE gets its reply and the reviewer keeps the last
-# word; everything else is reported and left alone.
-write_back() {
-  local t did verdict confirmed reply summary commit pushed short
-
-  printf '\n| thread | verdict | commit | outcome |\n|---|---|---|---|\n'
-  for (( t = 0; t < THREAD_COUNT; t++ )); do
-    did=$(plan_get ".threads[$t].thread // empty")
-    verdict=$(plan_get ".threads[$t].verdict // empty")
-    # The same predicate jq selected on, so the two can never disagree about
-    # what "confirmed" means.
-    confirmed=$(plan_get ".threads[$t].confirmed == true")
-
-    if [[ "$verdict" != "FIX" && "$verdict" != "REFUSE" ]]; then
-      # A verdict the daemon would not recognise is reported like any other but
-      # never recorded — an entry it cannot read is worse than no entry.
-      if [[ "$verdict" == "ANSWER" || "$verdict" == "ESCALATE" ]]; then
-        record_seen "$t" "$verdict"
-      fi
-      printf '| %s | %s | — | reported only, nothing written |\n' "$did" "$verdict"
-      continue
-    fi
-
-    if [[ "$confirmed" != "true" ]]; then
-      # I saw what the worker proposed and chose not to take it. Nothing lands on
-      # the thread, so only the seen-list keeps the loop off it.
-      record_seen "$t" DECLINED
-      if [[ "$verdict" == "FIX" ]]; then
-        printf '| %s | ESCALATE | — | rejected, commit dropped |\n' "$did"
-      else
-        printf '| %s | REFUSE | — | rejected, nothing written |\n' "$did"
-      fi
-      continue
-    fi
-
-    if [[ "$verdict" == "REFUSE" ]]; then
-      reply=$(plan_get ".threads[$t].reply")
-      if post_comment "$did" "$reply"; then
-        printf '| %s | REFUSE | — | replied, left unresolved |\n' "$did"
-      else
-        printf '| %s | REFUSE | — | reply FAILED |\n' "$did"
-      fi
-      continue
-    fi
-
-    commit=$(plan_get ".threads[$t].commit")
-    pushed=$(pushed_sha "$did")
-    if [[ -z "$pushed" ]]; then
-      # Confirmed, but nothing reached the thread, so it is as silent as an
-      # escalation prepared by hand and is recorded as one.
-      record_seen "$t" ESCALATE
-      printf '| %s | ESCALATE | %s | would not replay, commit dropped |\n' "$did" "$commit"
-      continue
-    fi
-
-    short="${pushed:0:8}"
-    summary=$(plan_get ".threads[$t].summary")
-    if ! post_comment "$did" "Fixed in $short.
-
-$summary"; then
-      printf '| %s | FIX | %s | reply FAILED, left unresolved |\n' "$did" "$short"
-      continue
-    fi
-    if resolve_thread "$did"; then
-      printf '| %s | FIX | %s | replied and resolved |\n' "$did" "$short"
-    else
-      printf '| %s | FIX | %s | replied, resolve FAILED |\n' "$did" "$short"
-    fi
-  done
-}
-
-# --- main --------------------------------------------------------------------
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+  "") usage >&2; exit 1 ;;
+  autofix|review|comment|label) VERB="$1"; shift ;;
+  # The deleted interface began with a flag — `--plan`, `--repo <worktree>`,
+  # `--seen-list`. An operator with that command line in their shell history is
+  # told what changed rather than handed a bare usage block.
+  -*) say "no verb given: the verb comes before the flags"; usage >&2; exit 1 ;;
+  *) die "unknown verb: $1" ;;
+esac
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --plan) PLAN="${2:-}"; [[ -n "$PLAN" ]] || die "--plan needs a path"; shift 2 ;;
-    --repo) REPO="${2:-}"; [[ -n "$REPO" ]] || die "--repo needs a path"; shift 2 ;;
-    --seen-list) SEEN_LIST="${2:-}"; [[ -n "$SEEN_LIST" ]] || die "--seen-list needs a path"; shift 2 ;;
+    --repo) REPO="${2:-}"; [[ -n "$REPO" ]] || die "--repo needs a value"; shift 2 ;;
+    --pr) PR="${2:-}"; [[ -n "$PR" ]] || die "--pr needs a value"; shift 2 ;;
+    --body-file)
+      flag_of --body-file comment
+      BODY_FILE="${2:-}"; [[ -n "$BODY_FILE" ]] || die "--body-file needs a value"; shift 2 ;;
+    --add)
+      flag_of --add label
+      ADD_LABEL="${2:-}"; [[ -n "$ADD_LABEL" ]] || die "--add needs a value"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
-    *) printf 'unknown argument: %s\n' "$1" >&2; usage >&2; exit 1 ;;
+    *) die "unknown argument: $1" ;;
   esac
 done
 
-[[ -n "$PLAN" ]] || { usage >&2; exit 1; }
-for tool in jq git gh-axi; do
-  command -v "$tool" >/dev/null 2>&1 || die "required command not found on PATH: $tool"
-done
+[[ -n "$REPO" ]] || die "--repo is required"
+# `<owner>/<name>` is the whole identifier on GitHub. The old script read
+# --repo as a worktree path, so a stale command line would otherwise be taken
+# for a repository named after a directory.
+[[ "$REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || die "--repo must be owner/name, got: $REPO"
 
-load_plan
+[[ -n "$PR" ]] || die "--pr is required"
+[[ "$PR" =~ ^[1-9][0-9]*$ ]] || die "--pr must be a positive integer, got: $PR"
 
-# Confirming nothing is a valid answer, and it must cost the PR nothing at all —
-# no push, no comment, no resolve, not even a git read. The run still goes
-# through write_back, which issues no command either when nothing is confirmed,
-# and which is where the threads I left silent reach the seen-list.
+case "$VERB" in
+  comment)
+    [[ -n "$BODY_FILE" ]] || die "comment needs --body-file"
+    [[ -r "$BODY_FILE" && -f "$BODY_FILE" ]] || die "--body-file is not a readable file: $BODY_FILE"
+    # An empty body posts a blank comment. On the escalation path that destroys
+    # the record while the marker's absence claims nothing was ever posted, so
+    # the next pass neither re-posts nor recovers.
+    [[ -s "$BODY_FILE" ]] || die "--body-file is empty: $BODY_FILE"
+    ;;
+  label)
+    [[ -n "$ADD_LABEL" ]] || die "label needs --add"
+    ;;
+esac
+
+command -v gh-axi >/dev/null 2>&1 || die "required command not found on PATH: gh-axi"
+
+# --- the write ------------------------------------------------------------------
+
+# gh-axi's subcommand where one exists, never a raw API call: it matches what
+# the loop already does for its issue writes, `--body-file` is handled by the
+# tool rather than by a `--field` it might reinterpret, and the recorded argv
+# stays a line a human can read.
 #
-# git is touched only when a fix is actually going to be pushed. A run that only
-# carries confirmed refusals writes replies and nothing else, so it must not be
-# blocked by the state of the worktree it happens to be run in.
-if [[ "$(confirmed_count)" == "0" ]]; then
-  say "nothing confirmed — pull request #$PR_NUMBER is left exactly as it was"
-elif [[ "$(confirmed_fix_count)" != "0" ]]; then
-  check_git_preconditions
-  rebuild_branch
+# The response goes out on stdout whichever way the call went. gh-axi renders a
+# refusal as TOON on stdout as well, so the same forwarding carries both, and
+# the caller reads its meaning off the exit code rather than off the channel.
+#
+# Not every failure is one gh-axi renders, though. A rejected flag or a broken
+# token is gh-axi's own failure rather than GitHub's: it goes to stderr and
+# leaves stdout empty. Dropping that would hand the loop an empty `out=$(...)`
+# and an escalation comment with nothing pasted into it, which is the one thing
+# this channel exists to prevent — so stderr stands in when, and only when,
+# stdout is empty. Nothing is ever merged into a response gh-axi did render.
+#
+# "Verbatim" up to one detail: a command substitution eats trailing newlines and
+# the printf below puts exactly one back. Nothing reading this channel counts
+# blank lines, and gh.sh forwards its own failure text the same way.
+gh_write() {
+  local out status=0 errors
+  errors=$(mktemp "${TMPDIR:-/tmp}/pr-writeback.XXXXXX") || die "could not create a temporary file"
+  out=$(gh-axi "$@" 2>"$errors") || status=$?
+  if [[ -z "$out" && "$status" -ne 0 ]]; then out=$(cat "$errors"); fi
+  rm -f "$errors"
+  if [[ -n "$out" ]]; then printf '%s\n' "$out"; fi
+  return "$status"
+}
 
-  # The push comes before any comment, so a reply never cites a commit that is
-  # not on the branch, and a failed push exits without writing to GitHub at all.
-  if (( SURVIVING > 0 )); then
-    push_branch
-    say "pushed $SURVIVING commit(s) to $SOURCE_BRANCH"
-  else
-    say "no fix survived, nothing pushed"
-  fi
-  if (( DROPPED > 0 )); then
-    say "$DROPPED confirmed fix(es) would not replay and became escalations"
-  fi
-else
-  say "no fix confirmed, nothing pushed"
+write() {
+  case "$VERB" in
+    autofix) gh_write pr comment "$PR" --repo "$REPO" --body "$AUTOFIX_TRIGGER" ;;
+    review)  gh_write pr comment "$PR" --repo "$REPO" --body "$REVIEW_TRIGGER" ;;
+    comment) gh_write pr comment "$PR" --repo "$REPO" --body-file "$BODY_FILE" ;;
+    label)   gh_write pr edit "$PR" --repo "$REPO" --add-label "$ADD_LABEL" ;;
+    # Unreachable — the verb was matched on the way in — but a `case` with no
+    # default returns 0, and a silent success having issued no write is the one
+    # failure this script must not have.
+    *) die "no write defined for verb: $VERB" ;;
+  esac
+}
+
+if write; then
+  say "$VERB: $REPO#$PR"
+  exit 0
 fi
 
-write_back
+# What went wrong is on stdout already, in GitHub's own words. Repeating it here
+# would put the same bytes on two channels and invite a caller to read the wrong
+# one.
+say "$VERB failed on $REPO#$PR"
+exit 1
