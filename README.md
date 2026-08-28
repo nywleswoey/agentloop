@@ -42,10 +42,11 @@ A PR worker triages threads, prepares a local commit per fix, writes a plan, and
 
 gh-axi renders every answer as TOON and has no JSON output mode, so the scripts
 read it through one seam: `--jq 'tojson|@base64' --full`, which is the single
-shape TOON has nothing left to restructure. `gh_json` decodes it and everything
-downstream is ordinary jq over ordinary JSON. Labels are written as deltas
-(`issue edit --add-label/--remove-label`) rather than as a whole set, which is
-what keeps the claim a single atomic call.
+shape TOON has nothing left to restructure. `gh.sh` holds that seam — `gh_json`
+decodes it and everything downstream is ordinary jq over ordinary JSON — and
+both scripts source it rather than carrying their own copy. Labels are written
+as deltas (`issue edit --add-label/--remove-label`) rather than as a whole set,
+which is what keeps the claim a single atomic call.
 
 The loop creates its two labels in each configured repository at startup if they
 are not already there.
@@ -175,9 +176,12 @@ A malformed confirmed entry aborts the whole run rather than half-writing a thre
 ```bash
 ./tests/test-agent-loop.sh
 ./tests/test-pr-writeback.sh
+./tests/test-gh.sh
 ```
 
-Both suites run the real scripts against stub CLIs in `tests/bin` (`git`, `gh-axi`, `orca`) and assert on the log lines emitted and the argv handed to those stubs. The stub directory is the only seam — no function inside the scripts is reached into directly.
+The first two run the real scripts against stub CLIs in `tests/bin` (`git`, `gh-axi`, `orca`) and assert on the log lines emitted and the argv handed to those stubs. No function inside either script is reached into directly.
+
+`test-gh.sh` is the one exception, and the only one: it sources `gh.sh` and calls `gh_error_class` directly. The classifier is a pure table over error text whose value is that every row is right, and the rows that matter most — a 405 refusing a draft merge, a 409 losing a race with a push — are ones no stub run produces as a side effect. `gh_graphql` is still tested only through the two scripts that call it; `gh_json` is reached here for one thing alone — that the failure text it captures survives to the caller, on both the channels a caller can read it from.
 
 ---
 
@@ -186,11 +190,13 @@ Both suites run the real scripts against stub CLIs in `tests/bin` (`git`, `gh-ax
 ```
 agent-loop.sh                     the daemon
 pr-writeback.sh                   the only writer to GitHub review threads
+gh.sh                             the GitHub seam, sourced by both
 agent-loop.config.example.json    copy this to agent-loop.config.json
 tests/
   lib.sh                          shared assertions
   test-agent-loop.sh              daemon suite
   test-pr-writeback.sh            writeback suite
+  test-gh.sh                      the seam's error classifier
   bin/                            stub git, gh-axi, orca
   fixtures/                       canned CLI responses
 ```

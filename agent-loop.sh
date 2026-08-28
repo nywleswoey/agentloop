@@ -82,63 +82,12 @@ require_tools() {
 
 # --- gh-axi ------------------------------------------------------------------
 
-# gh-axi renders every answer as TOON and has no JSON output mode, so a script
-# cannot read what it prints the way it would read `gh`'s. What it will do is
-# run a jq expression against the response before rendering it, and
-# `tojson | @base64` is the one shape TOON has nothing left to restructure: a
-# single opaque token. Decoding it hands the response back byte for byte, so
-# every read below is an ordinary jq over ordinary JSON again.
-#
-# When --paginate is used, gh-axi produces multiple TOON documents, one per
-# page. Each must be decoded separately and then combined into a single JSON
-# array before the caller consumes it.
-#
-# `--full` is not optional: gh-axi truncates a long response by default, and a
-# truncated base64 token decodes to a torn JSON document. A single repository
-# read is already past the cap, so without this every project fails to resolve.
-gh_json() {
-  local response bodies page_count decoded_pages
-  response=$(gh-axi api "$@" --full --jq 'tojson|@base64' 2>/dev/null) || return 1
-  # A refusal is TOON as well and carries no body at all, so the shape of the
-  # answer is checked rather than the exit status trusted on its own.
-  [[ "$response" == error:* ]] && return 1
-  [[ "$response" == *"truncated: true"* ]] && return 1
-
-  # Extract all body fields (one per page if --paginate was used).
-  bodies=$(sed -n 's/^  body: //p' <<< "$response")
-  [[ -n "$bodies" ]] || return 1
-
-  # Decode each page, one base64 body per line.
-  decoded_pages=""
-  while IFS= read -r page_body; do
-    [[ -n "$page_body" ]] || continue
-    decoded=$(base64 -d <<< "$page_body" 2>/dev/null) || return 1
-    decoded_pages+="$decoded"$'\n'
-  done <<< "$bodies"
-
-  # Count how many pages we got (number of non-empty lines).
-  page_count=$(grep -c . <<< "$decoded_pages" || echo 0)
-
-  # Single page: return as-is (most common case, no jq needed).
-  if [[ "$page_count" -eq 1 ]]; then
-    printf '%s' "${decoded_pages%$'\n'}"
-    return 0
-  fi
-
-  # Multiple pages: combine into a single JSON array.
-  [[ "$page_count" -gt 0 ]] || return 1
-  printf '%s' "$decoded_pages" | jq -s 'add'
-}
-
-# One GraphQL document. GitHub answers a bad query with a 200 and an `errors`
-# block, which would otherwise reach the caller looking like a response, so it
-# is turned back into a failure here — once, rather than at every call site.
-gh_graphql() {
-  local response
-  response=$(gh_json POST /graphql --field query="$1") || return 1
-  jq -e 'has("errors") | not' <<< "$response" >/dev/null 2>&1 || return 1
-  printf '%s' "$response"
-}
+# `gh_json`, `gh_graphql` and `gh_error_class` live in gh.sh, which
+# pr-writeback.sh sources as well. They used to exist twice, once in each
+# script, and the copies drifted far enough apart that one of them had never
+# worked against real GitHub. One definition is what stops that recurring.
+# shellcheck source=gh.sh
+source "$SCRIPT_DIR/gh.sh"
 
 # --- logging -----------------------------------------------------------------
 
