@@ -179,9 +179,11 @@ A malformed confirmed entry aborts the whole run rather than half-writing a thre
 ./tests/test-gh.sh
 ```
 
-The first two run the real scripts against stub CLIs in `tests/bin` (`git`, `gh-axi`, `orca`) and assert on the log lines emitted and the argv handed to those stubs. No function inside either script is reached into directly.
+The first two run the real scripts against stub CLIs in `tests/bin` (`git`, `gh-axi`, `orca`, `date`) and assert on the log lines emitted and the argv handed to those stubs. No function inside either script is reached into directly.
 
-`test-gh.sh` is the one exception, and the only one: it sources `gh.sh` and calls `gh_error_class` directly. The classifier is a pure table over error text whose value is that every row is right, and the rows that matter most — a 405 refusing a draft merge, a 409 losing a race with a push — are ones no stub run produces as a side effect. `gh_graphql` is still tested only through the two scripts that call it; `gh_json` is reached here for one thing alone — that the failure text it captures survives to the caller, on both the channels a caller can read it from.
+Time is one of those stubs. `date` is a CLI, so `$STUB_NOW` freezes what "now" is for a case without the scripts gaining a single line of test-only surface — they keep calling `date` as they always have. The binding that buys: **time comes from `date(1)`, never from a shell built-in.** `printf '%(%s)T'`, `$SECONDS` and `$EPOCHSECONDS` bypass `PATH` silently, and a timeout test that quietly runs against wall time is green for the wrong reason forever. The suite pins that rule with a check over the scripts' own source — the one assertion in the project that reads code rather than behaviour, because this is the one property no behaviour can reveal.
+
+`test-gh.sh` is the one exception, and the only one: it sources `gh.sh` and calls `gh_error_class` directly. The classifier is a pure table over error text whose value is that every row is right, and the rows that matter most — a 405 refusing a draft merge, a 409 losing a race with a push — are ones no stub run produces as a side effect. `gh_json` and `gh_graphql` are reached here for one thing alone — that the failure text they capture survives to the caller, on each of the two channels a caller can read it from. Everything else about them is tested only through the two scripts that call them, which is what keeps them from drifting back into two copies.
 
 ---
 
@@ -197,7 +199,7 @@ tests/
   test-agent-loop.sh              daemon suite
   test-pr-writeback.sh            writeback suite
   test-gh.sh                      the seam's error classifier
-  bin/                            stub git, gh-axi, orca
+  bin/                            stub git, gh-axi, orca, date
   fixtures/                       canned CLI responses
 ```
 

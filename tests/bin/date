@@ -1,0 +1,163 @@
+#!/bin/bash
+#
+# Stub `date` for the agent-loop test suites.
+#
+# `date` is a CLI, so the stub directory the suites already put on PATH is the
+# whole mechanism. There is no injected clock, no test-only override read by
+# production code, and nothing in agent-loop.sh or pr-writeback.sh changes at
+# all: they keep calling `date` exactly as they always have.
+#
+# That is also the one rule the rest of the project has to respect. **Time comes
+# from `date(1)`, never from a shell built-in.** `printf '%(%s)T'`, $SECONDS and
+# $EPOCHSECONDS all bypass this file silently, and a timeout test that quietly
+# runs against the real clock is worse than no test at all — it is green for the
+# wrong reason and stays green forever. tests/test-agent-loop.sh pins that rule.
+#
+# $STUB_NOW freezes what "now" is. Unset — the default — this is the real date
+# byte for byte, so every case that does not care about time is unaffected.
+# Set, it takes either an ISO-8601 instant or epoch seconds:
+#
+#   STUB_NOW=2026-08-27T12:00:00Z       # reads as a time; prefer this
+#   STUB_NOW=1787832000                 # also accepted
+#
+# **Only now is frozen, and only now.** An invocation that *names* its instant —
+# BSD's `-r 123` and `-f fmt`, GNU's `-d @123` or `-d 2026-08-27T12:00:00Z`,
+# either flavour's `--reference` — is a conversion, and freezing it would
+# corrupt the very timestamps a case is comparing against. Those pass through.
+#
+# Everything else reads the clock, including several that look like they do not:
+#
+#   date -j +%s          BSD; `-j` alone is a plain read, it is only a
+#                        conversion when it comes with `-f`
+#   date -v-90M          BSD; ninety minutes before *now*
+#   date -d '90 min ago' GNU; the same
+#
+# The first two are frozen. The third cannot be — GNU resolves the phrase
+# against its own clock — so it is refused out loud. Answering any of them off
+# wall time while a case believes time is frozen is the identical failure to
+# reading the clock from a built-in, and just as silent.
+#
+# Nothing here forces UTC either. The frozen instant is handed to the real date
+# and the caller's own flags decide how it is rendered, so `TZ` keeps working.
+#
+# Unlike the other stubs here this one is deliberately *not* a catalogue of
+# calls it recognises. The others reject what they were not taught, because a
+# permissive fake is how a call that is well-formed in argv and wrong at the far
+# end stays green. This one has no far end to get wrong: every answer it gives
+# is produced by the real `date`, handed an explicit instant. What it rejects is
+# narrower and more specific — an invocation it cannot answer without consulting
+# the clock it was told to freeze.
+
+set -uo pipefail
+
+REAL_DATE=""
+for candidate in /bin/date /usr/bin/date; do
+  [[ -x "$candidate" ]] && { REAL_DATE="$candidate"; break; }
+done
+[[ -n "$REAL_DATE" ]] || { echo "stub date: no real date on this system" >&2; exit 1; }
+
+[[ -n "${STUB_NOW:-}" ]] || exec "$REAL_DATE" "$@"
+
+# GNU has --version, BSD does not. Probed this way rather than by trying a flag
+# whose meaning differs between them: `-r` takes epoch seconds on BSD and a
+# *file* on GNU, so a cwd that happened to hold a file named `0` would answer
+# the probe wrong and silently mis-drive every frozen call after it.
+FLAVOUR=bsd
+"$REAL_DATE" --version >/dev/null 2>&1 && FLAVOUR=gnu
+
+# --- what kind of call is this ------------------------------------------------
+
+# Short flags cluster (`-jf fmt`, `-ur 0`, `-Iseconds`), so argv is walked a
+# letter at a time rather than matched as whole words: `-Iseconds` contains a
+# `d`, and a glob loose enough to catch `-ud` would read it as one.
+#
+# `d f r v I` take a value — the rest of the cluster if there is one, the next
+# argument otherwise — so nothing after them in the same argument is a flag.
+NAMES_INSTANT=false
+DATE_VALUE=""
+AWAITING=""
+
+for arg in "$@"; do
+  if [[ -n "$AWAITING" ]]; then
+    [[ "$AWAITING" == "d" ]] && DATE_VALUE="$arg"
+    AWAITING=""
+    continue
+  fi
+  case "$arg" in
+    --date=*)      DATE_VALUE="${arg#--date=}"; continue ;;
+    --date)        AWAITING=d; continue ;;
+    --reference=*) NAMES_INSTANT=true; continue ;;
+    --reference)   NAMES_INSTANT=true; AWAITING=x; continue ;;
+    --*|+*|"")     continue ;;
+    -*)            ;;
+    *)             continue ;;
+  esac
+
+  cluster="${arg#-}"
+  offset=0
+  while (( offset < ${#cluster} )); do
+    letter="${cluster:offset:1}"
+    case "$letter" in
+      f|r) NAMES_INSTANT=true ;;
+    esac
+    case "$letter" in
+      d|f|r|v|I)
+        rest="${cluster:offset+1}"
+        if [[ "$letter" == "d" ]]; then
+          if [[ -n "$rest" ]]; then DATE_VALUE="$rest"; else AWAITING=d; fi
+        elif [[ -z "$rest" && "$letter" != "I" ]]; then
+          AWAITING=x
+        fi
+        break
+        ;;
+    esac
+    (( offset++ ))
+  done
+done
+
+# A `-d` value this stub can hand to the real date without the real clock
+# getting involved. Anything else — `now`, `yesterday`, `90 minutes ago` — is
+# resolved by GNU against its own clock, and there is no spelling of it that
+# would resolve against the frozen one.
+if [[ -n "$DATE_VALUE" ]]; then
+  case "$DATE_VALUE" in
+    @[0-9]*|[0-9][0-9][0-9][0-9]-*) NAMES_INSTANT=true ;;
+    *) if [[ "$DATE_VALUE" =~ ^[0-9]+$ ]]; then
+         NAMES_INSTANT=true
+       else
+         echo "stub date: -d '$DATE_VALUE' is relative to now, which is frozen; name the instant" >&2
+         exit 1
+       fi ;;
+  esac
+fi
+
+$NAMES_INSTANT && exec "$REAL_DATE" "$@"
+
+# --- freeze -------------------------------------------------------------------
+
+# STUB_NOW as epoch seconds, whichever way it was written. GNU parses anything
+# `-d` takes; BSD needs the format spelled out, so the spellings a case is
+# likely to use are tried in turn rather than one being imposed.
+if [[ "$STUB_NOW" =~ ^[0-9]+$ ]]; then
+  EPOCH="$STUB_NOW"
+elif [[ "$FLAVOUR" == "gnu" ]]; then
+  EPOCH=$("$REAL_DATE" -u -d "$STUB_NOW" +%s 2>/dev/null) || EPOCH=""
+else
+  EPOCH=""
+  for format in '%Y-%m-%dT%H:%M:%SZ' '%Y-%m-%dT%H:%M:%S' '%Y-%m-%d %H:%M:%S' '%Y-%m-%d'; do
+    EPOCH=$("$REAL_DATE" -u -j -f "$format" "$STUB_NOW" +%s 2>/dev/null) && break
+    EPOCH=""
+  done
+fi
+[[ -n "$EPOCH" ]] \
+  || { echo "stub date: STUB_NOW is not an instant this stub can read: $STUB_NOW" >&2; exit 1; }
+
+# The real date does the formatting, so every format string a caller uses keeps
+# working without this file having to know any of them. Everything else in argv
+# rides along untouched, which is how BSD's `-v` adjustments land on the frozen
+# instant instead of on the real one, and how `-u` stays the caller's choice.
+if [[ "$FLAVOUR" == "gnu" ]]; then
+  exec "$REAL_DATE" -d "@$EPOCH" "$@"
+else
+  exec "$REAL_DATE" -r "$EPOCH" "$@"
+fi

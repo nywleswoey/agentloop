@@ -246,4 +246,53 @@ printf '%s\n' "$SUBSHELL_OUT" > "$SCRATCH/subshell-ok.txt"
 check_grep '{"login":"nywleswoey"}' "$SCRATCH/subshell-ok.txt"
 check_no_grep 'error:' "$SCRATCH/subshell-ok.txt"
 
+CURRENT="gh_graphql forwards the failure text rather than swallowing it"
+echo "== $CURRENT"
+
+# gh_graphql substitutes gh_json, so gh_json's GH_ERROR dies in that subshell
+# and the only copy of the text is the one gh_graphql is holding. It used to
+# drop it at `|| return 1`, which left a GraphQL failure reaching the caller
+# through neither channel the header promises — and a caller classifying that
+# would read empty text, get the rule-4 default, and retry a refusal every pass.
+#
+# The assertion is that the two calls agree, not what they say. The stub's
+# injected rendering is not one gh-axi can actually produce (`code: HTTP_ERROR`
+# is not in its vocabulary) and a later ticket replaces it with measured bytes;
+# what must hold either way is that gh_graphql forwards whatever gh_json saw,
+# unaltered.
+QUERY='{ search(query: "is:pr is:open author:nywleswoey", type: ISSUE, first: 100) { nodes { ... on PullRequest { number } } } }'
+
+export STUB_GH_FAIL=prs
+
+# What gh_json alone saw, read from the global in the shape that keeps it.
+GH_ERROR="sentinel"
+gh_json POST graphql --field query="$QUERY" >/dev/null 2>&1
+VIA_GH_JSON="$GH_ERROR"
+printf '%s\n' "$VIA_GH_JSON" > "$SCRATCH/graphql-direct.txt"
+check_grep 'error:' "$SCRATCH/graphql-direct.txt"
+
+# Each channel in the call shape that can reach it — the same split the header
+# describes, and the reason both exist. Substituting gh_graphql puts it in a
+# subshell too, so its global is no more survivable than gh_json's; that is not
+# a second bug, it is why the text also goes to stdout.
+VIA_STDOUT="$(gh_graphql "$QUERY" 2>/dev/null)" || true
+check "the substituted shape carries it on stdout" test "$VIA_STDOUT" = "$VIA_GH_JSON"
+
+GH_ERROR="sentinel"
+gh_graphql "$QUERY" >/dev/null 2>&1
+check "the unsubstituted shape carries it in GH_ERROR" test "$GH_ERROR" = "$VIA_GH_JSON"
+unset STUB_GH_FAIL
+
+check "the forwarded text is not empty, so the classifier is not defaulting" \
+  test -n "$VIA_STDOUT"
+
+# The other half of the same global: gh_graphql substitutes gh_json, so
+# gh_json's clear dies in that subshell too. Without gh_graphql clearing on
+# entry, a caller holding a real refusal from an earlier call would still be
+# holding it after this one succeeded.
+GH_ERROR="$(render 'Pull Request is still a draft (HTTP 405)' UNKNOWN)"
+gh_graphql "$QUERY" >/dev/null 2>&1
+check "a successful gh_graphql clears a refusal left by an earlier call" \
+  test -z "$GH_ERROR"
+
 report

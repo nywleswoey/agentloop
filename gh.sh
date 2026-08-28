@@ -70,7 +70,7 @@ gh_json() {
   [[ "$response" == error:* ]] && ok=false
   if ! $ok; then
     GH_ERROR="$response"
-    [[ -n "$response" ]] && printf '%s\n' "$response"
+    if [[ -n "$response" ]]; then printf '%s\n' "$response"; fi
     return 1
   fi
   [[ "$response" == *"truncated: true"* ]] && return 1
@@ -123,7 +123,26 @@ gh_json() {
 gh_graphql() {
   local query="$1" response
   shift
-  response=$(gh_json POST graphql --field query="$query" "$@") || return 1
+  # Cleared here as well as in gh_json, and not only for tidiness: the call
+  # below is a substitution, so gh_json's clear happens in a subshell and dies
+  # there. Without this line a caller that read a real refusal from an earlier
+  # direct call would still be holding it after this one succeeded — which is
+  # the stale-error case the header rules out.
+  GH_ERROR=""
+  # Same subshell, the other direction: gh_json's capture dies there too, so the
+  # only copy of the failure text is the one sitting in $response. Forwarded on
+  # both channels, or a caller classifying a GraphQL failure would read empty
+  # text, get the rule-4 default, and retry a refusal on every pass.
+  if ! response=$(gh_json POST graphql --field query="$query" "$@"); then
+    GH_ERROR="$response"
+    if [[ -n "$response" ]]; then printf '%s\n' "$response"; fi
+    return 1
+  fi
+  # A 200 carrying an `errors` block is a different failure: GitHub refused the
+  # document and gh-axi succeeded, so there are no `error:`/`code:` lines to
+  # forward and inventing some would put a status in GH_ERROR that nothing
+  # returned. It stays empty, which classifies transient — correct here, since
+  # a document GitHub would not run says nothing about what it decided.
   jq -e 'has("errors") | not' <<< "$response" >/dev/null 2>&1 || return 1
   printf '%s' "$response"
 }
