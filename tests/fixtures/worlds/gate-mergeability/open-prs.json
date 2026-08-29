@@ -262,6 +262,22 @@
               "login": "nywleswoey"
             },
             "baseRefName": "main"
+          },
+          {
+            "number": 266,
+            "title": "the specimen: a required check pending, reported twice through two fields",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/266",
+            "headRefName": "the-specimen",
+            "headRefOid": "266a266a266a266a266a266a266a266a266a266a",
+            "labels": {
+              "nodes": []
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
           }
         ]
       }

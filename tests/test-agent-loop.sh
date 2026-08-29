@@ -1880,16 +1880,16 @@ check "the rate-limit block arrived by editing a much older comment" \
 
 # --- pr phase: V3's classification, value by value --------------------------------------
 
-# **One signal, one veto**, exhaustively. Sixteen pull requests, one per value of
+# **One signal, one veto**, exhaustively. Seventeen pull requests, one per value of
 # each of the two fields V3 reads, all else held constant — so what differs in
 # the verdict is caused by the classification and by nothing else.
 #
 # The fourteen that enumerate the two fields each carry a *guarded* path, so V4
 # says no and the handover is always written: that is what makes the two V3 rows
 # readable in a captured body for the values that would otherwise defer or merge
-# in silence, and it holds the constant veto off V3's own axes. The last two —
-# 264 and 265 — drop it, and are about what the gate does with V3's answer rather
-# than what the answer is. The log tail's `mergeability=` key carries the
+# in silence, and it holds the constant veto off V3's own axes. The last three —
+# 264, 265 and 266 — drop it, and are about what the gate does with V3's answer
+# rather than what the answer is. The log tail's `mergeability=` key carries the
 # strictest of the two axes, which is V3's own outcome; the rows carry the axes.
 #
 # The classification, restated as the rule the fixtures encode — for a veto `X`
@@ -1905,7 +1905,7 @@ check "the rate-limit block arrived by editing a much older comment" \
 # under the rows GitHub does not document: `defer` is closed under union of
 # causes where `no` and `ok` are not.
 #
-# No `--no-merge` here, unlike the omnibus gate world: not one of these sixteen
+# No `--no-merge` here, unlike the omnibus gate world: not one of these seventeen
 # reaches a merge verdict, so the per-repository merge bound never comes into it
 # and the assertion at the bottom that nothing was merged is a finding rather
 # than a restatement of the flag.
@@ -1958,29 +1958,37 @@ check_grep "| defer | GitHub's merge state is not one this veto can conclude fro
 check_grep "$MG_CLOCK" "$STUB_STATE/pr-body-254.txt"
 
 # `DRAFT` — rule 3, reclassified from `no`. Draft is the scope filter's fact and
-# not V3's, and un-drafting is not a push, so the head never moves.
+# not V3's. The enumeration drops drafts, so the only pull request that reaches
+# here carrying this value is one drafted between that read and this one — the
+# fixture is not draft, because what is under test is the classification and not
+# the race that delivers it.
 check_grep "$MG_PR#255 255a255a255a255a255a255a255a255a255a255a assessable $MG_TAIL verdict=escalate risk=ok checks=ok mergeability=defer blast=no" "$OUT"
 check_grep "| defer | GitHub's merge state is not one this veto can conclude from | \`state=DRAFT\` |" "$STUB_STATE/pr-body-255.txt"
+check_grep "$MG_CONFLICT_OK" "$STUB_STATE/pr-body-255.txt"
 
 # `HAS_HOOKS` — rule 3, reclassified from `no`. A pre-receive hook is a
 # repository condition no veto owns.
 check_grep "$MG_PR#256 256a256a256a256a256a256a256a256a256a256a assessable $MG_TAIL verdict=escalate risk=ok checks=ok mergeability=defer blast=no" "$OUT"
 check_grep "| defer | GitHub's merge state is not one this veto can conclude from | \`state=HAS_HOOKS\` |" "$STUB_STATE/pr-body-256.txt"
+check_grep "$MG_CONFLICT_OK" "$STUB_STATE/pr-body-256.txt"
 
 # `UNKNOWN` — rule 3, unchanged. GitHub is still computing.
 check_grep "$MG_PR#257 257a257a257a257a257a257a257a257a257a257a assessable $MG_TAIL verdict=escalate risk=ok checks=ok mergeability=defer blast=no" "$OUT"
 check_grep "| defer | GitHub's merge state is not one this veto can conclude from | \`state=UNKNOWN\` |" "$STUB_STATE/pr-body-257.txt"
+check_grep "$MG_CONFLICT_OK" "$STUB_STATE/pr-body-257.txt"
 
 # Empty — rule 3, reclassified from `no`. A field that did not arrive is an
 # unknown cause set, and unknown classifies as self-retracting.
 check_grep "$MG_PR#258 258a258a258a258a258a258a258a258a258a258a assessable $MG_TAIL verdict=escalate risk=ok checks=ok mergeability=defer blast=no" "$OUT"
 check_grep "| defer | GitHub's merge state is not one this veto can conclude from | \`state=none\` |" "$STUB_STATE/pr-body-258.txt"
+check_grep "$MG_CONFLICT_OK" "$STUB_STATE/pr-body-258.txt"
 
 # A value the loop has never heard of — rule 3, and the `else` arm inverted from
 # `no`. **A merge state GitHub adds tomorrow defers that one pull request rather
 # than escalating the queue.**
 check_grep "$MG_PR#259 259a259a259a259a259a259a259a259a259a259a assessable $MG_TAIL verdict=escalate risk=ok checks=ok mergeability=defer blast=no" "$OUT"
 check_grep "| defer | GitHub's merge state is not one this veto can conclude from | \`state=SOMETHING_GITHUB_ADDED\` |" "$STUB_STATE/pr-body-259.txt"
+check_grep "$MG_CONFLICT_OK" "$STUB_STATE/pr-body-259.txt"
 
 # --- the conflict axis, against a merge state that raises nothing -----------------------
 
@@ -2001,10 +2009,12 @@ check_grep "$MG_STATE_OK" "$STUB_STATE/pr-body-261.txt"
 # Empty — rule 3, reclassified from `no`.
 check_grep "$MG_PR#262 262a262a262a262a262a262a262a262a262a262a assessable $MG_TAIL verdict=escalate risk=ok checks=ok mergeability=defer blast=no" "$OUT"
 check_grep "| defer | GitHub has not settled whether this pull request conflicts | \`mergeable=none\` |" "$STUB_STATE/pr-body-262.txt"
+check_grep "$MG_STATE_OK" "$STUB_STATE/pr-body-262.txt"
 
 # A conflict value the loop has never heard of — rule 3, reclassified from `no`.
 check_grep "$MG_PR#263 263a263a263a263a263a263a263a263a263a263a assessable $MG_TAIL verdict=escalate risk=ok checks=ok mergeability=defer blast=no" "$OUT"
 check_grep "| defer | GitHub has not settled whether this pull request conflicts | \`mergeable=SOMETHING_NEW\` |" "$STUB_STATE/pr-body-263.txt"
+check_grep "$MG_STATE_OK" "$STUB_STATE/pr-body-263.txt"
 
 # --- the clock is emitted on a defer and on nothing else --------------------------------
 
@@ -2047,9 +2057,25 @@ check_grep "$MG_PR#265 265a265a265a265a265a265a265a265a265a265a assessable $MG_T
 check_no_grep "pr comment 265 --repo nywleswoey/automation" "$STUB_CALLS"
 check_no_grep "pr edit 265 --repo nywleswoey/automation" "$STUB_CALLS"
 
+# --- the specimen, whole ----------------------------------------------------------------
+
+# 266 is the shape the defect was found in: **one fact reported twice through two
+# fields.** A required check has not reported yet, so the rollup carries it as
+# `pg-gate` pending and `mergeStateStatus` carries the same fact as `BLOCKED`.
+# V2 owns it and defers naming the context; V3's merge-state axis defers because
+# the cause is not its own; the conflict axis passes. Nothing says no, so the
+# verdict is `defer` and the pull request waits in silence until the check lands
+# — where before this it was handed over on a cause that retracted itself
+# twenty-nine seconds later.
+check_grep "$MG_PR#266 266a266a266a266a266a266a266a266a266a266a assessable $MG_TAIL verdict=defer risk=ok checks=defer mergeability=defer blast=ok age=1800 bound=3600" "$OUT"
+check_no_grep "pr comment 266 --repo nywleswoey/automation" "$STUB_CALLS"
+check_no_grep "pr edit 266 --repo nywleswoey/automation" "$STUB_CALLS"
+check "the two fields really do carry the one fact" \
+  test "$(jq -r '[.data.repository.pullRequest.mergeStateStatus, ([.data.repository.pullRequest.commits.nodes[-1].commit.statusCheckRollup.contexts.nodes[] | select(.state == "PENDING") | .context] | join(","))] | join(" ")' "$FIXTURES/worlds/gate-mergeability/pr-266.json")" = "BLOCKED pg-gate"
+
 # One line per pull request, one action at most on each, and nothing merged.
 check "one state line per pull request" \
-  test "$(grep -cE '^[0-9TZ:-]+ pr nywleswoey/automation#' "$OUT")" -eq 16
+  test "$(grep -cE '^[0-9TZ:-]+ pr nywleswoey/automation#' "$OUT")" -eq 17
 check "nothing at all was merged" \
   test "$(grep -cE 'pulls/[0-9]+/merge' "$STUB_CALLS")" -eq 0
 

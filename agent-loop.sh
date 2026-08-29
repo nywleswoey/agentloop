@@ -1592,10 +1592,14 @@ merge_pr() {
 # passing rows are what tell them where *not* to look.
 #
 # The verdict column reads `ok`, `no`, `defer` — and `note` for a row that
-# judged nothing at all. There is exactly one of those: CodeRabbit's reply to a
-# nudge, pasted verbatim because **nothing keys on it**. Giving it `ok` would
-# claim a judgement was made about prose the loop is specifically forbidden to
-# parse.
+# judged nothing at all. There are two of those, and both are rows the reader
+# needs beside a judgement rather than as one. CodeRabbit's reply to a nudge is
+# pasted verbatim because **nothing keys on it**, and giving it `ok` would claim
+# a judgement was made about prose the loop is specifically forbidden to parse.
+# The gate clock's row carries the age and the bound and nothing else: the clock
+# is not a veto, so any verdict on that row would be a judgement the combination
+# does not read and the operator would have to reconcile against the rows that
+# actually deferred.
 # The tab is the join and the newline ends the row, so either one inside a field
 # would reshape the row into a different one rather than corrupt it visibly —
 # the one failure a record must not have. The reader is a `read` with `IFS`, and
@@ -2103,11 +2107,20 @@ risk_gate() {
       GATE_REASONS+=("$(reason ok "GitHub's merge state raises nothing this veto owns" \
         "state=$mergestate")") ;;
     # Rule 3 — `BLOCKED` (mixed causes, one of which retracts itself), `DRAFT`
-    # (the scope filter's fact, and un-drafting is not a push), `HAS_HOOKS` (a
-    # repository condition no veto owns), `UNKNOWN`, and the `else`: empty, or a
-    # value GitHub adds tomorrow. The `else` defers **one pull request** rather
-    # than escalating the queue, which is what makes a schema change a bounded
-    # surprise.
+    # (the scope filter's fact; the enumeration drops drafts, so only a pull
+    # request drafted between that read and this one arrives here, and it is not
+    # V3's to judge either way), `HAS_HOOKS` (a repository condition no veto
+    # owns), `UNKNOWN`, and the `else`: empty, or a value GitHub adds tomorrow.
+    # The `else` defers **one pull request** rather than escalating the queue,
+    # which is what makes a schema change a bounded surprise.
+    #
+    # ponytail: the accepted cost of this arm is a pull request GitHub blocks on
+    # a required review, an unresolved conversation, a deployment, a signature or
+    # a linear-history rule — checks green, merge refused, and no veto owning the
+    # reason. It defers to the gate clock and arrives as `stuck` where it used to
+    # be handed over on the first pass. Nothing here can tell those apart from a
+    # check that has not reported yet, because `BLOCKED`'s cause set is not
+    # documented; a fact that discriminates between them would let this arm split.
     *)
       v3state=defer
       GATE_REASONS+=("$(reason defer "GitHub's merge state is not one this veto can conclude from" \
@@ -2152,9 +2165,12 @@ risk_gate() {
   fi
 
   # **Any veto**, not `v2 || v3`. Stated over the whole set so that a defer arm
-  # added to a veto that has none today cannot be missed here.
-  if [[ "$v1" == "defer" || "$v2" == "defer" || "$v3conflict" == "defer" \
-        || "$v3state" == "defer" || "$v4" == "defer" ]]; then deferred=true; fi
+  # added to a veto that has none today cannot be missed here. It reads V3's
+  # outcome rather than its two axes, which is the same test — the strictest
+  # wins, so V3 defers exactly when an axis does — and it is the right one: a
+  # veto that splits again must not have to be re-enumerated at this line.
+  if [[ "$v1" == "defer" || "$v2" == "defer" || "$v3" == "defer" \
+        || "$v4" == "defer" ]]; then deferred=true; fi
 
   # V5 — the clock, and it only exists because a `defer` is silent on GitHub. It
   # runs from the head commit's date, so no pull request can sit undecided
@@ -2189,8 +2205,7 @@ risk_gate() {
   # that a `no` is only ever a cause an operator can retract — the failing check
   # that reaches here is the most actionable veto in the gate, and delaying it
   # behind a clock would buy no information.
-  if [[ "$v1" == "no" || "$v2" == "no" || "$v3conflict" == "no" \
-        || "$v3state" == "no" || "$v4" == "no" ]]; then
+  if [[ "$v1" == "no" || "$v2" == "no" || "$v3" == "no" || "$v4" == "no" ]]; then
     GATE_VERDICT=escalate
     GATE_KIND=escalate
   elif $deferred; then
