@@ -8,13 +8,13 @@
         },
         "nodes": [
           {
-            "number": 301,
-            "title": "Findings to fix once",
-            "isDraft": false,
+            "number": 402,
+            "title": "Work on issue 17, held in draft",
+            "isDraft": true,
             "isCrossRepository": false,
-            "url": "https://github.com/nywleswoey/automation/pull/301",
-            "headRefName": "pr-once",
-            "headRefOid": "301a301a301a301a301a301a301a301a301a301a",
+            "url": "https://github.com/nywleswoey/automation/pull/402",
+            "headRefName": "agent-loop-issue-17",
+            "headRefOid": "bbff17bbff17bbff17bbff17bbff17bbff17bbff",
             "labels": {
               "nodes": []
             }

@@ -2,6 +2,10 @@
   "data": {
     "repository": {
       "pullRequests": {
+        "pageInfo": {
+          "hasNextPage": false,
+          "endCursor": null
+        },
         "nodes": [
           {
             "number": 201,

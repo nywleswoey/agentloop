@@ -11,7 +11,7 @@ Started by hand, runs until Ctrl-C. Every decision it makes is one log line, so 
 Each pass, in order:
 
 1. **Close-out** — an issue whose pull request has merged gets its checklist ticked, its description updated, its claim label removed, and the issue closed.
-2. **Issues** — queries each project for open issues labelled `ready-for-agent`, skips ones with an open blocker, swaps the label to `agent-in-progress`, and dispatches an Orca worker into a fresh worktree.
+2. **Issues** — queries each project for open issues labelled `ready-for-agent`, skips ones an open pull request already delivers, skips ones with an open blocker, swaps the label to `agent-in-progress`, and dispatches an Orca worker into a fresh worktree.
 3. **Pull requests** — enumerates every open pull request in each project except drafts and fork heads, derives its state from GitHub alone, logs one line per pull request, comments `@coderabbitai review` at the ones CodeRabbit never reviewed and `@coderabbitai autofix` at the ones carrying unresolved findings, runs the risk gate over the ones that are ready to judge, merges at most one of them per repository, and hands over the ones it will not act on. It spends no worker and no worktree, and it keeps no local state: every pass re-derives from a fresh read.
 4. **Sweep** — removes the loop's own finished worktrees.
 
@@ -22,7 +22,7 @@ Between passes it sleeps for `pollIntervalSeconds`.
 - **Worker budget** — never more than `maxWorkers` live workers. Checked before *every* issue dispatch, not once per pass, so a candidate arriving at a full budget waits for a later pass rather than being dropped. It governs **issue dispatch only**: the PR phase spends no worktree, no checkout and no agent, so a long-running issue does not stall the pull requests behind it.
 - **Fail closed** — if the worktree inventory can't be read, the budget is treated as full and the sweep is skipped. A budget that failed open would dispatch a fresh `maxWorkers` on top of the workers it couldn't see.
 - **PID lock** — one loop per machine.
-- **Startup reclaim** — an issue left claimed with no live worker (crash, failed dispatch) is handed back to `ready-for-agent` when the loop next starts.
+- **Startup reclaim** — an issue left claimed with no live worker (crash, failed dispatch) is handed back to `ready-for-agent` when the loop next starts. Liveness is not the whole question, though: a worker that **finished** leaves no process behind either, and reading that as "nobody has worked on it" is what once had two workers rebuild the same feature into two branches. So an issue whose branch already carries an **open** pull request stays claimed, and the issue phase asks the same question a second time — a ready label applied by hand never passes through the reclaim at all. **Merged** pull requests deliberately do not count: those are close-out's, and close-out runs first in both orderings. **Closed-unmerged** ones deliberately do not count either — abandoning a pull request should return its issue to the loop. Both callers fail closed: a read that will not answer skips the reclaim, or the issue phase, rather than risking a duplicate.
 - **Log rotation** — one generation, capped at 5 MiB. A loop left running for weeks must not fill the disk.
 
 These are the daemon's own rails. What bounds the **unattended merge** is the next section.
