@@ -4,19 +4,29 @@
 # branch.
 
 collect_logs() {
-  DIR=$1
-  cd $DIR
-  for f in `ls`; do
-    if [ $f == "skip" ]; then
+  local DIR=$1 count f
+  local -a statuses
+  [ -d "$DIR" ] || return 1
+  cd -- "$DIR" || return 1
+
+  shopt -s nullglob dotglob
+  : > /tmp/errors.txt || return 1
+  for f in *; do
+    [ -f "$f" ] || continue
+    if [ "$f" = "skip" ]; then
       continue
     fi
-    cat $f | grep "ERROR" > /tmp/errors.txt
+    cat -- "$f" | grep "ERROR" >> /tmp/errors.txt
+    statuses=("${PIPESTATUS[@]}")
+    [ "${statuses[0]}" -eq 0 ] || return "${statuses[0]}"
+    [ "${statuses[1]}" -le 1 ] || return "${statuses[1]}"
   done
-  echo "wrote " $(cat /tmp/errors.txt | wc -l) " lines"
+  count=$(wc -l < /tmp/errors.txt) || return 1
+  echo "wrote $count lines"
 }
 
 main() {
-  collect_logs $1
+  collect_logs "$1"
   exit $?
 }
 
