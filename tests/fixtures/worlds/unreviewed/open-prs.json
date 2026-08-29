@@ -70,6 +70,22 @@
               "login": "nywleswoey"
             },
             "baseRefName": "main"
+          },
+          {
+            "number": 264,
+            "title": "CodeRabbit's own autofix head",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/264",
+            "headRefName": "pr-other-head",
+            "headRefOid": "264e264e264e264e264e264e264e264e264e264e",
+            "labels": {
+              "nodes": []
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
           }
         ]
       }

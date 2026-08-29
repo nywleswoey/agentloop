@@ -3,7 +3,7 @@
     "repository": {
       "pullRequest": {
         "number": 301,
-        "headRefOid": "301a301a301a301a301a301a301a301a301a301a",
+        "headRefOid": "301b301b301b301b301b301b301b301b301b301b",
         "mergeable": "MERGEABLE",
         "mergeStateStatus": "CLEAN",
         "files": {
@@ -21,11 +21,11 @@
           "nodes": [
             {
               "commit": {
-                "oid": "301a301a301a301a301a301a301a301a301a301a",
-                "committedDate": "2026-08-27T10:00:00Z",
+                "oid": "301b301b301b301b301b301b301b301b301b301b",
+                "committedDate": "2026-08-27T13:05:00Z",
                 "author": {
                   "user": {
-                    "login": "nywleswoey"
+                    "login": "coderabbitai[bot]"
                   }
                 },
                 "statusCheckRollup": {
@@ -37,7 +37,7 @@
                         "context": "CodeRabbit",
                         "state": "SUCCESS",
                         "description": "Review completed",
-                        "createdAt": "2026-08-27T10:01:00Z",
+                        "createdAt": "2026-08-27T13:09:00Z",
                         "creator": {
                           "login": "coderabbitai"
                         }
@@ -52,16 +52,16 @@
         "reviewThreads": {
           "nodes": [
             {
-              "id": "PRRT_kwDO301a",
+              "id": "PRRT_kwDO301c",
               "isResolved": false,
               "isOutdated": false,
-              "path": "agent-loop.sh",
-              "line": 700,
+              "path": "tests/lib.sh",
+              "line": 30,
               "comments": {
                 "nodes": [
                   {
-                    "databaseId": 3835780001,
-                    "createdAt": "2026-08-27T10:01:10Z",
+                    "databaseId": 3835780005,
+                    "createdAt": "2026-08-27T13:09:10Z",
                     "author": {
                       "login": "coderabbitai"
                     }
@@ -70,16 +70,16 @@
               }
             },
             {
-              "id": "PRRT_kwDO301b",
+              "id": "PRRT_kwDO301d",
               "isResolved": false,
               "isOutdated": false,
-              "path": "gh.sh",
-              "line": 60,
+              "path": "tests/lib.sh",
+              "line": 44,
               "comments": {
                 "nodes": [
                   {
-                    "databaseId": 3835780003,
-                    "createdAt": "2026-08-27T10:01:11Z",
+                    "databaseId": 3835780007,
+                    "createdAt": "2026-08-27T13:09:11Z",
                     "author": {
                       "login": "coderabbitai"
                     }
@@ -94,8 +94,8 @@
             {
               "databaseId": 5379000301,
               "createdAt": "2026-08-27T10:01:20Z",
-              "updatedAt": "2026-08-27T10:01:20Z",
-              "body": "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n<!-- review_stack_entry_start -->\n> Change Stack: 1 of 1\n<!-- review_stack_entry_end -->\n<!-- recent_review_start -->\n## Walkthrough\n\nThe pass loop grows a state log.\n<!-- recent_review_end -->\n<!-- final_review_risk_start -->\n**Merge Risk:** _⚪ Minimal_ · up to `301a3`\n\nA localized change with no merge-blocking risk beyond normal checks and review.\n<!-- final_review_risk_end -->\n<!-- pre_merge_checks_walkthrough_start -->\n<details>\n<summary>🚥 Pre-merge checks | ✅ 5</summary>\n</details>\n<!-- pre_merge_checks_walkthrough_end -->\n<!-- tips_start -->\n<details>\n<summary>📜 Recent review details</summary>\n\nConfiguration used: defaults\nReview profile: CHILL\nPlan: Pro Plus\n</details>\n<!-- tips_end -->\n",
+              "updatedAt": "2026-08-27T13:09:30Z",
+              "body": "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n<!-- review_stack_entry_start -->\n> Change Stack: 1 of 1\n<!-- review_stack_entry_end -->\n<!-- recent_review_start -->\n## Walkthrough\n\nThe pass loop grows a state log.\n<!-- recent_review_end -->\n<!-- final_review_risk_start -->\n**Merge Risk:** _\ud83d\udfe0 High_ \u00b7 up to `301b3`\n\nA localized change with no merge-blocking risk beyond normal checks and review.\n<!-- final_review_risk_end -->\n<!-- pre_merge_checks_walkthrough_start -->\n<details>\n<summary>\ud83d\udea5 Pre-merge checks | \u2705 5</summary>\n</details>\n<!-- pre_merge_checks_walkthrough_end -->\n<!-- tips_start -->\n<details>\n<summary>\ud83d\udcdc Recent review details</summary>\n\nConfiguration used: defaults\nReview profile: CHILL\nPlan: Pro Plus\n</details>\n<!-- tips_end -->\n",
               "author": {
                 "login": "coderabbitai"
               }
@@ -116,6 +116,15 @@
               "body": "<!-- This is an auto-generated comment: autofix status by CodeRabbit -->\n## Autofix Could Not Be Applied\n\nNo changes were generated. Resolve the merge conflicts on this branch and trigger autofix again.\n\n**Commit:** _none_\n<!-- autofix-run-id: 9a1c77d2-3f0b-4a6e-8c22-6b2f0d5e4411 -->\n",
               "author": {
                 "login": "coderabbitai"
+              }
+            },
+            {
+              "databaseId": 5379000331,
+              "createdAt": "2026-08-27T13:05:30Z",
+              "updatedAt": "2026-08-27T13:05:30Z",
+              "body": "@coderabbitai review",
+              "author": {
+                "login": "nywleswoey"
               }
             }
           ]

@@ -959,7 +959,11 @@ check_grep "pr nywleswoey/automation#205 205e205e205e205e205e205e205e205e205e205
 # unresolved threads are input to the fix trigger and to nothing else. It clears
 # the gate as well, and is deferred to the next pass by the one-merge-per-
 # repository bound — 205 has already moved the base under it.
-check_grep "pr nywleswoey/automation#206 206f206f206f206f206f206f206f206f206f206f assessable review=terminal threads=3 autofix=spent verdict=merge risk=ok checks=ok mergeability=ok blast=ok action=deferred bound=merge-per-repo" "$OUT"
+#
+# The spent token names **which** of the two sufficient reasons spent it. An
+# operator asking why autofix did not fire cannot answer it from a blind
+# *spent*, and this one is the trigger's.
+check_grep "pr nywleswoey/automation#206 206f206f206f206f206f206f206f206f206f206f assessable review=terminal threads=3 autofix=spent:trigger verdict=merge risk=ok checks=ok mergeability=ok blast=ok action=deferred bound=merge-per-repo" "$OUT"
 
 # 207 — triggered an hour ago, CodeRabbit has not answered, still inside the
 # bound.
@@ -987,9 +991,9 @@ check_grep "pr nywleswoey/automation#210 210d210d210d210d210d210d210d210d210d210
 # never looked at reports. Absence is a real state, not a read that failed: one
 # real pull request sat in exactly this shape for four and a half hours.
 #
-# Both routes into the predicate hold at once here, and the tail says so rather
-# than a second state name being invented for the pair.
-check_grep "pr nywleswoey/automation#211 211e211e211e211e211e211e211e211e211e211e unreviewed review=pending threads=0 autofix=unspent route=no-signal,no-block action=nudged" "$OUT"
+# Both of those routes hold at once here, and the tail says so rather than a
+# second state name being invented for the pair.
+check_grep "pr nywleswoey/automation#211 211e211e211e211e211e211e211e211e211e211e needs-review review=pending threads=0 autofix=unspent route=no-signal,no-block action=nudged" "$OUT"
 # The remedy is a write, because the cause does not clear on its own: the
 # review pause resets its counter only when the pause is lifted, and lifting it
 # is a command.
@@ -1038,6 +1042,17 @@ LOOP_NUDGE=$(sed -n "s/^REVIEW_TRIGGER='\(.*\)'$/\1/p" "$SCRIPT")
 check "the loop names a review nudge at all" test -n "$LOOP_NUDGE"
 check_grep "--body $LOOP_NUDGE" "$STUB_CALLS"
 
+# The merge-risk block's parse is spelled **once**. Two readers need it — the
+# chain, to ask whether the verdict names this head, and the gate, to judge the
+# level it carries — and they read the block at deliberately different scopes,
+# so a second copy is how they come to disagree about which commit a verdict
+# covers. That is the one disagreement neither of them could detect from its own
+# side, so the count is pinned here.
+check "the capture is written exactly once" \
+  test "$(grep -cF 'up to `(?<abbrev>' "$SCRIPT")" -eq 1
+check "and both readers take it by definition" \
+  test "$(grep -cF '"$RISK_BLOCK_PARSE"' "$SCRIPT")" -eq 2
+
 # The phase spends no worktree, no checkout and no agent, so `orca terminal`
 # has left the daemon entirely.
 check_no_grep "worktree create" "$STUB_CALLS"
@@ -1070,13 +1085,14 @@ check_no_grep "autofix-in-flight" "$OUT"
 check "no second trigger was posted for the stalled pull request" \
   test "$(grep -cF 'pr comment 207 --repo nywleswoey/automation --body @coderabbitai autofix' "$STUB_CALLS")" -eq 0
 
-# --- pr phase: the unreviewed predicate ---------------------------------------------
+# --- pr phase: the needs-review predicate --------------------------------------------
 
-# `U` is two clauses — no CodeRabbit signal on the head, or no merge-risk block
-# anywhere on the pull request — and this world separates them, because a
-# predicate whose clauses are only ever true together is one clause wearing two
-# names.
-setup "a pull request CodeRabbit never reviewed is unreviewed by either route"
+# `needs-review` is three clauses — no CodeRabbit signal on the head, no
+# merge-risk block anywhere on the pull request, or a block that parses and
+# names some other commit — and this world separates all three, because a
+# predicate whose clauses are only ever true together is one clause wearing
+# three names.
+setup "a pull request with no verdict on its head reaches needs-review by every route"
 export STUB_WORLD=unreviewed STUB_NOW=2026-08-27T12:00:00Z
 run_once
 check_status 0 "$STATUS"
@@ -1086,7 +1102,7 @@ check_status 0 "$STATUS"
 # un-drafting is not a push, so the head never moves. The discriminator is the
 # **absent artifact**, not the status and not the description — the description
 # is captured in the fixture and nothing reads it.
-check_grep "pr nywleswoey/automation#260 260a260a260a260a260a260a260a260a260a260a unreviewed review=terminal threads=0 autofix=unspent route=no-block action=nudged" "$OUT"
+check_grep "pr nywleswoey/automation#260 260a260a260a260a260a260a260a260a260a260a needs-review review=terminal threads=0 autofix=unspent route=no-block action=nudged" "$OUT"
 check_grep "gh-axi pr comment 260 --repo nywleswoey/automation --body @coderabbitai review" "$STUB_CALLS"
 # The green status did not reach the gate, so the gate's tripwire never fired.
 check_no_grep "#260 260a260a260a260a260a260a260a260a260a260a assessable" "$OUT"
@@ -1100,21 +1116,44 @@ check "a throttled pull request is not nudged" \
   test "$(grep -cF 'pr comment 261 --repo nywleswoey/automation --body @coderabbitai review' "$STUB_CALLS")" -eq 0
 check_no_grep "#261 261b261b261b261b261b261b261b261b261b261b assessable" "$OUT"
 
-# 262 — nothing rolled up on the head, and a merge-risk block still on the pull
-# request from the head before it. The first clause holds alone.
-check_grep "pr nywleswoey/automation#262 262c262c262c262c262c262c262c262c262c262c unreviewed review=pending threads=0 autofix=unspent route=no-signal action=nudged" "$OUT"
+# 262 — nothing rolled up on the head at all, and a merge-risk block that does
+# name it. The first clause holds alone, which is what makes it a clause.
+check_grep "pr nywleswoey/automation#262 262c262c262c262c262c262c262c262c262c262c needs-review review=pending threads=0 autofix=unspent route=no-signal action=nudged" "$OUT"
 check_grep "gh-axi pr comment 262 --repo nywleswoey/automation --body @coderabbitai review" "$STUB_CALLS"
 
 # 263 — what a nudge that **worked** leaves behind. The skipped-review green
 # status is still on the head, because un-drafting is not a push and the head
 # never moved, and the review the nudge started has landed a pending status
 # beside it. Terminal is decided by the **newest** signal, so this is a review in
-# progress; decided by *any* signal it would read as finished, stay unreviewed,
-# and be handed over one poll interval into a review that was running.
+# progress; decided by *any* signal it would read as finished, keep calling it
+# needs-review, and hand it over one poll interval into a review that was
+# running.
 check_grep "pr nywleswoey/automation#263 263d263d263d263d263d263d263d263d263d263d reviewing review=pending threads=0 autofix=unspent age=120 bound=3600 origin=pending" "$OUT"
 check "a review that started is not nudged again" \
   test "$(grep -cF 'pr comment 263 --repo nywleswoey/automation --body @coderabbitai review' "$STUB_CALLS")" -eq 0
 check_no_grep "#263 263d263d263d263d263d263d263d263d263d263d nudge" "$OUT"
+
+# 264 — the third clause, and the case the whole state was reshaped for: an
+# autofix head. CodeRabbit put a nine-second *Review completed* on it and will
+# not re-walkthrough its own commit, so the newest block still names the parent.
+# V1's prefix test alone would veto this permanently, on a cause the loop's own
+# write produced; the chain repairs it with the nudge instead.
+#
+# The tail carries the other half of the same rule on the same line: the head is
+# CodeRabbit's own output, so autofix is spent on it before any trigger is
+# considered — and `needs-review` sits ahead of `needs-autofix`, so the
+# unresolved finding here is nudged for a verdict rather than fixed.
+check_grep "pr nywleswoey/automation#264 264e264e264e264e264e264e264e264e264e264e needs-review review=terminal threads=1 autofix=spent:own-head route=other-head action=nudged" "$OUT"
+check_grep "gh-axi pr comment 264 --repo nywleswoey/automation --body @coderabbitai review" "$STUB_CALLS"
+check "no autofix is fired at a head CodeRabbit wrote" \
+  test "$(grep -cF 'body @coderabbitai autofix' "$STUB_CALLS")" -eq 0
+# The abbreviation really is the parent's rather than the head's, and the head
+# really is CodeRabbit's — both pinned, so a fixture edited into agreement would
+# fail here rather than quietly stop testing the clause.
+check "264's newest block names a commit that is not its head" \
+  test "$(jq -r '.data.repository.pullRequest.comments.nodes[0].body | test("up to .264e") | not' "$FIXTURES/worlds/unreviewed/pr-264.json")" = "true"
+check "264's head commit is CodeRabbit's own" \
+  test "$(jq -r '.data.repository.pullRequest.commits.nodes[-1].commit.author.user.login' "$FIXTURES/worlds/unreviewed/pr-264.json")" = "coderabbitai[bot]"
 
 # The block test is per **pull request**, not per head, which is what leaves V1
 # untouched: a block that is present but stale stays the gate's call exactly as
@@ -1122,20 +1161,20 @@ check_no_grep "#263 263d263d263d263d263d263d263d263d263d263d nudge" "$OUT"
 check "nothing was merged" test "$(grep -cE 'pulls/[0-9]+/merge' "$STUB_CALLS")" -eq 0
 check_no_grep "action=escalated" "$OUT"
 check "one state line per pull request" \
-  test "$(grep -cE '^[0-9TZ:-]+ pr nywleswoey/automation#' "$OUT")" -eq 4
+  test "$(grep -cE '^[0-9TZ:-]+ pr nywleswoey/automation#' "$OUT")" -eq 5
 
 # --- pr phase: the nudge chain ------------------------------------------------------
 
 # Three whole-world snapshots: the nudge, the wait, and the handover — then the
 # head moving and the whole thing starting again. The bound is one poll interval
 # and there is no new config key behind it.
-setup "an unreviewed pull request is nudged once, then handed over"
+setup "a pull request needing a review is nudged once, then handed over"
 PASS_N=0
 
 # Pass one: no status, no block, no nudge. The loop writes.
 replay nudge/pass1 2026-08-27T11:50:30Z
 check_status 0 "$STATUS"
-check_grep "pr nywleswoey/automation#272 272a272a272a272a272a272a272a272a272a272a unreviewed review=pending threads=0 autofix=unspent route=no-signal,no-block action=nudged" "$PASS_LOG"
+check_grep "pr nywleswoey/automation#272 272a272a272a272a272a272a272a272a272a272a needs-review review=pending threads=0 autofix=unspent route=no-signal,no-block action=nudged" "$PASS_LOG"
 check_grep "gh-axi pr comment 272 --repo nywleswoey/automation --body @coderabbitai review" "$STUB_CALLS"
 # The incremental review command, not the resume command: it is the measured
 # one, and it cleared a real four-and-a-half-hour wedge.
@@ -1171,9 +1210,11 @@ check "the escalation body was captured" test -f "$BODY"
 check "the first line names the kind" \
   test "$(head -1 "$BODY")" = '**Escalated — `stalled`:** a CodeRabbit command was triggered and CodeRabbit never reported inside its bound.'
 # The bound is cause-blind, so the documented non-triggers are never tracked —
-# but the two the operator can actually do something about are named.
+# but the two the operator can actually do something about are named. This is
+# the **two older routes'** text, and it is right here: CodeRabbit put nothing
+# at all on this head. The third route gets its own, below.
 check_grep "not be installed on this repository, or the organisation may be out of seats" "$BODY"
-check_grep "age=301s bound=300s nudge=2026-08-27T11:55:00Z" "$BODY"
+check_grep "age=301s bound=300s nudge=2026-08-27T11:55:00Z route=no-signal,no-block" "$BODY"
 # No CodeRabbit prose is parsed. The reply is read once, here, and shipped
 # verbatim as a raw value — nothing keys on it.
 check_grep "CodeRabbit's reply to the nudge, verbatim and unparsed" "$BODY"
@@ -1187,9 +1228,70 @@ setup "a new head is nudged again"
 PASS_N=0
 replay nudge/pass3 2026-08-27T12:15:00Z
 check_status 0 "$STATUS"
-check_grep "pr nywleswoey/automation#272 272b272b272b272b272b272b272b272b272b272b unreviewed review=pending threads=0 autofix=unspent route=no-signal,no-block action=nudged" "$PASS_LOG"
+check_grep "pr nywleswoey/automation#272 272b272b272b272b272b272b272b272b272b272b needs-review review=pending threads=0 autofix=unspent route=no-signal,no-block action=nudged" "$PASS_LOG"
 check_grep "gh-axi pr comment 272 --repo nywleswoey/automation --body @coderabbitai review" "$STUB_CALLS"
 check_no_grep "272b272b272b272b272b272b272b272b272b272b escalated" "$PASS_LOG"
+
+# --- pr phase: the third route's own chain ------------------------------------------
+
+# The route the state was reshaped for, on the same two-pass shape as the nudge
+# chain above: nudged at the head, handed over one poll interval later — and the
+# handover's `no` row says something the other two routes' text cannot.
+#
+# 280's head is a **force push** rather than an autofix commit, which is the
+# point: the clause is cause-blind, and discriminating between the two would
+# need exactly the commit ancestry and authorship the V1 relaxation was rejected
+# for. The remedy is the same either way.
+
+setup "a verdict pinned to another commit is nudged"
+PASS_N=0
+replay other-head/pass1 2026-08-27T11:55:30Z
+check_status 0 "$STATUS"
+check_grep "pr nywleswoey/automation#280 280a280a280a280a280a280a280a280a280a280a needs-review review=terminal threads=0 autofix=unspent route=other-head action=nudged" "$PASS_LOG"
+check_grep "gh-axi pr comment 280 --repo nywleswoey/automation --body @coderabbitai review" "$STUB_CALLS"
+# It never reached the gate, so V1's abbreviation branch never fired: that
+# branch is now unreachable by construction and is kept only for the scope
+# asymmetry between the two readers.
+check_no_grep "280a280a280a280a280a280a280a280a280a280a assessable" "$PASS_LOG"
+check_no_grep "action=escalated" "$PASS_LOG"
+
+setup "the same verdict one second past the nudge's bound is handed over"
+PASS_N=0
+replay other-head/pass2 2026-08-27T12:00:01Z
+check_status 0 "$STATUS"
+check_grep "pr nywleswoey/automation#280 280a280a280a280a280a280a280a280a280a280a nudge-stalled review=terminal threads=0 autofix=unspent route=other-head age=301 bound=300 action=escalated kind=stalled label=added" "$PASS_LOG"
+
+OTHER_BODY="$STUB_STATE/pr-body-280.txt"
+check "the escalation body was captured" test -f "$OTHER_BODY"
+# **The `no` row branches on the route.** Every clause of the older text is
+# false here — CodeRabbit is installed, has seats, and reported on this head in
+# eleven seconds — so saying it would send the operator to look at a seat count
+# when the real state is a verdict pinned to another commit.
+check_grep "CodeRabbit reviewed this head and left its merge-risk verdict on another commit" "$OTHER_BODY"
+check_no_grep "not be installed on this repository, or the organisation may be out of seats" "$OTHER_BODY"
+check_grep "age=301s bound=300s nudge=2026-08-27T11:55:00Z route=other-head" "$OTHER_BODY"
+# The kind is still `stalled` — a command was triggered and CodeRabbit never
+# moved the verdict — and the route is on the passing row as well.
+check "the first line names the kind" \
+  test "$(head -1 "$OTHER_BODY")" = '**Escalated — `stalled`:** a CodeRabbit command was triggered and CodeRabbit never reported inside its bound.'
+check_grep "route=other-head head=2026-08-27T11:50:00Z" "$OTHER_BODY"
+check "the stalled nudge is not sent again" \
+  test "$(grep -cF 'pr comment 280 --repo nywleswoey/automation --body @coderabbitai review' "$STUB_CALLS")" -eq 0
+
+# 281 — the one route that can join the third, and the mutant that pins the
+# lookup's exact match. Nothing at all rolled up on this head *and* the newest
+# block names another commit, so both clauses fire. The older text is the true
+# one here — CodeRabbit really did put nothing on this head — so the branch
+# above must **not** take the third route's prose.
+#
+# `no-block` cannot join `other-head`: no block anywhere leaves nothing to parse
+# an abbreviation out of. This is the only pairing there is.
+check_grep "pr nywleswoey/automation#281 281b281b281b281b281b281b281b281b281b281b nudge-stalled review=pending threads=0 autofix=unspent route=no-signal,other-head age=301 bound=300 action=escalated kind=stalled label=added" "$PASS_LOG"
+BOTH_BODY="$STUB_STATE/pr-body-281.txt"
+check "the escalation body was captured" test -f "$BOTH_BODY"
+check_grep "not be installed on this repository, or the organisation may be out of seats" "$BOTH_BODY"
+check_no_grep "CodeRabbit reviewed this head and left its merge-risk verdict on another commit" "$BOTH_BODY"
+check_grep "age=301s bound=300s nudge=2026-08-27T11:55:00Z route=no-signal,other-head" "$BOTH_BODY"
 
 # --- pr phase: the review clock, proven by a mutant twin ----------------------------
 
@@ -1416,11 +1518,38 @@ check_grep "pr nywleswoey/automation#301 301a301a301a301a301a301a301a301a301a301
 check "still exactly one trigger after the second pass" test "$(grep -cF 'pr comment 301' "$STUB_CALLS")" -eq 1
 
 # Pass three: autofix answered, pushed nothing, and left every finding
-# unresolved. Spent on this head all the same.
+# unresolved. Spent on this head all the same, and the token names the reason —
+# **by a trigger**, which is the reason the mutant below does not have.
 replay autofix-once/pass3 2026-08-27T13:00:00Z
 check_status 0 "$STATUS"
-check_grep "pr nywleswoey/automation#301 301a301a301a301a301a301a301a301a301a301a assessable review=terminal threads=2 autofix=spent verdict=merge risk=ok checks=ok mergeability=ok blast=ok" "$PASS_LOG"
+check_grep "pr nywleswoey/automation#301 301a301a301a301a301a301a301a301a301a301a assessable review=terminal threads=2 autofix=spent:trigger verdict=merge risk=ok checks=ok mergeability=ok blast=ok" "$PASS_LOG"
 check "still exactly one trigger after the third pass" test "$(grep -cF 'pr comment 301' "$STUB_CALLS")" -eq 1
+
+# Pass four: the head moved, and **CodeRabbit wrote it**. The nudge the third
+# route fires has since run a full review at that head, which moved the block
+# onto it and minted two new findings on the autofix's own diff — the cycle the
+# third route arms. Autofix is spent by the second sufficient reason, so the
+# loop does not turn it: *the loop does not act on its own output.*
+#
+# This is the sensitivity proof in its strongest form — the same assertion at
+# successive passes with **opposite verdicts**, against captured worlds. Nothing
+# about this pull request's findings changed; the head's author did.
+replay autofix-once/pass4 2026-08-27T13:30:00Z
+check_status 0 "$STATUS"
+check_grep "pr nywleswoey/automation#301 301b301b301b301b301b301b301b301b301b301b assessable review=terminal threads=2 autofix=spent:own-head verdict=escalate risk=no checks=ok mergeability=ok blast=ok action=escalated kind=escalate label=added" "$PASS_LOG"
+check "no autofix trigger is written at a head CodeRabbit authored" \
+  test "$(grep -cF 'body @coderabbitai autofix' "$STUB_CALLS")" -eq 1
+# The accepted cost, and the backstop that makes it the right one: the new
+# findings reach the gate **unfixed**, the full review has moved the block onto
+# this head, so V1 judges the new review's level — and a bad autofix escalates
+# rather than being silently re-fixed by the thing that produced it.
+check_grep "| no | CodeRabbit's merge-risk verdict does not clear this commit | \`block=parsed level=high abbrev=301b3 head=301b301b301b301b301b301b301b301b301b301b\` |" "$STUB_STATE/pr-body-301.txt"
+check "the head really is CodeRabbit's own" \
+  test "$(jq -r '.data.repository.pullRequest.commits.nodes[-1].commit.author.user.login' "$FIXTURES/worlds/autofix-once/pass4/pr-301.json")" = "coderabbitai[bot]"
+# And the head is not spent by a trigger: the only trigger on the timeline
+# records the head before this one, so the two reasons are genuinely separate.
+check "the trigger on the timeline names the previous head" \
+  test "$(jq -r '[.data.repository.pullRequest.comments.nodes[] | select(.body | contains("agent-loop-autofix-head")) | .body | test("agent-loop-autofix-head: 301a")] | all' "$FIXTURES/worlds/autofix-once/pass4/pr-301.json")" = "true"
 
 # --- pr phase: a status from an earlier head does not spend this one ----------------
 
@@ -1446,8 +1575,10 @@ check "one trigger was posted for the unspent current head" \
 # blast radius; each holds a veto, and every one of them is proven to escalate on
 # its own below.
 
-# This world carries sixteen pull requests to judge, four of which clear every
-# veto — and the loop merges at most one per repository per pass, so a plain run
+# This world carries sixteen pull requests, fifteen of which reach the gate —
+# 221's verdict names another commit, so the chain diverts it before the gate is
+# reached, which is itself one of the cases below. Four of the fifteen clear
+# every veto, and the loop merges at most one per repository per pass, so a plain run
 # would act on the first and defer the other three, mixing the bound into a case
 # that is about the rubric. `--no-merge` holds the one irreversible write and
 # nothing else, which is exactly the reading this case wants: every verdict is
@@ -1473,15 +1604,22 @@ check_no_grep "pr edit 220 --repo nywleswoey/automation" "$STUB_CALLS"
 
 # --- V1: CodeRabbit's verdict ----------------------------------------------------------
 
-# The abbreviation must be a **prefix of the head** and the level exactly
-# minimal. Three ways to fail, all of them the same tripwire for CodeRabbit
-# changing shape, and every escalation carries the raw values behind it.
+# What reaches V1 is now a terminal review **and** a block naming this head, so
+# only the level and the parse can still say no. Both are the same tripwire for
+# CodeRabbit changing shape, and every escalation carries the raw values behind
+# it.
 
-# A verdict computed for some other commit. A stale verdict can never authorise
-# the merge of newer code, and the raw row is what lets the operator see that at
-# a glance rather than re-deriving it.
-check_grep "$GATE_PR#221 221b221b221b221b221b221b221b221b221b221b assessable $GATE_TAIL verdict=escalate risk=no checks=ok mergeability=ok blast=ok action=escalated kind=escalate label=added" "$OUT"
-check_grep "| no | CodeRabbit's merge-risk verdict does not clear this commit | \`block=parsed level=minimal abbrev=bad11 head=221b221b221b221b221b221b221b221b221b221b\` |" "$STUB_STATE/pr-body-221.txt"
+# 221's verdict names some other commit, and it never gets here: that is the
+# third route into `needs-review`, which is nudged and bounded before the gate
+# is reached. V1's abbreviation branch is kept anyway — the two readers work at
+# different scopes, and the safe direction for that asymmetry is for the
+# stricter one to escalate — but nothing can reach it, and this is the case that
+# says so.
+check_grep "$GATE_PR#221 221b221b221b221b221b221b221b221b221b221b needs-review $GATE_TAIL route=other-head action=nudged" "$OUT"
+check_no_grep "221b221b221b221b221b221b221b221b221b221b assessable" "$OUT"
+check "the diverted pull request was nudged rather than handed over" \
+  test "$(grep -cF 'pr comment 221 --repo nywleswoey/automation --body @coderabbitai review' "$STUB_CALLS")" -eq 1
+check "no handover was posted for it" test ! -f "$STUB_STATE/pr-body-221.txt"
 
 # A level that is not minimal. There is no documented ladder of levels anywhere,
 # so nothing may be inferred about ordering: anything but minimal escalates.
@@ -1593,7 +1731,8 @@ check_no_grep "pr edit 229 --repo nywleswoey/automation" "$STUB_CALLS"
 # 234 has a veto **and** an undecided signal. Nothing short-circuits, so the
 # message carries both rows and the two that passed as well; and the kind is the
 # veto's rather than the clock's, because the veto is the one the operator can
-# act on.
+# act on. Its veto is the **level**, because a verdict naming another commit no
+# longer reaches the gate at all.
 check_grep "$GATE_PR#234 234c234c234c234c234c234c234c234c234c234c assessable $GATE_TAIL verdict=escalate risk=no checks=ok mergeability=defer blast=ok age=1800 bound=3600 action=escalated kind=escalate label=added" "$OUT"
 GATE_BOTH="$STUB_STATE/pr-body-234.txt"
 check "the first line names the kind" \
@@ -1615,9 +1754,17 @@ check "one row per veto, plus the clock, plus the table head" \
 # verdict. 232 carries two walkthroughs whose orderings disagree: the newest by
 # creation holds a stale verdict, the newest by update holds this head's. A merge
 # verdict is only reachable through the second.
+#
+# It now proves the same thing about the **chain's** read as well. The third
+# route reads the newest block too, so a chain that read *any* block would find
+# the stale one, divert this pull request into `needs-review` and nudge it —
+# and it would never reach a verdict at all.
 check_grep "$GATE_PR#232 232a232a232a232a232a232a232a232a232a232a assessable $GATE_TAIL verdict=merge risk=ok checks=ok mergeability=ok blast=ok" "$OUT"
 check "the two walkthroughs really do order differently" \
   test "$(jq -r '[.data.repository.pullRequest.comments.nodes | max_by(.createdAt).databaseId, max_by(.updatedAt).databaseId] | .[0] == .[1]' "$FIXTURES/worlds/gate/pr-232.json")" = "false"
+check "the stale one really does name another commit" \
+  test "$(jq -r '.data.repository.pullRequest.comments.nodes | max_by(.createdAt).body | test("up to .232a") | not' "$FIXTURES/worlds/gate/pr-232.json")" = "true"
+check_no_grep "pr comment 232 --repo nywleswoey/automation --body @coderabbitai review" "$STUB_CALLS"
 
 # --- the prohibitions ------------------------------------------------------------------
 
@@ -1680,10 +1827,10 @@ check_grep "| defer | GitHub has not finished computing mergeability | \`mergeab
 
 # --- pr phase: the rate limit defers, ahead of every veto and outside the clock --------
 
-# A throttled pull request keeps a **stale** verdict — 241's walkthrough names a
-# commit that is not its head, which V1 alone would escalate on. The marker is
-# tested ahead of every veto, so it defers instead: the handover would otherwise
-# turn a transient throttle into a permanent one, and fair-usage throttling would
+# A throttled pull request keeps a **stale** verdict — 241's walkthrough puts
+# the level at high, which V1 alone would escalate on. The marker is tested
+# ahead of every veto, so it defers instead: the handover would otherwise turn a
+# transient throttle into a permanent one, and fair-usage throttling would
 # escalate the whole queue whenever the reviewer is merely slow.
 #
 # It is also **exempt from the gate clock**, which is why it is in this world:
@@ -1693,8 +1840,12 @@ check_grep "| defer | GitHub has not finished computing mergeability | \`mergeab
 check_grep "pr nywleswoey/automation#241 241b241b241b241b241b241b241b241b241b241b assessable review=terminal threads=0 autofix=unspent verdict=defer gate=rate-limited" "$OUT"
 check_no_grep "pr comment 241 --repo nywleswoey/automation" "$STUB_CALLS"
 check_no_grep "pr edit 241 --repo nywleswoey/automation" "$STUB_CALLS"
-check "the throttled pull request's verdict really is stale" \
-  test "$(jq -r '.data.repository.pullRequest.comments.nodes[0].body | test("up to `241b`") | not' "$FIXTURES/worlds/gate-clock/pr-241.json")" = "true"
+check "the throttled pull request really does carry a verdict V1 would veto" \
+  test "$(jq -r '.data.repository.pullRequest.comments.nodes[0].body | test("Merge Risk:.*High")' "$FIXTURES/worlds/gate-clock/pr-241.json")" = "true"
+# It also names this head, so it reaches the gate at all: a verdict pinned to
+# another commit is the chain's business now, and would never get here.
+check "and it names this head" \
+  test "$(jq -r '.data.repository.pullRequest.comments.nodes[0].body | test("up to .241b")' "$FIXTURES/worlds/gate-clock/pr-241.json")" = "true"
 
 # The same fixture inside the clock defers too, which is what "regardless of
 # timestamp" means: the test has no clock of its own to be inside or outside of.

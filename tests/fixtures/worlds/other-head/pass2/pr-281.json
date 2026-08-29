@@ -1,0 +1,61 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "number": 281,
+        "headRefOid": "281b281b281b281b281b281b281b281b281b281b",
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "CLEAN",
+        "files": {
+          "totalCount": 1,
+          "nodes": [
+            {
+              "path": "src/pushed.js"
+            }
+          ]
+        },
+        "commits": {
+          "nodes": [
+            {
+              "commit": {
+                "oid": "281b281b281b281b281b281b281b281b281b281b",
+                "committedDate": "2026-08-27T11:50:00Z",
+                "author": {
+                  "user": {
+                    "login": "nywleswoey"
+                  }
+                },
+                "statusCheckRollup": null
+              }
+            }
+          ]
+        },
+        "reviewThreads": {
+          "nodes": []
+        },
+        "comments": {
+          "nodes": [
+            {
+              "databaseId": 5379000283,
+              "createdAt": "2026-08-27T11:20:00Z",
+              "updatedAt": "2026-08-27T11:45:00Z",
+              "body": "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n<!-- recent_review_start -->\n## Walkthrough\n\nA change to the loop.\n<!-- recent_review_end -->\n<!-- final_review_risk_start -->\n**Merge Risk:** _\u26aa Minimal_ \u00b7 up to `9ac31`\n\nA localized change with no merge-blocking risk beyond normal checks and review.\n<!-- final_review_risk_end -->\n<!-- tips_start -->\n<details>\n<summary>\ud83d\udcdc Recent review details</summary>\n\nConfiguration used: defaults\nReview profile: CHILL\nPlan: Pro Plus\n</details>\n<!-- tips_end -->\n",
+              "author": {
+                "login": "coderabbitai"
+              }
+            },
+            {
+              "databaseId": 5379000284,
+              "createdAt": "2026-08-27T11:55:00Z",
+              "updatedAt": "2026-08-27T11:55:00Z",
+              "body": "@coderabbitai review",
+              "author": {
+                "login": "nywleswoey"
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

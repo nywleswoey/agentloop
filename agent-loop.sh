@@ -98,6 +98,28 @@ RATE_LIMIT_MARKER='<!-- This is an auto-generated comment: rate limited by coder
 # this feature says, which is exactly why the test is a prefix test rather than
 # a length-sensitive one.
 RISK_BLOCK_MARKER='<!-- final_review_risk_start -->'
+# The parse of that block, as a jq definition, because **two readers need it**:
+# the chain, to ask whether the verdict names the head it is about to act on,
+# and the gate, to judge the level it carries. Spelled once and concatenated
+# into both programs rather than copied into each — a second copy is how the two
+# come to disagree about which commit a verdict covers, and that is the one
+# disagreement neither of them could detect from its own side.
+#
+# `capture` emits nothing at all on no match, so the result is collected into an
+# array and indexed: bound bare, an unparseable block would make the whole
+# program produce no output rather than say the block was unparseable.
+#
+# It re-spells the marker above rather than taking it as an argument, and unlike
+# the trigger's two copies that is a limitation rather than a choice: this is a
+# jq *program fragment*, so the marker would have to reach it as a `--arg` every
+# caller passes and then be spliced into a regex — where the `<!--` would need
+# escaping and a marker that gained a metacharacter would silently stop
+# matching. The copies cannot drift far: a marker changed here and not there
+# reads every block as unparseable, which V1 escalates on loudly. There is no
+# such backstop for the trigger, which is why that one is pinned by a test.
+RISK_BLOCK_PARSE='def risk_block:
+  [ (. // "") | capture("final_review_risk_start -->\\s*\\*\\*Merge Risk:\\*\\*\\s*_(?<level>[^_]+)_\\s*·\\s*up to `(?<abbrev>[0-9a-fA-F]+)`") ] | .[0];
+'
 
 # The risk gate's own policy — the loop's, not CodeRabbit's. These say what the
 # loop will and will not merge unattended, and unlike everything above them a
@@ -1152,7 +1174,7 @@ sweep_worktrees() {
 #                                                  an instant
 #   autofix-in-flight  autofixTimeoutSeconds       the trigger comment
 #   nudge-in-flight    one poll interval           the nudge comment
-#   unreviewed         acts on the pass it is derived
+#   needs-review       acts on the pass it is derived
 #   needs-autofix      acts on the pass it is derived
 #   assessable         mergeGateTimeoutSeconds     headDate, inside the gate (V5)
 #   rate-limited       external                    the fair-usage rolling window
@@ -1223,6 +1245,16 @@ query_repo_open_prs() {
 # `commits(last: 1)` is the head; `comments(last: 100)` is the *newest* hundred,
 # which is the end of the timeline the freshness tests ask about.
 #
+# The head commit's **author** is one extra field on a request already being
+# made, and it is what stops autofix acting on the loop's own output: a head
+# CodeRabbit wrote is a head the loop does not fire autofix at. Author rather
+# than committer, knowingly over-broad — GitHub's *Commit suggestion* button
+# attributes the author to whoever suggested the change, so this over-fires
+# there, and the operator recovers by hand-typing the command, which the loop
+# already recognises as an autofix in flight. Under-firing would cost the
+# invariant with no backstop at all, and the committer test rests on an
+# unverified assumption about what GitHub stamps on a bot push.
+#
 # `mergeable` and `mergeStateStatus` are the risk gate's V3, and they are two
 # fields rather than one because `mergeable: MERGEABLE` is *also* true of the
 # unstable and blocked states — the two a naive mergeability test gets wrong.
@@ -1248,7 +1280,7 @@ query_repo_open_prs() {
 # today's derivation happens to use would couple them silently to it.
 query_pr_state() {
   local github="$1" number="$2" owner="${1%%/*}" name="${1##*/}" response
-  response=$(gh_graphql "{ repository(owner: \"$owner\", name: \"$name\") { pullRequest(number: $number) { number headRefOid mergeable mergeStateStatus files(first: 100) { totalCount nodes { path } } commits(last: 1) { nodes { commit { oid committedDate statusCheckRollup { state contexts(first: 100) { nodes { __typename ... on StatusContext { context state description createdAt creator { login } } ... on CheckRun { name status conclusion startedAt completedAt checkSuite { app { slug } } } } } } } } } reviewThreads(first: 100) { nodes { id isResolved isOutdated path line comments(first: 100) { nodes { databaseId createdAt author { login } } } } } comments(last: 100) { nodes { databaseId createdAt updatedAt body author { login } } } } } }") || return 1
+  response=$(gh_graphql "{ repository(owner: \"$owner\", name: \"$name\") { pullRequest(number: $number) { number headRefOid mergeable mergeStateStatus files(first: 100) { totalCount nodes { path } } commits(last: 1) { nodes { commit { oid committedDate author { user { login } } statusCheckRollup { state contexts(first: 100) { nodes { __typename ... on StatusContext { context state description createdAt creator { login } } ... on CheckRun { name status conclusion startedAt completedAt checkSuite { app { slug } } } } } } } } } reviewThreads(first: 100) { nodes { id isResolved isOutdated path line comments(first: 100) { nodes { databaseId createdAt author { login } } } } } comments(last: 100) { nodes { databaseId createdAt updatedAt body author { login } } } } } }") || return 1
   jq -e '.data.repository.pullRequest != null' <<< "$response" >/dev/null 2>&1 || return 1
   printf '%s' "$response"
 }
@@ -1258,6 +1290,7 @@ query_pr_state() {
 #
 #   head        the head commit
 #   headDate    its committer date, ISO-8601
+#   ownHead     true when the head commit's author is CodeRabbit
 #   terminal    true when CodeRabbit's review on that commit has finished
 #   threads     unresolved CodeRabbit review threads on the pull request
 #   statusAt    newest autofix-status comment, ISO-8601, empty if none
@@ -1267,6 +1300,8 @@ query_pr_state() {
 #   signal      true when CodeRabbit has reported *anything* on that commit
 #   pendingAt   oldest CodeRabbit signal on it that has not reported, ISO-8601
 #   block       present | absent — a merge-risk block anywhere on the PR
+#   blockAbbrev the commit abbreviation that block names, empty when there is
+#               no block or its line does not parse
 #   limited     CodeRabbit newest review comment carries the rate-limit marker
 #   nudgeAt     newest review nudge I posted, ISO-8601, empty if none
 #   reply       CodeRabbit's newest comment after that nudge, verbatim
@@ -1284,7 +1319,7 @@ query_pr_state() {
 # skipped* — the skipped-review `SUCCESS` stays, because un-drafting is not a
 # push and the head never moves, and the review the nudge started lands a
 # `PENDING` beside it. Read as *any*, the loop would call that terminal, keep
-# calling it unreviewed, and hand it over one poll interval into a review that
+# calling it needs-review, and hand it over one poll interval into a review that
 # was running. `success` means *the review ran*, never *the review
 # found nothing* — a pull request with five findings and a high merge risk
 # carries the same green status as a clean one.
@@ -1310,6 +1345,14 @@ query_pr_state() {
 # here implies absent there, so a pull request that reaches the gate always has
 # a block for V1 to judge, and V1's tripwire keeps meaning *CodeRabbit changed
 # shape*.
+#
+# **The abbreviation comes off the newest of those blocks and is parsed by the
+# gate's own definition**, not a second copy of it. Newest by the *updated*
+# timestamp for the same reason everything else about a walkthrough is: a pull
+# request can carry a stale walkthrough created later than the one CodeRabbit
+# has been editing, and reading *any* block would let the stale one answer for
+# the head. The scope stays broader than the gate's; only the parse is shared,
+# so the two cannot come to disagree about which commit a verdict names.
 #
 # **A thread is CodeRabbit's when CodeRabbit opened it.** The first comment's
 # author decides, not any comment's: a thread I opened that the bot replied to
@@ -1347,7 +1390,7 @@ pr_facts() {
     --arg ratelimit "$RATE_LIMIT_MARKER" \
     --arg riskstart "$RISK_BLOCK_MARKER" \
     --arg escprefix "$ESCALATION_MARKER_PREFIX" \
-    --arg escsuffix "$ESCALATION_MARKER_SUFFIX" '
+    --arg escsuffix "$ESCALATION_MARKER_SUFFIX" "$RISK_BLOCK_PARSE"'
     def is_coderabbit: (. // "") | ascii_downcase | startswith($crlogin);
     # A newline or a tab inside a value would reshape the one-value-per-line
     # protocol at the bottom of this program into a *different* set of values
@@ -1422,6 +1465,36 @@ pr_facts() {
          | select(.author.login | is_coderabbit)
          | select($nudgeAt != "" and (.createdAt // "") > $nudgeAt) ]
        | max_by(.createdAt // "")) as $reply
+    # The newest comment carrying a merge-risk block, whoever posted it — except
+    # a handover the loop wrote, which is not a review artifact and which pastes
+    # CodeRabbit words verbatim. Without that one exclusion a reply that happened
+    # to quote the block would let the record the loop wrote answer the question
+    # that record exists because nothing else could answer.
+    #
+    # This is a deliberate narrowing of *anywhere on the pull request*, and the
+    # only one: what the loop wrote is not evidence about what CodeRabbit did.
+    # Without it the phase could answer its own question, and a self-referential
+    # marker is a trap this project has already been caught in once.
+    #
+    # ponytail: no fixture reaches the exclusion. Neither measured reply shape
+    # carries a block, and inventing one would test the loop against a shape of
+    # CodeRabbit nobody has seen.
+    #
+    # ponytail: the handover the loop wrote is the only exclusion, so a *human*
+    # comment quoting a merge-risk block can now answer for CodeRabbit — and
+    # since the third route reads the abbreviation out of that comment, a quote
+    # naming another commit mints an `other-head` nudge and, one interval later,
+    # a handover. That was already true of the presence test before the third
+    # route existed; the route makes it visible rather than introducing it. It
+    # fails in the safe direction — a quote can only stop a merge, never cause
+    # one — and narrowing this read to comments CodeRabbit itself posted while
+    # the presence test stays broad would put the two halves of one fact at
+    # different scopes. Narrow both, together, if a real pull request ever hits
+    # it.
+    | ([ $pr.comments.nodes[]?
+         | select((.body // "") | contains($escprefix) | not)
+         | select((.body // "") | contains($riskstart)) ]
+       | max_by(.updatedAt // "")) as $blockComment
     | (if ($head.oid // "") == "" then false
        else ([ $pr.comments.nodes[]?
                | select((.body // "")
@@ -1430,6 +1503,7 @@ pr_facts() {
        end) as $escalated
     | [ ($head.oid // ""),
         ($head.committedDate // ""),
+        (($head.author.user.login | is_coderabbit) | tostring),
         ((($signals | max_by(.at // "") | .terminal) // false) | tostring),
         ($threads | length | tostring),
         ($status.updatedAt // ""),
@@ -1438,25 +1512,8 @@ pr_facts() {
         ($escalated | tostring),
         ((($signals | length) > 0) | tostring),
         ([ $signals[] | select(.terminal | not) | .at | select(. != null) ] | min // ""),
-        # Anywhere on the pull request, whoever posted it — except a handover
-        # the loop wrote, which is not a review artifact and which pastes
-        # CodeRabbit words verbatim. Without that one exclusion a reply that
-        # happened to quote the block would let the record the loop wrote answer
-        # the question that record exists because nothing else could answer.
-        #
-        # This is a deliberate narrowing of *anywhere on the pull request*, and
-        # the only one: what the loop wrote is not evidence about what
-        # CodeRabbit did. Without it the phase could answer its own question,
-        # and a self-referential marker is a trap this project has already been
-        # caught in once.
-        #
-        # ponytail: no fixture reaches it. Neither measured reply shape carries a
-        # block, and inventing one would test the loop against a shape of
-        # CodeRabbit nobody has seen.
-        (if ([ $pr.comments.nodes[]?
-               | select((.body // "") | contains($escprefix) | not)
-               | select((.body // "") | contains($riskstart)) ]
-             | length) > 0 then "present" else "absent" end),
+        (if $blockComment then "present" else "absent" end),
+        (((($blockComment.body // "") | risk_block).abbrev // "") | ascii_downcase),
         ((($walk.body // "") | contains($ratelimit)) | tostring),
         $nudgeAt,
         ($reply.body | flat) ]
@@ -1759,7 +1816,7 @@ gate_facts() {
     --arg ratelimit "$RATE_LIMIT_MARKER" \
     --arg riskstart "$RISK_BLOCK_MARKER" \
     --arg workflows "$CI_WORKFLOW_DIR" \
-    --arg scripts "$UNATTENDED_SCRIPTS" '
+    --arg scripts "$UNATTENDED_SCRIPTS" "$RISK_BLOCK_PARSE"'
     def is_coderabbit: (. // "") | ascii_downcase | startswith($crlogin);
     # A newline or a tab inside a value would reshape the one-value-per-line
     # protocol at the bottom of this program into a *different* set of values
@@ -1776,11 +1833,10 @@ gate_facts() {
          | select((.body // "") | contains($walkthrough)) ]
        | max_by(.updatedAt // "")) as $walk
     | ($walk.body // "") as $body
-    # capture emits nothing on no match, so it is collected into an array first:
-    # bound bare, an unparseable block would make this whole program produce no
-    # output at all rather than say the block was unparseable.
-    | ([ $body | capture("final_review_risk_start -->\\s*\\*\\*Merge Risk:\\*\\*\\s*_(?<level>[^_]+)_\\s*·\\s*up to `(?<abbrev>[0-9a-fA-F]+)`") ]
-       | .[0]) as $risk
+    # The same parse the chain runs, by definition rather than by copy: the two
+    # read the block at different scopes on purpose, and the one thing they must
+    # never disagree about is which commit a verdict names.
+    | ($body | risk_block) as $risk
     | [ $head.statusCheckRollup.contexts.nodes[]?
         | if .__typename == "StatusContext" then
             ((.state // "") | ascii_upcase) as $s
@@ -1900,13 +1956,19 @@ risk_gate() {
   # unparseable line, a block that is not there. There is no documented ladder of
   # levels to order, so this is the tripwire for CodeRabbit changing shape.
   #
-  # A missing block no longer reaches this line: *no merge-risk block anywhere on
-  # the pull request* is one of the two routes into `unreviewed`, which is
-  # nudged and bounded before the gate is ever reached. So the `absent` arm here
-  # is unreachable by construction and is kept anyway — the predicate upstream
-  # reads the marker across every comment where this reads it out of
-  # CodeRabbit's newest walkthrough, and the safe direction for that asymmetry
-  # is for the stricter reader to escalate rather than to fall through.
+  # **Two of the four ways to fail here are unreachable by construction, and
+  # both are kept.** *No merge-risk block anywhere on the pull request* and *a
+  # block naming some other commit* are two of the three routes into
+  # `needs-review`, which is nudged and bounded before the gate is ever reached
+  # — so what actually arrives here is a terminal review **and** a block naming
+  # this head, and only the level and the parse can still say no.
+  #
+  # They are kept because the two readers work at different scopes: the
+  # predicate upstream reads the block across every comment where this reads it
+  # out of CodeRabbit's newest walkthrough, and the safe direction for that
+  # asymmetry is for the stricter reader to escalate rather than to fall
+  # through. The parse itself is shared, so the one thing they cannot disagree
+  # about is which commit a verdict names.
   if [[ "$block" == "parsed" && "$level" == "$RISK_LEVEL_MINIMAL" \
         && -n "$abbrev" && "$head" == "$abbrev"* ]]; then
     v1=ok
@@ -2094,10 +2156,10 @@ pr_phase_project() {
 # reason from being a suite-wide edit.
 pr_phase_one() {
   local github="$1" number="$2" labelled="$3" method="$4"
-  local response head head_date terminal threads status_at status_head trigger_at escalated
-  local signal pending_at block limited nudge_at reply
+  local response head head_date own_head terminal threads status_at status_head trigger_at escalated
+  local signal pending_at block block_abbrev limited nudge_at reply
   local now head_epoch status_epoch trigger_epoch pending_epoch nudge_epoch
-  local spent in_flight age status unreviewed route origin
+  local spent in_flight age status needs_review route origin stalled_reason
   local state review kv merge_out merge_status escalate_status
 
   if ! response=$(query_pr_state "$github" "$number"); then
@@ -2105,7 +2167,7 @@ pr_phase_one() {
     SKIPS=$((SKIPS + 1))
     return 0
   fi
-  # One value per line, not one tab-separated line: five of the fourteen are
+  # One value per line, not one tab-separated line: six of the sixteen are
   # routinely empty, and bash's `read` folds a run of tabs into a single
   # delimiter — so a pull request with no autofix status would silently have its
   # trigger read as its status, and every one of them would look spent.
@@ -2113,11 +2175,13 @@ pr_phase_one() {
   # `|| true`, because a jq that answered nothing leaves `read` at end of input
   # and `set -e` would take the whole daemon down over one unreadable pull
   # request. The empty head below is what says so instead.
-  head=""; head_date=""; terminal=""; threads=0; status_at=""; status_head=""; trigger_at=""
-  escalated=false; signal=false; pending_at=""; block=""; limited=false; nudge_at=""; reply=""
+  head=""; head_date=""; own_head=false; terminal=""; threads=0; status_at=""; status_head=""
+  trigger_at=""; escalated=false; signal=false; pending_at=""; block=""; block_abbrev=""
+  limited=false; nudge_at=""; reply=""
   {
     read -r head
     read -r head_date
+    read -r own_head
     read -r terminal
     read -r threads
     read -r status_at
@@ -2127,6 +2191,7 @@ pr_phase_one() {
     read -r signal
     read -r pending_at
     read -r block
+    read -r block_abbrev
     read -r limited
     read -r nudge_at
     read -r reply
@@ -2150,14 +2215,44 @@ pr_phase_one() {
   status_epoch=$(epoch_of "$status_at") || status_epoch=""
   trigger_epoch=$(epoch_of "$trigger_at") || trigger_epoch=""
 
-  # **Autofix is spent on this head** when the newest autofix-status comment is
-  # paired with a trigger that records this head as its input. CodeRabbit's
-  # visible `Commit:` is an output commit on success and `_none_` on failure, so
-  # neither can identify the input. The loop records that identity in its own
-  # trigger instead and never parses CodeRabbit's result prose.
+  # **Autofix is spent on this head** for either of two sufficient reasons, and
+  # the token carries which one: an operator asking why autofix did not fire
+  # cannot answer it from a blind *spent*.
+  #
+  #   spent:trigger   the newest autofix-status comment is paired with a trigger
+  #                   that records this head as its input. CodeRabbit's visible
+  #                   `Commit:` is an output commit on success and `_none_` on
+  #                   failure, so neither can identify the input; the loop
+  #                   records that identity in its own trigger instead and never
+  #                   parses CodeRabbit's result prose.
+  #   spent:own-head  the head commit is CodeRabbit's own. **The loop does not
+  #                   act on its own output** — the same rule terminality states
+  #                   when it forbids a `no` resting on a loop-produced cause,
+  #                   stated here at its second site. Whose commit it is comes
+  #                   from the read, decided by the same `is_coderabbit` that
+  #                   answers every other authorship question in this file: one
+  #                   definition, not a second one spelled in bash.
+  #
+  # The second exists because the third route into `needs-review` arms a cycle
+  # that used to be inert: the nudge runs a full review at an autofix head,
+  # which can mint new threads on the autofix's own diff, which the loop would
+  # autofix, minting another head — a fix chain that turns with no human in it.
+  # The stop is structural rather than a cap on turns, because a cap needs a
+  # number and concedes all but one turn of the churn it bounds.
+  #
+  # The cost is accepted and is the right backstop: new findings on an autofix
+  # commit reach the gate unfixed, where the full review has moved the block
+  # onto that head, so V1 judges the new review's level and a bad autofix
+  # escalates rather than being silently re-fixed by the thing that produced it.
+  #
+  # The trigger reason is tested first because it is evidence about this head
+  # specifically; the author test is a property of the commit and holds whether
+  # or not anything was ever triggered at it.
   spent=unspent
   if [[ -n "$status_head" && "$status_head" == "$head" ]]; then
-    spent=spent
+    spent=spent:trigger
+  elif [[ "$own_head" == "true" ]]; then
+    spent=spent:own-head
   fi
 
   # In flight is the trigger paired with the answer: my trigger newer than the
@@ -2173,12 +2268,20 @@ pr_phase_one() {
     fi
   fi
 
-  # **`U` — the pull request CodeRabbit never reviewed.** Two clauses, either
-  # one enough, and the states below all test *this* rather than restating it,
-  # so the chain cannot drift from the definition:
+  # **`needs-review` — no merge-risk verdict covers this head, and the remedy is
+  # a write.** Three clauses, any one enough, and the states below all test
+  # *this* rather than restating it, so the chain cannot drift from the
+  # definition:
   #
   #   no signal   CodeRabbit put neither a status nor a check run on the head
   #   no block    there is no merge-risk block anywhere on the pull request
+  #   other head  the block parses, and the abbreviation it names is not a
+  #               prefix of the head
+  #
+  # *Unreviewed* was accurate with two clauses and is false with three: under
+  # the third CodeRabbit **did** review the head. *Stale block* was rejected as
+  # a name for the same reason — *stale* implies it will refresh, and the
+  # finding is that it will not.
   #
   # The second clause is what makes a **green status that means no review ran**
   # visible. A `success` CodeRabbit status does not mean the code was reviewed:
@@ -2192,18 +2295,44 @@ pr_phase_one() {
   # *passing check* — a second, independent route to the same false green — and
   # why the documented list of other non-triggers never has to be tracked.
   #
+  # **The third clause is why this state exists in this shape at all.**
+  # CodeRabbit will not re-walkthrough its own autofix commit — in five of nine
+  # recently merged pull requests the head's walkthrough named a different
+  # commit — and autofix is the loop's primary path, so V1's prefix test alone
+  # would veto nearly every pull request the loop itself fixes, permanently, on
+  # a cause the loop's own write produced and the operator cannot clear.
+  # Relaxing V1 to accept the parent's verdict was rejected: the nine-second
+  # *Review completed* on an autofix head is almost certainly a **skip**, so
+  # clearing on it would merge a diff no verdict covers. The mismatch is
+  # loop-produced, so terminality forbids a `no`; it is permanent at that head,
+  # so permanence forbids a useful `defer`; but it is loop-**retractable** — a
+  # cause that does not self-clear whose remedy is a write. So the gate judges
+  # and the chain repairs.
+  #
+  # It is **cause-blind**, so a force-pushed head takes the same remedy and
+  # stands on firmer ground there, that head really being new code.
+  # Discriminating would need exactly the commit ancestry and authorship the
+  # relaxation was rejected for.
+  #
   # Which clause fired goes in the tail rather than into a second state name:
-  # the two routes are the same state and want the same remedy, and the log line
-  # is where the difference belongs.
-  unreviewed=false
+  # the routes are the same state and want the same remedy, and the log line is
+  # where the difference belongs.
+  needs_review=false
   route=""
   if [[ "$signal" != "true" ]]; then
-    unreviewed=true
+    needs_review=true
     route="no-signal"
   fi
   if [[ "$block" == "absent" ]]; then
-    unreviewed=true
+    needs_review=true
     route="${route:+$route,}no-block"
+  fi
+  # An unparseable block is deliberately not this clause: it names no
+  # abbreviation, so there is nothing to test against the head, and it belongs
+  # to V1's tripwire for CodeRabbit changing shape rather than to a remedy.
+  if [[ -n "$block_abbrev" && "$head" != "$block_abbrev"* ]]; then
+    needs_review=true
+    route="${route:+$route,}other-head"
   fi
 
   # First match wins.
@@ -2317,7 +2446,7 @@ pr_phase_one() {
       kv="$kv $(escalation_kv stalled "$status")"
       (( status == 0 )) || SKIPS=$((SKIPS + 1))
     fi
-  elif $unreviewed; then
+  elif $needs_review; then
     kv="$kv route=$route"
     # **The rate-limit marker is tested first**, and a match waits rather than
     # nudging: a throttled reviewer is not a paused one, and nudging it would
@@ -2355,11 +2484,30 @@ pr_phase_one() {
           # all the same, because a handover exists to be acted on.
           state=nudge-stalled
           status=0
+          # **The `no` row branches on the route**, and it is a lookup rather
+          # than a second derivation: the route is already computed above.
+          #
+          # Under `other-head` alone every clause of the older text is false —
+          # CodeRabbit is installed, has seats, and reported on this head in
+          # nine seconds — so saying it would send the operator to look at a
+          # seat count when the real state is a verdict pinned to another
+          # commit. Any route carrying `no-signal` keeps the older text, because
+          # then CodeRabbit really did put nothing on this head.
+          #
+          # The exact match reads as if it missed a case and does not: the only
+          # route that can join `other-head` is `no-signal`. `no-block` means
+          # there is no block anywhere, which leaves nothing to parse an
+          # abbreviation out of, so the two cannot both fire.
+          if [[ "$route" == "other-head" ]]; then
+            stalled_reason="CodeRabbit reviewed this head and left its merge-risk verdict on another commit — the nudge did not move it, so no verdict covers the code being merged"
+          else
+            stalled_reason="CodeRabbit never reported a review inside the bound — it may not be installed on this repository, or the organisation may be out of seats"
+          fi
           escalate "$github" "$number" "$head" stalled \
             "$(reason ok "the review nudge was posted at this head" \
                  "nudge=$nudge_at route=$route head=$head_date")" \
-            "$(reason no "CodeRabbit never reported a review inside the bound — it may not be installed on this repository, or the organisation may be out of seats" \
-                 "age=${age}s bound=${POLL_INTERVAL}s nudge=$nudge_at")" \
+            "$(reason no "$stalled_reason" \
+                 "age=${age}s bound=${POLL_INTERVAL}s nudge=$nudge_at route=$route")" \
             "$(reason note "CodeRabbit's reply to the nudge, verbatim and unparsed" \
                  "${reply:-none}")" \
             || status=$?
@@ -2376,14 +2524,14 @@ pr_phase_one() {
         # The command is one-shot, so a pull request taking pushes re-wedges
         # roughly every five commits and is nudged again at each new head — the
         # stated cost of choosing the measured verb.
-        state=unreviewed
+        state=needs-review
         status=0
         post_review_nudge "$github" "$number" || status=$?
         if (( status == 0 )); then
           kv="$kv action=nudged"
         else
           # Nothing is remembered, so nothing has to be unwound: the next pass
-          # re-derives, finds the pull request still unreviewed and still
+          # re-derives, finds the pull request still needing a review and still
           # un-nudged, and writes again. The poll interval is the backoff.
           kv="$kv action=failed rc=$status"
           SKIPS=$((SKIPS + 1))

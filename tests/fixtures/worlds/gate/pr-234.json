@@ -20,6 +20,11 @@
               "commit": {
                 "oid": "234c234c234c234c234c234c234c234c234c234c",
                 "committedDate": "2026-08-27T11:30:00Z",
+                "author": {
+                  "user": {
+                    "login": "nywleswoey"
+                  }
+                },
                 "statusCheckRollup": {
                   "state": "SUCCESS",
                   "contexts": {
@@ -60,7 +65,7 @@
               "databaseId": 5379000234,
               "createdAt": "2026-08-20T09:00:00Z",
               "updatedAt": "2026-08-27T11:32:00Z",
-              "body": "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n<!-- recent_review_start -->\n## Walkthrough\n\nA localized change.\n<!-- recent_review_end -->\n<!-- final_review_risk_start -->\n**Merge Risk:** _⚪ Minimal_ · up to `bad11`\n\nProse CodeRabbit wrote about the change, which nothing parses.\n<!-- final_review_risk_end -->\n<!-- pre_merge_checks_walkthrough_start -->\n<details>\n<summary>🚥 Pre-merge checks | ✅ 5</summary>\n</details>\n<!-- pre_merge_checks_walkthrough_end -->\n<!-- tips_start -->\n<details>\n<summary>📜 Recent review details</summary>\n\nConfiguration used: defaults\nReview profile: CHILL\nPlan: Pro Plus\n</details>\n<!-- tips_end -->\n",
+              "body": "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n<!-- recent_review_start -->\n## Walkthrough\n\nA localized change.\n<!-- recent_review_end -->\n<!-- final_review_risk_start -->\n**Merge Risk:** _🟠 High_ · up to `234c2`\n\nProse CodeRabbit wrote about the change, which nothing parses.\n<!-- final_review_risk_end -->\n<!-- pre_merge_checks_walkthrough_start -->\n<details>\n<summary>🚥 Pre-merge checks | ✅ 5</summary>\n</details>\n<!-- pre_merge_checks_walkthrough_end -->\n<!-- tips_start -->\n<details>\n<summary>📜 Recent review details</summary>\n\nConfiguration used: defaults\nReview profile: CHILL\nPlan: Pro Plus\n</details>\n<!-- tips_end -->\n",
               "author": {
                 "login": "coderabbitai"
               }

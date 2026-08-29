@@ -23,6 +23,11 @@
               "commit": {
                 "oid": "203c203c203c203c203c203c203c203c203c203c",
                 "committedDate": "2026-08-27T11:55:00Z",
+                "author": {
+                  "user": {
+                    "login": "nywleswoey"
+                  }
+                },
                 "statusCheckRollup": {
                   "state": "PENDING",
                   "contexts": {
