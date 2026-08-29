@@ -1278,6 +1278,21 @@ check_grep "route=other-head head=2026-08-27T11:50:00Z" "$OTHER_BODY"
 check "the stalled nudge is not sent again" \
   test "$(grep -cF 'pr comment 280 --repo nywleswoey/automation --body @coderabbitai review' "$STUB_CALLS")" -eq 0
 
+# 281 — the one route that can join the third, and the mutant that pins the
+# lookup's exact match. Nothing at all rolled up on this head *and* the newest
+# block names another commit, so both clauses fire. The older text is the true
+# one here — CodeRabbit really did put nothing on this head — so the branch
+# above must **not** take the third route's prose.
+#
+# `no-block` cannot join `other-head`: no block anywhere leaves nothing to parse
+# an abbreviation out of. This is the only pairing there is.
+check_grep "pr nywleswoey/automation#281 281b281b281b281b281b281b281b281b281b281b nudge-stalled review=pending threads=0 autofix=unspent route=no-signal,other-head age=301 bound=300 action=escalated kind=stalled label=added" "$PASS_LOG"
+BOTH_BODY="$STUB_STATE/pr-body-281.txt"
+check "the escalation body was captured" test -f "$BOTH_BODY"
+check_grep "not be installed on this repository, or the organisation may be out of seats" "$BOTH_BODY"
+check_no_grep "CodeRabbit reviewed this head and left its merge-risk verdict on another commit" "$BOTH_BODY"
+check_grep "age=301s bound=300s nudge=2026-08-27T11:55:00Z route=no-signal,other-head" "$BOTH_BODY"
+
 # --- pr phase: the review clock, proven by a mutant twin ----------------------------
 
 # A pending status with nothing after it. This is a gate-style defer — *a signal

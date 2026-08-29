@@ -22,6 +22,22 @@
               "login": "nywleswoey"
             },
             "baseRefName": "main"
+          },
+          {
+            "number": 281,
+            "title": "A verdict on another commit, and nothing on this head",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/281",
+            "headRefName": "pr-both-routes",
+            "headRefOid": "281b281b281b281b281b281b281b281b281b281b",
+            "labels": {
+              "nodes": []
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
           }
         ]
       }

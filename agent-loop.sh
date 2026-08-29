@@ -108,6 +108,15 @@ RISK_BLOCK_MARKER='<!-- final_review_risk_start -->'
 # `capture` emits nothing at all on no match, so the result is collected into an
 # array and indexed: bound bare, an unparseable block would make the whole
 # program produce no output rather than say the block was unparseable.
+#
+# It re-spells the marker above rather than taking it as an argument, and unlike
+# the trigger's two copies that is a limitation rather than a choice: this is a
+# jq *program fragment*, so the marker would have to reach it as a `--arg` every
+# caller passes and then be spliced into a regex — where the `<!--` would need
+# escaping and a marker that gained a metacharacter would silently stop
+# matching. The copies cannot drift far: a marker changed here and not there
+# reads every block as unparseable, which V1 escalates on loudly. There is no
+# such backstop for the trigger, which is why that one is pinned by a test.
 RISK_BLOCK_PARSE='def risk_block:
   [ (. // "") | capture("final_review_risk_start -->\\s*\\*\\*Merge Risk:\\*\\*\\s*_(?<level>[^_]+)_\\s*·\\s*up to `(?<abbrev>[0-9a-fA-F]+)`") ] | .[0];
 '
@@ -1281,7 +1290,7 @@ query_pr_state() {
 #
 #   head        the head commit
 #   headDate    its committer date, ISO-8601
-#   headAuthor  its author's login, lowercased, empty when GitHub names none
+#   ownHead     true when the head commit's author is CodeRabbit
 #   terminal    true when CodeRabbit's review on that commit has finished
 #   threads     unresolved CodeRabbit review threads on the pull request
 #   statusAt    newest autofix-status comment, ISO-8601, empty if none
@@ -1470,6 +1479,18 @@ pr_facts() {
     # ponytail: no fixture reaches the exclusion. Neither measured reply shape
     # carries a block, and inventing one would test the loop against a shape of
     # CodeRabbit nobody has seen.
+    #
+    # ponytail: the handover the loop wrote is the only exclusion, so a *human*
+    # comment quoting a merge-risk block can now answer for CodeRabbit — and
+    # since the third route reads the abbreviation out of that comment, a quote
+    # naming another commit mints an `other-head` nudge and, one interval later,
+    # a handover. That was already true of the presence test before the third
+    # route existed; the route makes it visible rather than introducing it. It
+    # fails in the safe direction — a quote can only stop a merge, never cause
+    # one — and narrowing this read to comments CodeRabbit itself posted while
+    # the presence test stays broad would put the two halves of one fact at
+    # different scopes. Narrow both, together, if a real pull request ever hits
+    # it.
     | ([ $pr.comments.nodes[]?
          | select((.body // "") | contains($escprefix) | not)
          | select((.body // "") | contains($riskstart)) ]
@@ -1482,7 +1503,7 @@ pr_facts() {
        end) as $escalated
     | [ ($head.oid // ""),
         ($head.committedDate // ""),
-        (($head.author.user.login // "") | ascii_downcase),
+        (($head.author.user.login | is_coderabbit) | tostring),
         ((($signals | max_by(.at // "") | .terminal) // false) | tostring),
         ($threads | length | tostring),
         ($status.updatedAt // ""),
@@ -2135,7 +2156,7 @@ pr_phase_project() {
 # reason from being a suite-wide edit.
 pr_phase_one() {
   local github="$1" number="$2" labelled="$3" method="$4"
-  local response head head_date head_author terminal threads status_at status_head trigger_at escalated
+  local response head head_date own_head terminal threads status_at status_head trigger_at escalated
   local signal pending_at block block_abbrev limited nudge_at reply
   local now head_epoch status_epoch trigger_epoch pending_epoch nudge_epoch
   local spent in_flight age status needs_review route origin stalled_reason
@@ -2154,13 +2175,13 @@ pr_phase_one() {
   # `|| true`, because a jq that answered nothing leaves `read` at end of input
   # and `set -e` would take the whole daemon down over one unreadable pull
   # request. The empty head below is what says so instead.
-  head=""; head_date=""; head_author=""; terminal=""; threads=0; status_at=""; status_head=""
+  head=""; head_date=""; own_head=false; terminal=""; threads=0; status_at=""; status_head=""
   trigger_at=""; escalated=false; signal=false; pending_at=""; block=""; block_abbrev=""
   limited=false; nudge_at=""; reply=""
   {
     read -r head
     read -r head_date
-    read -r head_author
+    read -r own_head
     read -r terminal
     read -r threads
     read -r status_at
@@ -2207,7 +2228,10 @@ pr_phase_one() {
   #   spent:own-head  the head commit is CodeRabbit's own. **The loop does not
   #                   act on its own output** — the same rule terminality states
   #                   when it forbids a `no` resting on a loop-produced cause,
-  #                   stated here at its second site.
+  #                   stated here at its second site. Whose commit it is comes
+  #                   from the read, decided by the same `is_coderabbit` that
+  #                   answers every other authorship question in this file: one
+  #                   definition, not a second one spelled in bash.
   #
   # The second exists because the third route into `needs-review` arms a cycle
   # that used to be inert: the nudge runs a full review at an autofix head,
@@ -2227,7 +2251,7 @@ pr_phase_one() {
   spent=unspent
   if [[ -n "$status_head" && "$status_head" == "$head" ]]; then
     spent=spent:trigger
-  elif [[ -n "$head_author" && "$head_author" == "$CODERABBIT_LOGIN"* ]]; then
+  elif [[ "$own_head" == "true" ]]; then
     spent=spent:own-head
   fi
 
@@ -2469,6 +2493,11 @@ pr_phase_one() {
           # seat count when the real state is a verdict pinned to another
           # commit. Any route carrying `no-signal` keeps the older text, because
           # then CodeRabbit really did put nothing on this head.
+          #
+          # The exact match reads as if it missed a case and does not: the only
+          # route that can join `other-head` is `no-signal`. `no-block` means
+          # there is no block anywhere, which leaves nothing to parse an
+          # abbreviation out of, so the two cannot both fire.
           if [[ "$route" == "other-head" ]]; then
             stalled_reason="CodeRabbit reviewed this head and left its merge-risk verdict on another commit — the nudge did not move it, so no verdict covers the code being merged"
           else
