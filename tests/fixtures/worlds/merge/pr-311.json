@@ -20,6 +20,11 @@
               "commit": {
                 "oid": "311b311b311b311b311b311b311b311b311b311b",
                 "committedDate": "2026-08-27T11:30:00Z",
+                "author": {
+                  "user": {
+                    "login": "nywleswoey"
+                  }
+                },
                 "statusCheckRollup": {
                   "state": "SUCCESS",
                   "contexts": {
