@@ -687,6 +687,118 @@ branch_report() {
   done
 }
 
+# --- open pull requests ------------------------------------------------------
+
+# A worker that **finished** leaves no process behind, which is exactly what a
+# dispatch that **crashed before it started** leaves — so liveness alone cannot
+# tell the two apart, and a reclaim that asks only that question reads a
+# finished worker as a crashed one, hands its issue back to the backlog, and a
+# second worker rebuilds the same feature from scratch. The evidence that
+# separates them is an open pull request on the branch the dispatch asked for,
+# and this is what reads it.
+#
+# One read per repository, in configuration order — the same shape the PR phase
+# settled on, and for the same reason: the global `is:pr is:open` search is an
+# index and lags behind the repository, and a delivered issue that is merely
+# missing from that index is the whole defect this guard exists to stop.
+#
+# Not `query_repo_open_prs` itself, which the PR phase makes. That read excludes
+# drafts and fork heads, and both exclusions are wrong here: a draft pull
+# request is work already done and held back by hand, not an invitation to build
+# it again, and a fork head is a pull request the loop will not merge unattended
+# rather than one it should duplicate.
+#
+# **Open, and only open.** Merged pull requests are close-out's, and close-out
+# runs before both callers in both orderings; counting them here would make an
+# issue whose pull request merged but whose checklist failed to tick look
+# handled forever, with nothing left to notice. Closed-unmerged ones are
+# abandoned work, and abandoning a pull request should return its issue to the
+# loop — asking for `states: OPEN` alone is what keeps both true.
+#
+# **This one pages, and every other enumeration here does not.** The single-page
+# cap the rest carry only degrades triage: a pull request past the hundredth is
+# looked at a pass later. Here it would fail *open* — a pull request missing
+# from the answer reads as "nothing delivers this issue", which is the duplicate
+# dispatch this whole guard exists to stop, and it would happen in silence. So
+# the read follows the cursor to the end, and a repository too busy even for
+# that fails closed rather than answering off a list known to be partial.
+#
+# ponytail: a second read of a list the PR phase reads again later in the pass.
+# Not worth sharing until a repository is busy enough to notice: the reclaim
+# runs before any pass at all, so there is no earlier read for it to share.
+# Prints one `<pull request>\t<branch>` line per open pull request — the pair in
+# GitHub's own order, which `load_open_pr_issues` then turns around into the
+# issue-keyed map the callers ask their question of.
+query_repo_open_pr_branches() {
+  local owner="${1%%/*}" name="${1##*/}" response cursor='null' page=0
+  # Twenty pages is two thousand open pull requests. The bound is here so a
+  # cursor GitHub never stops handing back cannot spin the loop forever.
+  while (( page < 20 )); do
+    response=$(gh_graphql "{ repository(owner: \"$owner\", name: \"$name\") { pullRequests(states: OPEN, first: 100, after: $cursor, orderBy: {field: UPDATED_AT, direction: DESC}) { pageInfo { hasNextPage endCursor } nodes { number headRefName } } } }") || return 1
+    # A GraphQL error can come back as a 200 with a null repository, which would
+    # otherwise read as "this repository has no open pull requests" — and read
+    # that way by this caller, it would wave every claimed issue through.
+    jq -e '.data.repository.pullRequests.nodes | type == "array"' <<< "$response" \
+      >/dev/null 2>&1 || return 1
+    jq -r '.data.repository.pullRequests.nodes[]?
+      | select(.number != null and .headRefName != null)
+      | [ (.number | tostring), .headRefName ] | @tsv' <<< "$response"
+    # A missing `pageInfo` is the last page: `jq -e` fails on null, and the one
+    # answer that must never be inferred here is "there is more I did not read".
+    jq -e '.data.repository.pullRequests.pageInfo.hasNextPage == true' <<< "$response" \
+      >/dev/null 2>&1 || return 0
+    cursor=$(jq -c '.data.repository.pullRequests.pageInfo.endCursor' <<< "$response")
+    # A next page GitHub will not give a cursor for is unreadable, not empty.
+    [[ -n "$cursor" && "$cursor" != "null" ]] || return 1
+    page=$((page + 1))
+  done
+  # Every page spent and GitHub still says there is more. The caller skips.
+  return 1
+}
+
+# One repository's open pull requests, resolved to the issues they deliver: a
+# `<issue>\t<pull request>` line each, held for whichever caller loaded it.
+#
+# **Emptied before every load, not only written after a good one.** A read that
+# failed must not leave the *previous* repository's answer standing here, where
+# it could shield an issue no pull request in this repository names. Both
+# callers skip on a failed load and never reach it either way; this is what
+# makes that belt-and-braces rather than the only thing holding.
+OPEN_PR_ISSUES=''
+
+# Fails when the read failed. It never fails for an empty answer: a repository
+# with no open pull requests is a fact, and an unanswerable question is not.
+load_open_pr_issues() {
+  local branches prnumber branch number loaded=''
+  OPEN_PR_ISSUES=''
+  branches=$(query_repo_open_pr_branches "$1") || return 1
+  while IFS=$'\t' read -r prnumber branch; do
+    [[ -n "$prnumber" && -n "$branch" ]] || continue
+    # The branch is the only pull-request-to-issue link there is, and it is the
+    # same one `closeout_phase` follows coming the other way.
+    number=$(issue_for_branch "$branch") || continue
+    # The separator is spelled rather than typed: a literal tab is invisible,
+    # and one an editor expanded would leave every line unsplittable — read back
+    # as an issue number that matches nothing, which fails open.
+    loaded+="$number"$'\t'"$prnumber"$'\n'
+  done <<< "$branches"
+  OPEN_PR_ISSUES="$loaded"
+}
+
+# open_pr_for_issue <number> — prints the number of an open pull request that
+# already delivers the issue, and fails when nothing does. The first match wins:
+# two open pull requests on one issue is still one answer, and which of them the
+# line names changes nothing either caller does.
+open_pr_for_issue() {
+  local number prnumber
+  while IFS=$'\t' read -r number prnumber; do
+    [[ "$number" == "$1" ]] || continue
+    printf '%s' "$prnumber"
+    return 0
+  done <<< "$OPEN_PR_ISSUES"
+  return 1
+}
+
 # --- startup reclaim ---------------------------------------------------------
 
 # The worktree a dispatch asked for is `agent-loop-<type>-<number>-<title-slug>`,
@@ -709,6 +821,10 @@ issue_has_live_worker() {
 # issue claimed with nobody on it. Startup hands every such issue back, which
 # also tidies whatever Ctrl-C left orphaned — a leftover worktree strands
 # nothing.
+#
+# Two questions, not one. A claim is only stale when **nobody is on it and
+# nothing has come of it**: liveness answers the first, an open pull request the
+# second, and either one on its own hands back work that is already delivered.
 reclaim_stale_claims() {
   # A reclaim on an inventory we could not read would hand back issues that do
   # have workers, so an unreadable inventory skips the reclaim entirely.
@@ -717,11 +833,22 @@ reclaim_stale_claims() {
     return 0
   fi
 
-  local i github numbers number
+  local i github numbers number prnumber
   for (( i = 0; i < PROJECT_COUNT; i++ )); do
     github=$(jq -r ".projects[$i].github" "$CONFIG_PATH")
     if ! numbers=$(query_claimed_issues "$github"); then
       log "claimed-issue query failed: $github"
+      continue
+    fi
+    # Nothing claimed here: no second question to ask, and no read to spend
+    # asking it.
+    [[ -n "$numbers" ]] || continue
+    # Fail closed. A reclaim that cannot see this repository's open pull
+    # requests would hand back every issue one of them already delivers, and the
+    # loop polls: an unanswered read costs one interval, where a duplicate costs
+    # a whole rebuild.
+    if ! load_open_pr_issues "$github"; then
+      log "open-pr query failed: $github, skipping its reclaim"
       continue
     fi
     # stdin is closed for the body: gh-axi must not swallow the issue list.
@@ -729,6 +856,8 @@ reclaim_stale_claims() {
       [[ -n "$number" ]] || continue
       if issue_has_live_worker "$number"; then
         log "left claimed $github#$number: a live worker holds it"
+      elif prnumber=$(open_pr_for_issue "$number"); then
+        log "left claimed $github#$number: pull request #$prnumber already delivers it"
       elif release_issue "$github" "$number" < /dev/null; then
         log "reclaimed $github#$number: no live worker, returned to $LABEL_READY"
       else
@@ -857,6 +986,7 @@ issue_phase() {
 # respects the worker budget, claims issues and dispatches workers at them.
 issue_phase_project() {
   local github="$1" orca_id="$2" issues number weburl type title blockers worktree_id
+  local prnumber
 
   # ponytail: the CLI's own error text goes to stderr, so it reaches the
   # terminal but not the log file. Capture it into the log line if reading the
@@ -867,9 +997,32 @@ issue_phase_project() {
     return 0
   fi
 
+  # An empty backlog has no second question to ask, and no read to spend asking
+  # it.
+  [[ -n "$issues" ]] || return 0
+
+  # The second door onto an issue. The reclaim guards the first, but a ready
+  # label applied by hand reaches this phase without passing through the reclaim
+  # at all — so the question is asked again here, and fails closed the same way:
+  # a phase that cannot see the open pull requests dispatches at none of this
+  # repository's issues rather than risk re-dispatching at a delivered one.
+  if ! load_open_pr_issues "$github"; then
+    log "open-pr query failed: $github, skipping its issue phase"
+    SKIPS=$((SKIPS + 1))
+    return 0
+  fi
+
   # stdin is closed for the body: gh-axi must not swallow the issue list.
   while IFS=$'\t' read -r number weburl type title; do
     [[ -n "$number" ]] || continue
+
+    # First, and before the blocker read: an issue something already delivers is
+    # not worth a second call to find out whether it is also blocked.
+    if prnumber=$(open_pr_for_issue "$number"); then
+      log "issue $github#$number skipped: pull request #$prnumber already delivers it"
+      SKIPS=$((SKIPS + 1))
+      continue
+    fi
 
     if ! blockers=$(count_open_blockers "$github" "$number" < /dev/null); then
       log "issue $github#$number skipped: could not read its blockers"

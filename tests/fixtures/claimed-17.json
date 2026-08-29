@@ -1,0 +1,5 @@
+{ "data": { "repository": { "issues": { "nodes": [
+  { "number": 17, "title": "Agent loop: issue phase",
+    "url": "https://github.com/nywleswoey/automation/issues/17",
+    "labels": { "nodes": [ { "name": "agent-in-progress" } ] } }
+] } } } }

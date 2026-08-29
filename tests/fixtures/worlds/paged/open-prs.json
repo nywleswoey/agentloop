@@ -1,0 +1,26 @@
+{
+  "data": {
+    "repository": {
+      "pullRequests": {
+        "pageInfo": {
+          "hasNextPage": true,
+          "endCursor": "Y3Vyc29yOnYyOpHOAAAAAQ=="
+        },
+        "nodes": [
+          {
+            "number": 410,
+            "title": "Work on issue 88, on a fork",
+            "isDraft": false,
+            "isCrossRepository": true,
+            "url": "https://github.com/nywleswoey/automation/pull/410",
+            "headRefName": "agent-loop-issue-88",
+            "headRefOid": "cc8888cc8888cc8888cc8888cc8888cc8888cc88",
+            "labels": {
+              "nodes": []
+            }
+          }
+        ]
+      }
+    }
+  }
+}

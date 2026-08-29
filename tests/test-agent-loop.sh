@@ -686,6 +686,127 @@ check_status 0 "$STATUS"
 check_grep "claimed-issue query failed: nywleswoey/automation" "$OUT"
 check_grep "pass start" "$OUT"
 
+# --- an open pull request already delivers the issue ---------------------------
+
+# A worker that finished leaves no process behind, which is exactly what a
+# dispatch that crashed before it started leaves — so liveness alone cannot tell
+# the two apart, and the reclaim used to read both as "nobody has worked on it".
+# The evidence that separates them is an open pull request on the branch the
+# dispatch asked for. Both doors onto an issue ask for it: the reclaim, and the
+# issue phase, which a label applied by hand reaches without passing through the
+# reclaim at all.
+#
+# The `open-issue-branch` world carries exactly one open pull request, #401 on
+# `agent-loop-issue-17`.
+
+setup "the reclaim leaves a claim whose pull request is open"
+export STUB_CLAIMED=17 STUB_WORLD=open-issue-branch STUB_NOW=2026-08-27T12:00:00Z
+run_once
+check_status 0 "$STATUS"
+check_grep "left claimed nywleswoey/automation#17: pull request #401 already delivers it" "$OUT"
+check_no_grep "--add-label ready-for-agent" "$STUB_CALLS"
+# The pull request is still the PR phase's, which is what makes the reclaim's
+# silence a decision rather than an empty pass.
+check_grep "pr nywleswoey/automation#401" "$OUT"
+
+setup "a claim no open pull request names is reclaimed exactly as before"
+# #401 is on `agent-loop-issue-17`, and none of these four issues is 17. The
+# number is anchored on both sides, so #1 must not read #17's pull request as
+# its own.
+export STUB_CLAIMED=mixed STUB_ORCA_PS=busy STUB_WORLD=open-issue-branch STUB_NOW=2026-08-27T12:00:00Z
+run_once
+check_status 0 "$STATUS"
+check_grep "reclaimed nywleswoey/automation#1:" "$OUT"
+check_grep "reclaimed nywleswoey/automation#21" "$OUT"
+check "exactly two issues were reclaimed" \
+  test "$(grep -c -- '--add-label ready-for-agent' "$STUB_CALLS")" -eq 2
+
+setup "a live worker is still answer enough on its own"
+# The open-pull-request read is the second question, not a replacement for the
+# first: #11 and #12 have workers and no pull request, and the line says so.
+export STUB_CLAIMED=mixed STUB_ORCA_PS=busy STUB_WORLD=open-issue-branch STUB_NOW=2026-08-27T12:00:00Z
+run_once
+check_status 0 "$STATUS"
+check_grep "left claimed nywleswoey/automation#11: a live worker holds it" "$OUT"
+
+setup "the issue phase skips a ready issue whose pull request is open"
+export STUB_ISSUES=workable STUB_WORLD=open-issue-branch STUB_NOW=2026-08-27T12:00:00Z
+run_once
+check_status 0 "$STATUS"
+check_grep "issue nywleswoey/automation#17 skipped: pull request #401 already delivers it" "$OUT"
+check_no_grep "issue edit" "$STUB_CALLS"
+check_no_grep "worktree create" "$STUB_CALLS"
+# Skipped before the blockers are read: an issue already delivered is not worth
+# a second call to find out.
+check_no_grep "issues/17/dependencies/blocked_by" "$STUB_CALLS"
+
+setup "a draft pull request delivers its issue, though the PR phase ignores it"
+# Drafts are exactly why the guard does not reuse the PR phase's enumeration:
+# converting to draft is the operator's hold gesture, and work held back by hand
+# is still work done. The PR phase's silence about #402 in the same pass is what
+# makes the two reads visibly different rather than the same read twice.
+export STUB_CLAIMED=17 STUB_WORLD=open-draft-branch STUB_NOW=2026-08-27T12:00:00Z
+run_once
+check_status 0 "$STATUS"
+check_grep "left claimed nywleswoey/automation#17: pull request #402 already delivers it" "$OUT"
+check_no_grep "--add-label ready-for-agent" "$STUB_CALLS"
+check_no_grep "pr nywleswoey/automation#402" "$OUT"
+
+setup "an open pull request past the first page still delivers its issue"
+# The one enumeration here that pages, because the single-page cap the others
+# carry would fail *open* on this question: a pull request missing from the
+# answer reads as "nothing delivers this issue", which is the duplicate dispatch
+# the guard exists to stop. #411 is on the second page, and on a fork — the
+# other exclusion the PR phase makes and this read deliberately does not.
+export STUB_CLAIMED=17 STUB_WORLD=paged STUB_NOW=2026-08-27T12:00:00Z
+run_once
+check_status 0 "$STATUS"
+check_grep "left claimed nywleswoey/automation#17: pull request #411 already delivers it" "$OUT"
+check_no_grep "--add-label ready-for-agent" "$STUB_CALLS"
+check_no_grep "pr nywleswoey/automation#411" "$OUT"
+
+setup "a single-page answer is never asked for a second page"
+# The PR phase's read carries no cursor at all and the guard's first page asks
+# `after: null`, so a world with no second page is proof the loop stopped: the
+# stub makes a continuation it cannot answer a hard error rather than an empty
+# one.
+export STUB_CLAIMED=17 STUB_WORLD=open-issue-branch STUB_NOW=2026-08-27T12:00:00Z
+run_once
+check_status 0 "$STATUS"
+check_no_grep "does not have" "$OUT"
+check_grep "left claimed nywleswoey/automation#17: pull request #401 already delivers it" "$OUT"
+
+setup "a merged pull request does not shield its issue from the reclaim"
+# Deliberately excluded: merged pull requests are close-out's, and close-out
+# runs first in both orderings. Counting them here would make an issue whose
+# pull request merged but whose close-out failed look handled forever.
+export STUB_CLAIMED=17 STUB_MERGED=set STUB_GH_FAIL=close
+run_once
+check_status 0 "$STATUS"
+check_grep "close failed for nywleswoey/automation#17, leaving it claimed" "$OUT"
+check_grep "reclaimed nywleswoey/automation#17" "$OUT"
+
+setup "a reclaim that cannot ask about open pull requests reclaims nothing"
+export STUB_CLAIMED=17 STUB_GH_FAIL=prs
+run_once
+check_status 0 "$STATUS"
+check_grep "open-pr query failed: nywleswoey/automation, skipping its reclaim" "$OUT"
+check_no_grep "--add-label ready-for-agent" "$STUB_CALLS"
+
+setup "an issue phase that cannot ask about open pull requests dispatches nothing"
+export STUB_ISSUES=workable STUB_GH_FAIL=prs
+run_once
+check_status 0 "$STATUS"
+check_grep "open-pr query failed: nywleswoey/automation, skipping its issue phase" "$OUT"
+check_no_grep "issue edit" "$STUB_CALLS"
+check_no_grep "worktree create" "$STUB_CALLS"
+
+setup "an empty backlog costs no open-pull-request read"
+export STUB_ISSUES=none
+run_once
+check_status 0 "$STATUS"
+check_no_grep "open-pr query failed" "$OUT"
+
 # --- worktree sweep -------------------------------------------------------------
 
 # The sweep fixture carries one of everything: a removable loop worktree, a

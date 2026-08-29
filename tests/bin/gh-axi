@@ -23,9 +23,11 @@
 #                                makes, from claimed-$STUB_CLAIMED.json
 #                                (default: none)
 #                              pullRequests(states: OPEN
-#                                the PR phase's per-repository enumeration,
-#                                answered out of the world directory — see
-#                                $STUB_WORLD below
+#                                the per-repository open-pull-request
+#                                enumerations — the PR phase's, and the
+#                                delivery guard's, which is the only one that
+#                                pages. Answered out of the world directory —
+#                                see $STUB_WORLD below
 #                              pullRequest(number: N) ... statusCheckRollup
 #                                everything the PR phase derives one pull
 #                                request's state from, also out of the world
@@ -71,7 +73,9 @@
 # $STUB_WORLD names a directory under fixtures/worlds (default: "none") holding
 # **one whole-world snapshot**: `open-prs.json` for the enumeration, or
 # `open-prs-<owner>-<name>.json` when a case configures more than one
-# repository, and `pr-<number>.json` for each pull request in it.
+# repository, and `pr-<number>.json` for each pull request in it. A world whose
+# `open-prs.json` says `hasNextPage` also carries `open-prs-next.json`, which is
+# what a read carrying a cursor gets.
 #
 # A multi-pass case moves $STUB_WORLD from one captured world to the next rather
 # than having this stub simulate what the previous pass changed. A simulator
@@ -297,7 +301,16 @@ if [[ "$path" == "graphql" || "$path" == "/graphql" ]]; then
       repo=$(sed -n 's/.*repository(owner: "\([^"]*\)", name: "\([^"]*\)").*/\1\/\2/p' <<< "$query")
       owner="${repo%%/*}"
       name="${repo##*/}"
-      if [[ -f "$world/open-prs-$owner-$name.json" ]]; then
+      # A cursor in the argv is a *continuation*, and only the reclaim's read
+      # ever sends one — its first page asks `after: null`, unquoted, and the PR
+      # phase's read carries no `after:` at all. The world answers it from
+      # `open-prs-next.json`; a world that has none has been asked to page by a
+      # loop that should have stopped, and saying so is the point.
+      if [[ "$query" == *'after: "'* ]]; then
+        [[ -f "$world/open-prs-next.json" ]] \
+          || { echo "stub gh-axi: $world was asked for a second page it does not have" >&2; exit 1; }
+        emit_file "$world/open-prs-next.json"
+      elif [[ -f "$world/open-prs-$owner-$name.json" ]]; then
         emit_file "$world/open-prs-$owner-$name.json"
       elif [[ -f "$world/open-prs.json" ]]; then
         emit_file "$world/open-prs.json"
