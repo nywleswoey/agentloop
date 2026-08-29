@@ -2563,16 +2563,26 @@ update_description() {
   return "$status"
 }
 
+# Dropping the claim label is what ends the loop's hold on an issue, and it is
+# the last write close-out makes. It stands on its own because close-out reaches
+# it two ways: after a close of its own, and on an issue GitHub closed at merge,
+# where there is no close left to make.
+unclaim_issue() {
+  local github="$1" number="$2"
+  gh-axi issue edit "$number" --repo "$github" --remove-label "$LABEL_CLAIMED" >/dev/null 2>&1
+}
+
 # The close and the unclaim are two calls, because gh-axi closes an issue and
 # edits its labels through different subcommands. So the order is the whole
 # guarantee. Closing first means a failed unclaim leaves a closed issue still
-# wearing the claim label: untidy, and inert, because every query the loop makes
-# asks for open issues alone. Unclaiming first would mean a failed close leaves
-# an open issue wearing neither label — work the loop has quietly forgotten.
+# wearing the claim label: untidy, and picked up by the next pass, because
+# close-out keys its silence on the label rather than on the state. Unclaiming
+# first would mean a failed close leaves an open issue wearing neither label —
+# work the loop has quietly forgotten.
 close_issue() {
   local github="$1" number="$2"
   gh-axi issue close "$number" --repo "$github" >/dev/null 2>&1 || return 1
-  gh-axi issue edit "$number" --repo "$github" --remove-label "$LABEL_CLAIMED" >/dev/null 2>&1 \
+  unclaim_issue "$github" "$number" \
     || log "unclaim failed for $github#$number, leaving the label on a closed issue"
 }
 
@@ -2601,13 +2611,13 @@ closeout_phase() {
 }
 
 # Close out a single merged pull request: tick the checklist in the linked
-# issue's description and close the issue. Only acts on open issues with the
-# claimed label that belong to configured projects. Silently skips pull requests
-# opened by hand (branch names no issue) and issues already closed or claimed by
-# hand.
+# issue's description, then close the issue — or, where GitHub already closed
+# it, just drop the claim. Only acts on issues wearing the claim label that
+# belong to configured projects. Silently skips pull requests opened by hand
+# (branch names no issue) and issues the loop never claimed.
 closeout_one() {
   local github="$1" prnumber="$2" branch="$3"
-  local number issue description ticked
+  local number issue state description ticked
 
   # A branch that names no issue is a pull request I opened by hand.
   number=$(issue_for_branch "$branch") || return 0
@@ -2622,13 +2632,20 @@ closeout_one() {
     return 0
   fi
 
-  # An issue that is already closed, or one I claimed by hand, is not the
-  # loop's to touch — and every merged pull request is read again on every
-  # pass, so saying so would be the same line forever. Both leave silently.
-  [[ "$(jq -r '.state' <<< "$issue")" == "open" ]] || return 0
+  # The claim label alone decides whether an issue is the loop's to touch, and
+  # every merged pull request is read again on every pass, so saying otherwise
+  # would be the same line forever: an issue the loop never claimed, and one
+  # close-out has already finished with, both leave silently. The state is
+  # deliberately not part of this test. Keying on `open` was the same silence
+  # for a while, but a pull request whose body carries `Closes #N` has GitHub
+  # close the issue at merge — a pass before close-out ever reads it — and that
+  # guard then dropped the one case with work still in it, stranding the label
+  # and the unticked checklist together. The unclaim is what makes the next
+  # pass silent, so the label is the honest thing to key on.
   # `$label` would be a jq keyword, so the claim label rides in as `$claimed`.
   jq -e --arg claimed "$LABEL_CLAIMED" 'any(.labels[]?.name; . == $claimed)' <<< "$issue" \
     >/dev/null || return 0
+  state=$(jq -r '.state' <<< "$issue")
 
   # The trailing newlines a body ends with are part of it: `-j` stops jq adding
   # one of its own, and the sentinel stops command substitution eating the ones
@@ -2642,7 +2659,22 @@ closeout_one() {
   # every pass.
   if [[ "$ticked" != "$description" ]]; then
     update_description "$github" "$number" "$ticked" \
-      || log "checklist update failed for $github#$number, closing it anyway"
+      || log "checklist update failed for $github#$number, closing it out anyway"
+  fi
+
+  # GitHub got there first: it closed the issue at merge, on the strength of a
+  # closing keyword in the pull request body. Only the unclaim is left, and it
+  # is the whole of the work — losing it strands the label, so it counts as a
+  # skip, where the same failure after a close of the loop's own is a lost
+  # tidy-up on an issue already off the board.
+  if [[ "$state" != "open" ]]; then
+    if unclaim_issue "$github" "$number"; then
+      log "closed out $github#$number: pull request #$prnumber merged, issue already closed"
+    else
+      log "unclaim failed for $github#$number, leaving the label on a closed issue"
+      SKIPS=$((SKIPS + 1))
+    fi
+    return 0
   fi
 
   # The close is what stops the re-dispatch, so it happens whatever the

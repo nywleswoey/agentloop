@@ -10,7 +10,7 @@ Started by hand, runs until Ctrl-C. Every decision it makes is one log line, so 
 
 Each pass, in order:
 
-1. **Close-out** — an issue whose pull request has merged gets its checklist ticked, its description updated, its claim label removed, and the issue closed.
+1. **Close-out** — an issue whose pull request has merged gets its checklist ticked, its description updated, its claim label removed, and the issue closed. What decides whether an issue is close-out's is the **claim label, not the state**: a pull request body carrying `Closes #N` has GitHub close the issue itself at merge, a pass before close-out reads it, and such an issue still needs its tick and its unclaim. So a closed issue still wearing the claim gets both, and no second close.
 2. **Issues** — queries each project for open issues labelled `ready-for-agent`, skips ones an open pull request already delivers, skips ones with an open blocker, swaps the label to `agent-in-progress`, and dispatches an Orca worker into a fresh worktree.
 3. **Pull requests** — enumerates every open pull request in each project except drafts and fork heads, derives its state from GitHub alone, logs one line per pull request, comments `@coderabbitai review` at the ones CodeRabbit never reviewed and `@coderabbitai autofix` at the ones carrying unresolved findings, runs the risk gate over the ones that are ready to judge, merges at most one of them per repository, and hands over the ones it will not act on. It spends no worker and no worktree, and it keeps no local state: every pass re-derives from a fresh read.
 4. **Sweep** — removes the loop's own finished worktrees.
@@ -79,7 +79,7 @@ A merge that fails **transiently** is neither escalated nor retried within the p
 
 **The three ways back in are the ones GitHub already gives you:**
 
-- **Merge it by hand.** Close-out still ticks and closes the issue the branch names: it reads merged pull requests from GitHub and cannot tell whose hand pressed the button.
+- **Merge it by hand.** Close-out still ticks the issue the branch names, drops the claim, and closes it if GitHub has not already: it reads merged pull requests from GitHub and cannot tell whose hand pressed the button.
 - **Push a commit.** The head moves, the record stops matching it, and the loop re-derives from scratch on the next pass.
 - **Convert it to draft.** Draft is the hold gesture, and the loop stops seeing the pull request at all.
 

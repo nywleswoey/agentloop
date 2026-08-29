@@ -248,8 +248,14 @@ if [[ "${1:-}" == "issue" ]]; then
     exit 0
   fi
 
-  # A label edit: the claim, the reclaim, or the unclaim that follows a close.
+  # A label edit: the claim, the reclaim, or the unclaim. A removal is recorded
+  # for the same reason a close is — a later read of the same issue has to see
+  # the label gone rather than the fixture's own labels over again. Close-out
+  # keys its silence on the claim label, so a stub that forgot the removal would
+  # show a line repeating that the real loop does not repeat.
   fail_if claim
+  removed=$(flag_value --remove-label "$@")
+  [[ -z "$removed" ]] || printf '%s\n' "$removed" >> "$STUB_STATE/unlabelled-$number"
   printf 'issue:\n  number: %s\n' "$number"
   exit 0
 fi
@@ -399,6 +405,11 @@ if [[ "$path" == /repos/*/*/issues/* ]]; then
   number="${path##*/}"
   if [[ -f "$STUB_STATE/closed-$number" ]]; then
     emit "$(printf '{"number":%s,"state":"closed","labels":[],"body":""}' "$number")"
+  elif [[ -f "$STUB_STATE/unlabelled-$number" ]]; then
+    emit "$(jq -c --rawfile removed "$STUB_STATE/unlabelled-$number" '
+      ($removed | split("\n") | map(select(. != ""))) as $gone
+      | .labels = [.labels[]? | select(.name as $n | $gone | index($n) | not)]' \
+      "$STUB_FIXTURES/issue-$number.json")"
   else
     emit_file "$STUB_FIXTURES/issue-$number.json"
   fi

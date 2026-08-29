@@ -2196,9 +2196,10 @@ check "no worker brief or triage plan was written" \
 
 # One pass over a fixture carrying every close-out case at once: a merged merge
 # request whose issue is open and claimed, one whose issue has no checkboxes,
-# one whose issue is already closed, one whose issue I claimed by hand, one from
-# a branch that names no issue, one with the collision suffix, and one in a
-# project the config does not list.
+# one whose issue is closed and unclaimed, one whose issue is closed and still
+# claimed, one whose issue I claimed by hand, one from a branch that names no
+# issue, one with the collision suffix, and one in a project the config does not
+# list.
 # The close and the unclaim are two calls in that order, so a failure can only
 # ever leave the label on an issue that is already closed.
 CLOSE_17="gh-axi issue close 17 --repo nywleswoey/automation"
@@ -2234,7 +2235,10 @@ check_grep "closed out nywleswoey/automation#40: pull request #202 merged" "$OUT
 check "no body was written for an issue with no checkboxes" \
   test ! -f "$STUB_STATE/body-40.txt"
 
-# 203 — issue 41 is already closed: one read to find that out, and nothing else.
+# 203 — issue 41 is closed and carries no claim label, so close-out has already
+# finished with it: one read to find that out, and nothing else. This is the
+# steady state every closed-out issue lands in, and it is what keeps the phase
+# from repeating a line for as long as the pull request stays merged.
 check_no_grep "issue 41 " "$STUB_CALLS"
 check_no_grep "#41" "$OUT"
 
@@ -2253,6 +2257,17 @@ check_no_grep "#1:" "$OUT"
 # suffix and the prefix have to be seen through to reach issue 43.
 check_grep "closed out nywleswoey/automation#43: pull request #206 merged" "$OUT"
 
+# 208 — issue 44's pull request body carried a closing keyword, so GitHub closed
+# the issue itself at merge, a pass before close-out ever read it. The tick and
+# the unclaim are still outstanding; the close is not, and re-closing a closed
+# issue is a write with nothing behind it.
+check_grep "closed out nywleswoey/automation#44: pull request #208 merged, issue already closed" "$OUT"
+check_no_grep "gh-axi issue close 44 " "$STUB_CALLS"
+check_grep "gh-axi issue edit 44 --repo nywleswoey/automation --remove-label agent-in-progress" "$STUB_CALLS"
+printf -- '- [x] closed by a keyword\n' > "$WORK/expected-44.txt"
+check "an already-closed issue still gets its checklist ticked" \
+  diff -q "$WORK/expected-44.txt" "$STUB_STATE/body-44.txt"
+
 # 207 — a branch that names no issue is a pull request I opened by hand.
 # 907 — a merged pull request in a project the config does not list.
 check_no_grep "issues/99" "$STUB_CALLS"
@@ -2263,6 +2278,22 @@ check "exactly four issues were closed" test "$(grep -cF 'gh-axi issue close ' "
 # The close-out runs before the reclaim, so the pass that follows it sees the
 # issues closed and repeats none of its own lines.
 check "one close-out line per issue" test "$(grep -cF 'closed out nywleswoey/automation#17' "$OUT")" -eq 1
+
+setup "close-out goes quiet on a second pass over the same merged pull requests"
+# The whole of the fix is that the silence is keyed on the claim label. So the
+# proof is two passes over an unchanged set of merged pull requests: the first
+# does the work, the second reads the same pull requests, finds the claim gone
+# from every issue, and says nothing — including about #44, which GitHub had
+# already closed and which the old state-keyed guard passed over in silence
+# while its label was still on.
+export STUB_MERGED=set
+run_once
+cp "$OUT" "$WORK/pass-1.log"
+check_grep "closed out nywleswoey/automation#44: pull request #208 merged, issue already closed" "$WORK/pass-1.log"
+run_once
+check_status 0 "$STATUS"
+check_no_grep "closed out" "$OUT"
+check_no_grep "unclaim failed" "$OUT"
 
 setup "an unmerged pull request leaves its issue alone"
 # One open pull request, on the very branch the close-out phase reads issues out
@@ -2291,7 +2322,7 @@ setup "a failed checklist update is logged and the issue is closed anyway"
 export STUB_MERGED=set STUB_GH_FAIL=body
 run_once
 check_status 0 "$STATUS"
-check_grep "checklist update failed for nywleswoey/automation#17, closing it anyway" "$OUT"
+check_grep "checklist update failed for nywleswoey/automation#17, closing it out anyway" "$OUT"
 check_grep "$CLOSE_17" "$STUB_CALLS"
 check_grep "closed out nywleswoey/automation#17: pull request #201 merged" "$OUT"
 
@@ -2302,6 +2333,20 @@ check_status 0 "$STATUS"
 check_grep "close failed for nywleswoey/automation#17, leaving it claimed" "$OUT"
 check_grep "pass start" "$OUT"
 check_grep "pass end" "$OUT"
+
+setup "a failed unclaim on an issue GitHub already closed is logged and counted"
+# The unclaim is the whole of the work left on such an issue, so losing it
+# strands the claim label exactly as before the fix — that is a skip, not a
+# partial success. On an issue close-out closed itself the same failure is only
+# a lost tidy-up, and stays uncounted.
+export STUB_MERGED=set STUB_GH_FAIL=claim
+run_once
+check_status 0 "$STATUS"
+check_grep "unclaim failed for nywleswoey/automation#44, leaving the label on a closed issue" "$OUT"
+check_no_grep "closed out nywleswoey/automation#44" "$OUT"
+check_grep "unclaim failed for nywleswoey/automation#17, leaving the label on a closed issue" "$OUT"
+check_grep "closed out nywleswoey/automation#17: pull request #201 merged" "$OUT"
+check_grep "skips=1" "$OUT"
 
 setup "a failed merged-pr query is logged and the pass continues"
 export STUB_MERGED=set STUB_GH_FAIL=merged
