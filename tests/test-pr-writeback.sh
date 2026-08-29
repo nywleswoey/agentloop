@@ -172,23 +172,223 @@ check_status 1 "$STATUS"
 check_grep "comment needs --body-file" "$ERR"
 check_writes 0
 
+# --- edit -------------------------------------------------------------------------
+
+# A new verb rather than a flag on `comment`, because the two are addressed
+# differently: `comment` names a pull request, `edit` names a comment. Folded
+# together they would make two flags conditionally required on one verb, and the
+# error for getting that pair wrong would have to be invented here.
+#
+# The comment id is deliberately not 12: a line that reached for the
+# pull-request number instead of the comment names itself in the output.
+COMMENT_ID=3300771
+
+# check_edit_argv <body-file> — the **whole** recorded argv line, which is the
+# only assertion that fails on a wrong method, a wrong endpoint, or a body that
+# crossed as text rather than as a file reference.
+check_edit_argv() {
+  check "the edit call is exactly this argv line" \
+    test "$(cat "$STUB_CALLS")" = "gh-axi api PATCH /repos/$REPO/issues/comments/$COMMENT_ID --field body=@$1 --full"
+}
+
+# The body used here is the retraction's shape — free text with backticks in it
+# — for the same reason the comment case uses the escalation's.
+setup "edit rewrites one comment through a raw PATCH"
+cat > "$WORK/body.md" <<'MD'
+**Withdrawn.** A handover stood on this pull request at `043b1d81`; the loop
+re-derived, the picture had changed, and it took the record down.
+MD
+run edit --repo "$REPO" --comment "$COMMENT_ID" --body-file "$WORK/body.md"
+check_status 0 "$STATUS"
+check_edit_argv "$WORK/body.md"
+check_writes 1
+# There is no comment-edit subcommand, which is what licenses the raw call —
+# so nothing else may be reached for either.
+check_no_grep "pr comment" "$STUB_CALLS"
+check_no_grep "pr edit" "$STUB_CALLS"
+# The body crossed as a *file reference*, not as argv text. `--field body=<text>`
+# would hand gh its magic type conversion — a body of `1234` becomes a JSON
+# number, a body beginning `@` becomes a filename — so the bytes must never
+# appear on the command line at all.
+check_no_grep "Withdrawn" "$STUB_CALLS"
+check "the body arrived unaltered" \
+  cmp -s "$WORK/body.md" "$STUB_STATE/comment-body-$COMMENT_ID.txt"
+check_grep "updated: true" "$OUT"
+check_no_grep "pr-writeback:" "$OUT"
+# The outcome line names the comment. There is no pull request here to name, and
+# printing an empty one would be a number the caller never gave.
+check_grep "pr-writeback: edit: $REPO comment $COMMENT_ID" "$ERR"
+check_no_grep "$REPO#" "$ERR"
+
+setup "edit refuses a body file that is not there"
+run edit --repo "$REPO" --comment "$COMMENT_ID" --body-file "$WORK/missing.md"
+check_status 1 "$STATUS"
+check_grep "--body-file is not a readable file" "$ERR"
+check_writes 0
+
+# `-r` as well as `-f`: a file whose mode denies it is a different failure from
+# one that is not there, and both have to stop before the write. Skipped under
+# root, for whom no file is unreadable.
+if [[ "$(id -u)" != "0" ]]; then
+  setup "edit refuses a body file it cannot read"
+  printf 'body\n' > "$WORK/locked.md"
+  chmod 000 "$WORK/locked.md"
+  run edit --repo "$REPO" --comment "$COMMENT_ID" --body-file "$WORK/locked.md"
+  check_status 1 "$STATUS"
+  check_grep "--body-file is not a readable file" "$ERR"
+  check_writes 0
+  chmod 644 "$WORK/locked.md"
+fi
+
+# An empty body is refused here for a sharper reason than it is on `comment`: an
+# edit to nothing would destroy the record the retraction is supposed to replace,
+# and take the marker with it in a way no later pass could tell from a comment
+# that was never posted.
+setup "edit refuses an empty body file"
+: > "$WORK/empty.md"
+run edit --repo "$REPO" --comment "$COMMENT_ID" --body-file "$WORK/empty.md"
+check_status 1 "$STATUS"
+check_grep "--body-file is empty" "$ERR"
+check_writes 0
+
+setup "edit needs a body file"
+run edit --repo "$REPO" --comment "$COMMENT_ID"
+check_status 1 "$STATUS"
+check_grep "edit needs --body-file" "$ERR"
+check_writes 0
+
+setup "edit needs a comment to edit"
+printf 'body\n' > "$WORK/body.md"
+run edit --repo "$REPO" --body-file "$WORK/body.md"
+check_status 1 "$STATUS"
+check_grep "edit needs --comment" "$ERR"
+check_writes 0
+
+for bad in 0 -3 33.5 latest '#3300771'; do
+  setup "a comment id of '$bad' is refused"
+  printf 'body\n' > "$WORK/body.md"
+  run edit --repo "$REPO" --comment "$bad" --body-file "$WORK/body.md"
+  check_status 1 "$STATUS"
+  check_grep "--comment must be a positive integer" "$ERR"
+  check_writes 0
+done
+
+setup "a comment id given no value is refused"
+printf 'body\n' > "$WORK/body.md"
+run edit --repo "$REPO" --body-file "$WORK/body.md" --comment
+check_status 1 "$STATUS"
+check_grep "--comment needs a value" "$ERR"
+check_writes 0
+
+# The two addressing flags do not cross. Each error names the verb that was
+# given rather than the one that would have taken the flag: what the caller got
+# wrong is which verb they typed.
+setup "edit takes no pull-request number"
+printf 'body\n' > "$WORK/body.md"
+run edit --repo "$REPO" --pr 12 --comment "$COMMENT_ID" --body-file "$WORK/body.md"
+check_status 1 "$STATUS"
+check_grep "--pr is not a flag of edit; it belongs to autofix, review, comment, label and merge" "$ERR"
+check_writes 0
+
+setup "comment takes no comment id"
+printf 'body\n' > "$WORK/body.md"
+run comment --repo "$REPO" --pr 12 --comment "$COMMENT_ID" --body-file "$WORK/body.md"
+check_status 1 "$STATUS"
+check_grep "--comment is not a flag of comment; it belongs to edit" "$ERR"
+check_writes 0
+
+setup "no other verb takes a comment id either"
+run merge --repo "$REPO" --pr 12 --comment "$COMMENT_ID"
+check_status 1 "$STATUS"
+check_grep "--comment is not a flag of merge; it belongs to edit" "$ERR"
+check_writes 0
+
+setup "edit takes no label"
+printf 'body\n' > "$WORK/body.md"
+run edit --repo "$REPO" --comment "$COMMENT_ID" --body-file "$WORK/body.md" --add agent-escalated
+check_status 1 "$STATUS"
+check_grep "--add is not a flag of edit" "$ERR"
+check_writes 0
+
+# The plain contract, unlike `merge`: an edit is reversible and GitHub keeps
+# native comment edit history, so a failed one is exit 1 like every other
+# reversible verb and carries no failure class.
+setup "a refused edit is exit 1, and its failure line names the comment"
+printf 'body\n' > "$WORK/body.md"
+export STUB_GH_FAIL=comment-edit
+run edit --repo "$REPO" --comment "$COMMENT_ID" --body-file "$WORK/body.md"
+check_status 1 "$STATUS"
+check_grep 'error: "gh: Not Found (HTTP 404)"' "$OUT"
+check_no_grep "pr-writeback:" "$OUT"
+check_grep "pr-writeback: edit failed on $REPO comment $COMMENT_ID" "$ERR"
+# The thing the failure line must never do: name a pull request it was not given.
+check_no_grep "$REPO#" "$ERR"
+check_writes 1
+
 # --- label ------------------------------------------------------------------------
 
 # The label is reachable alone, and that is the whole point: escalation is
-# comment-then-label, and it self-heals because a later pass can re-add a
-# missing label without re-posting the comment.
+# comment-then-label and retraction is comment-then-label, and both self-heal
+# because a later pass can fix the label without re-writing the comment it
+# flags. The flag chases the marker, in both directions.
+#
+# check_label_argv <flag> <name> — the **whole** recorded argv line for one of
+# the two shapes. A grep for the label name alone passes on a call that sent the
+# other flag, which is precisely the mistake worth failing on: an add where a
+# remove was meant leaves the handover's flag standing over a withdrawn record.
+check_label_argv() {
+  check "the label call is exactly this argv line" \
+    test "$(cat "$STUB_CALLS")" = "gh-axi pr edit 12 --repo $REPO $1 $2"
+}
+
 setup "label adds a label and does nothing else"
 run label --repo "$REPO" --pr 12 --add agent-needs-review
 check_status 0 "$STATUS"
-check_grep "gh-axi pr edit 12 --repo $REPO --add-label agent-needs-review" "$STUB_CALLS"
+check_label_argv --add-label agent-needs-review
 check_writes 1
 check_no_grep "pr comment" "$STUB_CALLS"
+check_no_grep "--remove-label" "$STUB_CALLS"
 check_grep "edited: true" "$OUT"
 
-setup "label needs a name to add"
+# The other shape, asserted the same way rather than assumed to follow: taking a
+# label off is what withdraws a handover's flag, and it is the write the loop
+# makes on the pass after a record stops matching.
+setup "label removes a label and does nothing else"
+run label --repo "$REPO" --pr 12 --remove agent-escalated
+check_status 0 "$STATUS"
+check_label_argv --remove-label agent-escalated
+check_writes 1
+check_no_grep "pr comment" "$STUB_CALLS"
+check_no_grep "--add-label" "$STUB_CALLS"
+check_grep "edited: true" "$OUT"
+
+setup "label needs a name to add or remove"
 run label --repo "$REPO" --pr 12
 check_status 1 "$STATUS"
-check_grep "label needs --add" "$ERR"
+check_grep "label needs --add or --remove" "$ERR"
+check_writes 0
+
+# Exactly one, never both. `gh pr edit` would accept the pair happily, so the
+# refusal has to be the seam's: one write per invocation is what makes the
+# comment-then-label ordering recoverable, and a call that both added and removed
+# would be two decisions riding on one exit code.
+setup "label takes one of --add and --remove, never both"
+run label --repo "$REPO" --pr 12 --add agent-needs-review --remove agent-escalated
+check_status 1 "$STATUS"
+check_grep "label takes --add or --remove, not both" "$ERR"
+check_writes 0
+
+setup "a label to remove needs a value"
+run label --repo "$REPO" --pr 12 --remove
+check_status 1 "$STATUS"
+check_grep "--remove needs a value" "$ERR"
+check_writes 0
+
+setup "no other verb takes --remove"
+printf 'body\n' > "$WORK/body.md"
+run comment --repo "$REPO" --pr 12 --body-file "$WORK/body.md" --remove agent-escalated
+check_status 1 "$STATUS"
+check_grep "--remove is not a flag of comment" "$ERR"
 check_writes 0
 
 setup "label takes no body"
@@ -326,7 +526,7 @@ done
 setup "comment does not take a commit"
 run comment --repo "$REPO" --pr 12 --sha "$ASSESSED_SHA"
 check_status 1 "$STATUS"
-check_grep "--sha is not a flag of comment" "$ERR"
+check_grep "--sha is not a flag of comment; it belongs to autofix and merge" "$ERR"
 check_writes 0
 
 setup "no other verb takes the merge method"
@@ -415,6 +615,12 @@ export STUB_GH_FAIL=pr-edit
 run label --repo "$REPO" --pr 12 --add agent-needs-review
 check_status 1 "$STATUS"
 
+setup "a refused label removal is exit 1 as well"
+export STUB_GH_FAIL=pr-edit
+run label --repo "$REPO" --pr 12 --remove agent-escalated
+check_status 1 "$STATUS"
+check_grep "pr-writeback: label failed on $REPO#12" "$ERR"
+
 # 2 is left unused so it can never collide with gh-axi's own exit codes, which
 # the loop would otherwise have to tell apart from the seam's.
 # The behavioural half is in `run` above, on every invocation. This is the other
@@ -484,6 +690,14 @@ setup "--help explains itself and writes nothing"
 run --help
 check_status 0 "$STATUS"
 check_grep "Usage: pr-writeback.sh" "$OUT"
+# Every verb, spelled with the flags that address it. Two of them cannot be
+# guessed from the others: `edit` names a comment where the rest name a pull
+# request, and `label` takes either of two flags and only one of them.
+for verb in autofix review comment edit label merge; do
+  check_grep "pr-writeback.sh $verb " "$OUT"
+done
+check_grep "--comment <id>" "$OUT"
+check_grep "--remove <name>" "$OUT"
 check_writes 0
 
 # --- the interface that was deleted ---------------------------------------------------

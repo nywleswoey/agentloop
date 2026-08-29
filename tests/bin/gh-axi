@@ -49,6 +49,12 @@
 #   api /repos/.../issues/<number>/dependencies/blocked_by
 #                            the issue's blockers, from blocked-<number>.json
 #                            when that fixture exists and `[]` otherwise
+#   api PATCH /repos/<o>/<n>/issues/comments/<id>
+#                            a comment edit, which must carry its body as
+#                            `--field body=@<path>` or the stub refuses it; the
+#                            file is copied whole to
+#                            $STUB_STATE/comment-body-<id>.txt so a test can
+#                            compare it byte for byte
 #   api PUT /repos/<o>/<n>/pulls/<number>/merge
 #                            the merge, which must carry both --field sha= and
 #                            --field merge_method= or the stub refuses it
@@ -60,8 +66,10 @@
 #                            a pull-request comment carrying free text; the file
 #                            is copied whole to $STUB_STATE/pr-body-<number>.txt
 #                            so a test can compare it byte for byte
-#   pr edit <number> --add-label <name>
-#                            a label add, recorded by its argv
+#   pr edit <number> --add-label / --remove-label <name>
+#                            a label add or a label removal, recorded by its
+#                            argv. Both flags are accepted, together as well as
+#                            apart, because `gh pr edit` accepts both
 #   issue edit <number> --add-label / --remove-label
 #                            a label swap, recorded by its argv and as an
 #                            ordered delta in $STUB_STATE/labels-<number>, which
@@ -94,8 +102,8 @@
 #
 # $STUB_GH_FAIL names a command that must fail: "issues", "claim", "prs",
 # "pr-state", "merged", "issue", "body", "close", "blockers", "labels",
-# "pr-comment", "pr-edit" or "merge". $STUB_GH_ERROR names which rendering it
-# fails with, from fixtures/gh-error-<name>.txt. $STUB_GH_STDERR makes that
+# "pr-comment", "pr-edit", "comment-edit" or "merge". $STUB_GH_ERROR names which
+# rendering it fails with, from fixtures/gh-error-<name>.txt. $STUB_GH_STDERR makes that
 # failure gh-axi's own rather than GitHub's — reported on stderr, with stdout
 # left empty.
 
@@ -208,8 +216,12 @@ if [[ "${1:-}" == "pr" ]]; then
       exit 0
       ;;
     edit)
-      [[ -n "$(flag_value --add-label "$@")" ]] \
-        || { echo "stub gh-axi: unhandled pr edit without --add-label" >&2; exit 1; }
+      # Either label flag, and `gh pr edit` genuinely takes both at once — so
+      # the pair is *not* refused here. That one write carries one decision is
+      # the seam's rule, not the far end's, and pinning it in the stub would
+      # test this file's opinion instead of the seam's argv.
+      [[ -n "$(flag_value --add-label "$@")$(flag_value --remove-label "$@")" ]] \
+        || { echo "stub gh-axi: unhandled pr edit without --add-label or --remove-label" >&2; exit 1; }
       fail_if pr-edit 404
       printf 'pr:\n  number: %s\n  edited: true\n' "$number"
       exit 0
@@ -407,6 +419,39 @@ if [[ "$path" == /repos/*/*/pulls/*/merge ]]; then
   # and an unread file here would be the first thing to trip the transient
   # case's assertion that a failed merge leaves the state directory empty.
   emit '{"sha":"11ee66e511ee66e511ee66e511ee66e511ee66e5","merged":true,"message":"Pull Request successfully merged"}'
+  exit 0
+fi
+
+# A comment edit. A raw API call because `gh-axi pr` has no comment-edit
+# subcommand at all — and the body must arrive as a **file reference** rather
+# than as argv text. `gh api --field`, which `gh-axi api --field` forwards to,
+# applies magic type conversion: `body=1234` goes on the wire as a JSON number,
+# and a value starting with `@` is read as a filename. So the only spelling that
+# sends free text as a string is `body=@<path>`, and the stub fails closed on
+# anything else rather than accepting a body that had already been mangled.
+#
+# The answer is plain TOON, not the base64 round trip the reads use: this call
+# goes out without `--jq tojson|@base64`, because the seam forwards the response
+# rather than reading anything out of it.
+#
+# **Above the `/repos/*/*/issues/*` arm, and it has to stay there:** a bash glob
+# matches `/` like any other character, so that arm would swallow every comment
+# edit and answer it with an issue fixture.
+if [[ "$path" == /repos/*/*/issues/comments/* ]]; then
+  [[ "$method" == "PATCH" ]] \
+    || { echo "stub gh-axi: a comment edit takes PATCH, not $method" >&2; exit 1; }
+  number="${path##*/}"
+  field=$(flag_value --field "$@")
+  [[ "$field" == body=@* ]] \
+    || { echo "stub gh-axi: a comment edit must send its body as a file reference, got: ${field:-<nothing>}" >&2; exit 1; }
+  file="${field#body=@}"
+  [[ -f "$file" ]] || { echo "stub gh-axi: no such body file: $file" >&2; exit 1; }
+  fail_if comment-edit 404
+  # Copied whole so a test can compare it byte for byte, the way the body-file
+  # comment arm does — free text is exactly what a flattened argv line cannot
+  # carry faithfully.
+  cp "$file" "$STUB_STATE/comment-body-$number.txt"
+  printf 'comment:\n  id: %s\n  updated: true\n' "$number"
   exit 0
 fi
 

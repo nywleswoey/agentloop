@@ -225,7 +225,8 @@ It exists as a separate executable on one justification — **the merge is the s
 pr-writeback.sh autofix --repo <owner/name> --pr <n> [--sha <commit>]
 pr-writeback.sh review  --repo <owner/name> --pr <n>
 pr-writeback.sh comment --repo <owner/name> --pr <n> --body-file <path>
-pr-writeback.sh label   --repo <owner/name> --pr <n> --add <name>
+pr-writeback.sh edit    --repo <owner/name> --comment <id> --body-file <path>
+pr-writeback.sh label   --repo <owner/name> --pr <n> (--add <name> | --remove <name>)
 pr-writeback.sh merge   --repo <owner/name> --pr <n> --sha <commit> --method <merge|squash|rebase>
 ```
 
@@ -234,12 +235,15 @@ pr-writeback.sh merge   --repo <owner/name> --pr <n> --sha <commit> --method <me
 | `autofix` | the CodeRabbit autofix command | `--sha` records the input head in an HTML marker, which is what spends that head. |
 | `review` | the CodeRabbit review command | The nudge. Records no head — *once per head* is decided by the comment being newer than the commit. |
 | `comment` | a comment, body read from a file | The escalation record. Free text travels as a **file** because `gh-axi` would reinterpret a `--body` that happened to look like JSON. |
-| `label` | adds one label | Reachable **alone**, which is what lets a handover self-heal: a later pass re-adds a missing label without re-posting the comment it flags. |
+| `edit` | one comment's body, replaced wholesale | The retraction. A **verb, not a flag on `comment`**: that one names a pull request, this one names a comment, and folding them would make two flags conditionally required on one verb. A raw `PATCH`, because no subcommand can carry a comment edit; the body is named to `gh` as `body=@<path>` rather than passed as text, since `--field` would otherwise read `1234` as a number and a leading `@` as a filename. |
+| `label` | adds **or removes** one label | Reachable **alone**, which is what lets a handover self-heal in both directions: a later pass re-adds a missing label without re-posting the comment it flags, and takes one off when the record it flagged is withdrawn. Exactly one of `--add`/`--remove` — one write carries one decision. |
 | `merge` | the merge, asserting a commit | The one irreversible write. |
 
 The two command verbs are verbs rather than callers of `comment` for the opposite reason to that file: a CodeRabbit command is the seam's **own constant**, spelled once inside it, so a typo is an argument error rather than a silent no-op.
 
 **One guard is not argument shape: `merge` requires the assessed commit,** in full and never abbreviated. It is what makes *assess, then merge that commit* structural rather than a convention the caller is trusted to keep — with no commit there is nothing to merge but whatever happens to be at the head, which is the unreviewed code the assertion exists to refuse. GitHub compares it against the head and answers a mismatch with a 409. Everything else is argument validation: whether the pull request is open, a draft, a fork head, mergeable, or in a configured repository is the loop's call, and re-deriving any of it here would be a second gate that could disagree with the first.
+
+`edit` gets **no guard and no failure class**, unlike `merge`: an edit is reversible and GitHub keeps native comment edit history, so it stays on the plain contract. The wrong-comment hazard is answered upstream at the derivation, which is where it belongs.
 
 **The seam reads no configuration at all.** Everything it needs arrives on argv, the label name and the merge method included.
 
@@ -260,7 +264,7 @@ The two command verbs are verbs rather than callers of `comment` for the opposit
 
 `2` is never used, so it can never collide with `gh-axi`'s own exit codes. `--help` is the one thing that does not follow the table above: it prints the usage text to **stdout** and exits `0`, because a human running `pr-writeback.sh --help | less` is not reading an error.
 
-For the four reversible verbs a failed write and a bad argument share exit `1` deliberately: the loop's posture to both is the same — log it, re-derive next pass — so a distinction here is one nothing would read. `merge` is the exception because it is the one place where *GitHub said no* and *the network hiccuped* decide between handing the pull request to you and saying nothing at all. **The default is transient**, which is the opposite of V1's tripwire and on purpose: the merge has already been attempted, retrying it is idempotent because an already-merged pull request answers 200, and defaulting to refused would park a good pull request on a network blip.
+For the five reversible verbs a failed write and a bad argument share exit `1` deliberately: the loop's posture to both is the same — log it, re-derive next pass — so a distinction here is one nothing would read. `merge` is the exception because it is the one place where *GitHub said no* and *the network hiccuped* decide between handing the pull request to you and saying nothing at all. **The default is transient**, which is the opposite of V1's tripwire and on purpose: the merge has already been attempted, retrying it is idempotent because an already-merged pull request answers 200, and defaulting to refused would park a good pull request on a network blip.
 
 ---
 

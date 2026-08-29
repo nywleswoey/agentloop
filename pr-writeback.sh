@@ -21,7 +21,9 @@
 #   pr-writeback.sh autofix --repo <owner/name> --pr <n> [--sha <commit>]
 #   pr-writeback.sh review  --repo <owner/name> --pr <n>
 #   pr-writeback.sh comment --repo <owner/name> --pr <n> --body-file <path>
-#   pr-writeback.sh label   --repo <owner/name> --pr <n> --add <name>
+#   pr-writeback.sh edit    --repo <owner/name> --comment <id> --body-file <path>
+#   pr-writeback.sh label   --repo <owner/name> --pr <n> \
+#                           (--add <name> | --remove <name>)
 #   pr-writeback.sh merge   --repo <owner/name> --pr <n> --sha <commit> \
 #                           --method <merge|squash|rebase>
 #
@@ -30,10 +32,20 @@
 # half-written state to define. `label` in particular is reachable *alone*
 # rather than bundled into an escalation verb, because escalation is
 # comment-then-label and self-heals — a later pass re-adds a missing label
-# without re-posting the comment it flags.
+# without re-posting the comment it flags. Retraction is comment-then-label too,
+# which is why `label` takes `--remove` as well as `--add`: the flag chases the
+# marker in both directions, and exactly one of the two is required so that one
+# write still carries one decision.
+#
+# **`edit` is a verb, not a flag on `comment`.** The two are addressed
+# differently — `comment` names a pull request, `edit` names a comment — and
+# folding them would make two flags conditionally required on one verb. It takes
+# `--body-file` for the same reason `comment` does, and it is the one verb that
+# writes to something other than a pull request, so its outcome lines name the
+# comment rather than a pull-request number it was never given.
 #
 # **Free text travels as a body file; the seam's own constants travel as
-# literal bodies.** `comment` takes `--body-file` because gh-axi would
+# literal bodies.** `comment` and `edit` take `--body-file` because gh-axi would
 # reinterpret a `--body` that happened to look like JSON, and a file has
 # nothing left to reinterpret — the escalation body carries a markdown table
 # and an HTML marker. `autofix` and `review` are verbs rather than callers of
@@ -56,7 +68,7 @@
 # **stdout** and exits 0, because a human who asked for the usage text is not
 # reading an error and should be able to pipe it.
 #
-# For the four reversible verbs a failed write and a bad argument share exit 1
+# For the five reversible verbs a failed write and a bad argument share exit 1
 # deliberately: the loop's posture to both is the same — log it, re-derive next
 # pass — so a distinction here is one nothing would read.
 #
@@ -90,7 +102,7 @@
 # code the assertion exists to refuse.
 #
 # **No configuration is read at all.** Everything the seam needs arrives on
-# argv, the label name included.
+# argv, the label name and the comment id included.
 #
 # Requires: gh-axi (authenticated against github.com), mktemp
 
@@ -99,10 +111,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # `gh_json` and `gh_error_class` live in gh.sh, which both this script and
-# agent-loop.sh source. The merge is the only call here that needs it — the
-# other four verbs have a gh-axi subcommand — but it needs both halves: the raw
-# API call that can carry a commit assertion, and the rule that says what a
-# failed one means.
+# agent-loop.sh source. The merge is the only call here that needs it — of the
+# other five verbs, four have a gh-axi subcommand and the fifth reaches for the
+# API without needing to read anything back off it — but the merge needs both
+# halves: the raw API call that can carry a commit assertion, and the rule that
+# says what a failed one means.
 # shellcheck source=gh.sh
 source "$SCRIPT_DIR/gh.sh"
 
@@ -115,8 +128,10 @@ REVIEW_TRIGGER='@coderabbitai review'
 VERB=""
 REPO=""
 PR=""
+COMMENT=""
 BODY_FILE=""
 ADD_LABEL=""
+REMOVE_LABEL=""
 SHA=""
 METHOD=""
 
@@ -137,22 +152,33 @@ MERGE_METHODS="merge squash rebase"
 # and examples. Called when --help is passed or when argument parsing fails.
 usage() {
   cat <<'EOF'
-Usage: pr-writeback.sh <verb> --repo <owner/name> --pr <n> [flags]
+Usage: pr-writeback.sh <verb> --repo <owner/name> [flags]
 
-Makes exactly one write to one pull request and reports what GitHub answered.
+Makes exactly one write and reports what GitHub answered.
+
+  pr-writeback.sh autofix --repo <owner/name> --pr <n> [--sha <commit>]
+  pr-writeback.sh review  --repo <owner/name> --pr <n>
+  pr-writeback.sh comment --repo <owner/name> --pr <n> --body-file <path>
+  pr-writeback.sh edit    --repo <owner/name> --comment <id> --body-file <path>
+  pr-writeback.sh label   --repo <owner/name> --pr <n> (--add <name> | --remove <name>)
+  pr-writeback.sh merge   --repo <owner/name> --pr <n> --sha <commit> --method <name>
 
 Verbs:
   autofix   Post the CodeRabbit autofix command.
   review    Post the CodeRabbit review command.
   comment   Post a comment whose body is read from a file.
-  label     Add a label.
+  edit      Replace one comment's body, read from a file.
+  label     Add or remove one label.
   merge     Merge, asserting the commit that was assessed.
 
 Flags:
   --repo <owner/name>  The repository on GitHub. Not a path.
-  --pr <n>             The pull-request number.
-  --body-file <path>   comment only: the body, which must not be empty.
+  --pr <n>             The pull-request number. Every verb but edit.
+  --comment <id>       edit only: the comment to rewrite.
+  --body-file <path>   comment and edit: the body, which must not be empty.
   --add <name>         label only: the label to add.
+  --remove <name>      label only: the label to take off. Exactly one of
+                       --add and --remove is required.
   --sha <commit>       autofix: input head to record; merge: assessed commit.
   --method <name>      merge only: merge, squash or rebase. Required.
   -h, --help           Show this message.
@@ -183,15 +209,32 @@ die() { say "$@"; exit 1; }
 # A flag that belongs to another verb is its own error rather than an unknown
 # one, because `autofix --body-file` is a caller trying to send free text down
 # a channel that does not take it, and saying so is more use than "unknown".
+#
+# Several flags belong to more than one verb — `--body-file` to `comment` and
+# `edit`, `--sha` to `autofix` and `merge`, `--pr` to everything but `edit` — so
+# the takers are a list, and the message names them. Which verb was given comes
+# first, because that is the half the caller typed; which verbs would have taken
+# the flag comes second, because on a seam where `comment` and `edit` differ
+# only in what addresses them, that is the half that says what to do instead.
 flag_of() {
-  local flag="$1" verb="$2"
-  [[ "$VERB" == "$verb" ]] || die "$flag is not a flag of ${VERB}"
+  local flag="$1" verb takers
+  shift
+  for verb in "$@"; do
+    if [[ "$VERB" == "$verb" ]]; then return 0; fi
+  done
+  # ", " between and " and " before the last, so the list reads as a sentence
+  # rather than as argv echoed back at someone who just mistyped it.
+  takers="$1"
+  shift
+  while [[ $# -gt 1 ]]; do takers="$takers, $1"; shift; done
+  [[ $# -eq 0 ]] || takers="$takers and $1"
+  die "$flag is not a flag of ${VERB}; it belongs to $takers"
 }
 
 case "${1:-}" in
   -h|--help) usage; exit 0 ;;
   "") usage >&2; exit 1 ;;
-  autofix|review|comment|label|merge) VERB="$1"; shift ;;
+  autofix|review|comment|edit|label|merge) VERB="$1"; shift ;;
   # The deleted interface began with a flag — `--plan`, `--repo <worktree>`,
   # `--seen-list`. An operator with that command line in their shell history is
   # told what changed rather than handed a bare usage block.
@@ -202,16 +245,25 @@ esac
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --repo) REPO="${2:-}"; [[ -n "$REPO" ]] || die "--repo needs a value"; shift 2 ;;
-    --pr) PR="${2:-}"; [[ -n "$PR" ]] || die "--pr needs a value"; shift 2 ;;
+    --pr)
+      # The one flag every verb but `edit` takes, and the reason `edit` is a
+      # verb: the two are addressed by different things.
+      flag_of --pr autofix review comment label merge
+      PR="${2:-}"; [[ -n "$PR" ]] || die "--pr needs a value"; shift 2 ;;
+    --comment)
+      flag_of --comment edit
+      COMMENT="${2:-}"; [[ -n "$COMMENT" ]] || die "--comment needs a value"; shift 2 ;;
     --body-file)
-      flag_of --body-file comment
+      flag_of --body-file comment edit
       BODY_FILE="${2:-}"; [[ -n "$BODY_FILE" ]] || die "--body-file needs a value"; shift 2 ;;
     --add)
       flag_of --add label
       ADD_LABEL="${2:-}"; [[ -n "$ADD_LABEL" ]] || die "--add needs a value"; shift 2 ;;
+    --remove)
+      flag_of --remove label
+      REMOVE_LABEL="${2:-}"; [[ -n "$REMOVE_LABEL" ]] || die "--remove needs a value"; shift 2 ;;
     --sha)
-      [[ "$VERB" == autofix || "$VERB" == merge ]] \
-        || die "--sha is not a flag of ${VERB}"
+      flag_of --sha autofix merge
       SHA="${2:-}"; [[ -n "$SHA" ]] || die "--sha needs a value"; shift 2 ;;
     --method)
       flag_of --method merge
@@ -227,8 +279,29 @@ done
 # for a repository named after a directory.
 [[ "$REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || die "--repo must be owner/name, got: $REPO"
 
-[[ -n "$PR" ]] || die "--pr is required"
-[[ "$PR" =~ ^[1-9][0-9]*$ ]] || die "--pr must be a positive integer, got: $PR"
+# The one addressing argument, spelled differently by the one verb that writes
+# to something other than a pull request. Both are checked the same way: present,
+# and a positive integer, because a comment id and a pull-request number are the
+# same kind of thing at the far end.
+if [[ "$VERB" == edit ]]; then
+  [[ -n "$COMMENT" ]] || die "edit needs --comment"
+  [[ "$COMMENT" =~ ^[1-9][0-9]*$ ]] || die "--comment must be a positive integer, got: $COMMENT"
+else
+  [[ -n "$PR" ]] || die "--pr is required"
+  [[ "$PR" =~ ^[1-9][0-9]*$ ]] || die "--pr must be a positive integer, got: $PR"
+fi
+
+# What `comment` and `edit` both need: free text that is there, readable, and
+# not empty. An empty body posts a blank comment; on the escalation path that
+# destroys the record while the marker's absence claims nothing was ever posted,
+# so the next pass neither re-posts nor recovers. An empty *edit* is the same
+# failure arriving from the other side — it would wipe the record the retraction
+# is meant to replace, marker and all.
+require_body_file() {
+  [[ -n "$BODY_FILE" ]] || die "$VERB needs --body-file"
+  [[ -r "$BODY_FILE" && -f "$BODY_FILE" ]] || die "--body-file is not a readable file: $BODY_FILE"
+  [[ -s "$BODY_FILE" ]] || die "--body-file is empty: $BODY_FILE"
+}
 
 case "$VERB" in
   autofix)
@@ -236,16 +309,17 @@ case "$VERB" in
       die "--sha must be a full 40-character commit, got: $SHA"
     fi
     ;;
-  comment)
-    [[ -n "$BODY_FILE" ]] || die "comment needs --body-file"
-    [[ -r "$BODY_FILE" && -f "$BODY_FILE" ]] || die "--body-file is not a readable file: $BODY_FILE"
-    # An empty body posts a blank comment. On the escalation path that destroys
-    # the record while the marker's absence claims nothing was ever posted, so
-    # the next pass neither re-posts nor recovers.
-    [[ -s "$BODY_FILE" ]] || die "--body-file is empty: $BODY_FILE"
+  comment|edit)
+    require_body_file
     ;;
   label)
-    [[ -n "$ADD_LABEL" ]] || die "label needs --add"
+    # Exactly one. `gh pr edit` would take both flags at once quite happily, so
+    # the refusal is the seam's own: one write carries one decision, and a call
+    # that both added and removed would ride two on a single exit code.
+    if [[ -n "$ADD_LABEL" && -n "$REMOVE_LABEL" ]]; then
+      die "label takes --add or --remove, not both"
+    fi
+    [[ -n "$ADD_LABEL" || -n "$REMOVE_LABEL" ]] || die "label needs --add or --remove"
     ;;
   merge)
     # The one guard that is not merely argument shape: without it the seam would
@@ -332,9 +406,35 @@ merge_write() {
     --field "sha=$SHA" --field "merge_method=$METHOD"
 }
 
+# The comment edit is the second raw API call here, and it is the same rule as
+# the merge's applied rather than bent: `gh-axi pr` has no comment-edit
+# subcommand at all, so there is nothing to reach for first.
+#
+# **The body must not cross on argv.** `gh-axi api --field` forwards verbatim to
+# `gh api --field`, which applies magic type conversion — `--field body=1234`
+# puts `{"body": 1234}` on the wire, and a value starting with `@` is read as a
+# filename — and gh-axi exposes no raw-field form to turn that off. So the file
+# is named rather than read: `body=@<path>` sends its bytes as a JSON string with
+# the newlines intact, which is both the string-forcing spelling the body needs
+# and one hop fewer than reading it into a shell variable first.
+#
+# It goes through `gh_write` rather than `gh_json` because it is a reversible
+# verb like the other four: nothing is read back out of the response, so nothing
+# needs decoding, and what it does need is `gh_write`'s stderr fallback — the
+# rule that stdout is never left empty on a failure gh-axi reported for itself.
+#
+# `--full` for the reason gh.sh gives: gh-axi truncates a long response by
+# default. This is the one call whose response echoes the whole body back, so it
+# is the one most certain to be cut, and a stdout promised as verbatim must not
+# be the seam's own doing when it is not.
+edit_write() {
+  gh_write api PATCH "/repos/$REPO/issues/comments/$COMMENT" \
+    --field "body=@$BODY_FILE" --full
+}
+
 # Execute the write operation for the given verb. Dispatches to the appropriate
-# GitHub API call based on VERB (autofix, review, comment, label, or merge).
-# Returns the exit status of the underlying gh-axi or gh_json call.
+# GitHub API call based on VERB (autofix, review, comment, edit, label, or
+# merge). Returns the exit status of the underlying gh-axi or gh_json call.
 write() {
   case "$VERB" in
     autofix)
@@ -346,7 +446,17 @@ write() {
       ;;
     review)  gh_write pr comment "$PR" --repo "$REPO" --body "$REVIEW_TRIGGER" ;;
     comment) gh_write pr comment "$PR" --repo "$REPO" --body-file "$BODY_FILE" ;;
-    label)   gh_write pr edit "$PR" --repo "$REPO" --add-label "$ADD_LABEL" ;;
+    edit)    edit_write ;;
+    # One flag or the other, never both — which the argument check above has
+    # already established, so this reads the one that is set rather than
+    # deciding anything a second time.
+    label)
+      if [[ -n "$ADD_LABEL" ]]; then
+        gh_write pr edit "$PR" --repo "$REPO" --add-label "$ADD_LABEL"
+      else
+        gh_write pr edit "$PR" --repo "$REPO" --remove-label "$REMOVE_LABEL"
+      fi
+      ;;
     merge)   merge_write ;;
     # Unreachable — the verb was matched on the way in — but a `case` with no
     # default returns 0, and a silent success having issued no write is the one
@@ -356,14 +466,26 @@ write() {
 }
 
 
-if write; then
-  # The merge names what it asserted, where the other four have nothing to name.
-  # Both of its failure lines carry the commit, and an outcome line a human reads
-  # by hand is worth as much on the pass as on the refusal.
-  if [[ "$VERB" == merge ]]; then
-    say "merge: $REPO#$PR at $SHA by $METHOD"
+# What this invocation was addressed to, for the outcome lines. Five verbs name
+# a pull request; `edit` names a comment and was given no pull-request number, so
+# a shared `$REPO#$PR` would print a `#` with nothing after it — a line claiming
+# a pull request the caller never mentioned.
+target() {
+  if [[ "$VERB" == edit ]]; then
+    printf '%s comment %s' "$REPO" "$COMMENT"
   else
-    say "$VERB: $REPO#$PR"
+    printf '%s#%s' "$REPO" "$PR"
+  fi
+}
+
+if write; then
+  # The merge names what it asserted, where the other five have only what they
+  # were addressed to. Both of its failure lines carry the commit, and an outcome
+  # line a human reads by hand is worth as much on the pass as on the refusal.
+  if [[ "$VERB" == merge ]]; then
+    say "merge: $(target) at $SHA by $METHOD"
+  else
+    say "$VERB: $(target)"
   fi
   exit 0
 fi
@@ -372,7 +494,7 @@ fi
 # would put the same bytes on two channels and invite a caller to read the wrong
 # one.
 if [[ "$VERB" != merge ]]; then
-  say "$VERB failed on $REPO#$PR"
+  say "$VERB failed on $(target)"
   exit 1
 fi
 
