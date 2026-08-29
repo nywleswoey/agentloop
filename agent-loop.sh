@@ -743,10 +743,12 @@ query_repo_open_pr_branches() {
     jq -r '.data.repository.pullRequests.nodes[]?
       | select(.number != null and .headRefName != null)
       | [ (.number | tostring), .headRefName ] | @tsv' <<< "$response"
-    # A missing `pageInfo` is the last page: `jq -e` fails on null, and the one
-    # answer that must never be inferred here is "there is more I did not read".
+    # Only GitHub's explicit terminal answer is a complete read. Missing or
+    # malformed pagination data must not be mistaken for an empty next page.
+    jq -e '.data.repository.pullRequests.pageInfo.hasNextPage == false' <<< "$response" \
+      >/dev/null 2>&1 && return 0
     jq -e '.data.repository.pullRequests.pageInfo.hasNextPage == true' <<< "$response" \
-      >/dev/null 2>&1 || return 0
+      >/dev/null 2>&1 || return 1
     cursor=$(jq -c '.data.repository.pullRequests.pageInfo.endCursor' <<< "$response")
     # A next page GitHub will not give a cursor for is unreadable, not empty.
     [[ -n "$cursor" && "$cursor" != "null" ]] || return 1
