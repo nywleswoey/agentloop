@@ -904,6 +904,13 @@ query_ready_issues() {
 }
 
 # Query all claimed issues in a repository. Prints issue numbers, one per line.
+#
+# Open ones only, because `query_issues_by_label` asks for `states: OPEN` — so a
+# claim label left on a *closed* issue is invisible here and can never be
+# re-dispatched. That blindness is load-bearing rather than incidental: close-out
+# is the only path that clears such a label, and it reaches a closed issue on
+# every pass for as long as the merged pull request is readable, so the reclaim
+# never has to see one.
 query_claimed_issues() {
   query_issues_by_label "$1" "$LABEL_CLAIMED" | jq -r '.data.repository.issues.nodes[]?.number'
 }
@@ -2566,10 +2573,15 @@ update_description() {
 # Dropping the claim label is what ends the loop's hold on an issue, and it is
 # the last write close-out makes. It stands on its own because close-out reaches
 # it two ways: after a close of its own, and on an issue GitHub closed at merge,
-# where there is no close left to make.
+# where there is no close left to make. The failure line lives here rather than
+# at either caller, because both say the same sentence and only the accounting
+# differs — a reworded copy at one caller would be a lie at the other.
 unclaim_issue() {
   local github="$1" number="$2"
-  gh-axi issue edit "$number" --repo "$github" --remove-label "$LABEL_CLAIMED" >/dev/null 2>&1
+  gh-axi issue edit "$number" --repo "$github" --remove-label "$LABEL_CLAIMED" >/dev/null 2>&1 \
+    && return 0
+  log "unclaim failed for $github#$number, leaving the label on a closed issue"
+  return 1
 }
 
 # The close and the unclaim are two calls, because gh-axi closes an issue and
@@ -2582,8 +2594,9 @@ unclaim_issue() {
 close_issue() {
   local github="$1" number="$2"
   gh-axi issue close "$number" --repo "$github" >/dev/null 2>&1 || return 1
-  unclaim_issue "$github" "$number" \
-    || log "unclaim failed for $github#$number, leaving the label on a closed issue"
+  # The close landed, so the close-out succeeded; a lost unclaim has already
+  # said so on its own line and the next pass will try it again.
+  unclaim_issue "$github" "$number" || :
 }
 
 # Every checkbox on the checklist, ticked. Anchored at the start of its line,
@@ -2664,14 +2677,16 @@ closeout_one() {
 
   # GitHub got there first: it closed the issue at merge, on the strength of a
   # closing keyword in the pull request body. Only the unclaim is left, and it
-  # is the whole of the work — losing it strands the label, so it counts as a
-  # skip, where the same failure after a close of the loop's own is a lost
-  # tidy-up on an issue already off the board.
+  # is the whole of the work here — losing it means the pass finished nothing,
+  # so it counts as a skip. An unclaim lost after a close of the loop's own is
+  # not counted at the site that lost it, because the close it followed is what
+  # the pass came to do; the issue then arrives back here on the next pass,
+  # closed and still claimed, and is retried and counted from this branch until
+  # the label comes off.
   if [[ "$state" != "open" ]]; then
     if unclaim_issue "$github" "$number"; then
       log "closed out $github#$number: pull request #$prnumber merged, issue already closed"
     else
-      log "unclaim failed for $github#$number, leaving the label on a closed issue"
       SKIPS=$((SKIPS + 1))
     fi
     return 0

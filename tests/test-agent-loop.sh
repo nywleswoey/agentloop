@@ -666,6 +666,17 @@ check "exactly two issues were reclaimed" \
 # Reclaim runs once at startup, not once per pass.
 check "one reclaim line per issue" test "$(grep -cF 'reclaimed nywleswoey/automation#21' "$OUT")" -eq 1
 
+setup "the reclaim asks for open claimed issues alone"
+# A claim label stranded on a closed issue is invisible to the reclaim, and that
+# is what stops it ever being re-dispatched — so close-out is free to take its
+# time clearing one. The blindness is a clause in the query, so the query is
+# where it is asserted: the fixtures are pre-filtered lists and could answer
+# with a closed issue whatever the loop asked for.
+export STUB_CLAIMED=mixed STUB_ORCA_PS=busy
+run_once
+check_status 0 "$STATUS"
+check_grep 'gh-axi api POST graphql --field query={ repository(owner: "nywleswoey", name: "automation") { issues(labels: ["agent-in-progress"], states: OPEN, first: 100)' "$STUB_CALLS"
+
 setup "no claimed issues means no reclaim traffic"
 run_once
 check_status 0 "$STATUS"
@@ -2334,19 +2345,32 @@ check_grep "close failed for nywleswoey/automation#17, leaving it claimed" "$OUT
 check_grep "pass start" "$OUT"
 check_grep "pass end" "$OUT"
 
-setup "a failed unclaim on an issue GitHub already closed is logged and counted"
-# The unclaim is the whole of the work left on such an issue, so losing it
-# strands the claim label exactly as before the fix — that is a skip, not a
-# partial success. On an issue close-out closed itself the same failure is only
-# a lost tidy-up, and stays uncounted.
+setup "a failed unclaim leaves a closed issue for the next close-out to finish"
+# Every label edit fails, so every unclaim does. Close-out runs twice in a
+# --once run — at startup, before the reclaim, and again inside the pass — which
+# is what makes the recovery visible in a single run.
+#
+# The startup close-out closes #17, #40, #11 and #43 and cannot unclaim them:
+# the close is what stops the re-dispatch, so it still counts as a close-out.
+# #44 GitHub had already closed, so the unclaim is the whole of the work there
+# and losing it is a skip rather than a partial success — no `closed out` line.
+#
+# The pass's close-out then reads all five back closed and still claimed, which
+# is the state the guard now keys on, and retries every one of them. That is the
+# self-heal: a lost unclaim is retried until it lands, and until then it is five
+# skips rather than five issues quietly stranded.
 export STUB_MERGED=set STUB_GH_FAIL=claim
 run_once
 check_status 0 "$STATUS"
-check_grep "unclaim failed for nywleswoey/automation#44, leaving the label on a closed issue" "$OUT"
-check_no_grep "closed out nywleswoey/automation#44" "$OUT"
 check_grep "unclaim failed for nywleswoey/automation#17, leaving the label on a closed issue" "$OUT"
 check_grep "closed out nywleswoey/automation#17: pull request #201 merged" "$OUT"
-check_grep "skips=1" "$OUT"
+check_grep "unclaim failed for nywleswoey/automation#44, leaving the label on a closed issue" "$OUT"
+check_no_grep "closed out nywleswoey/automation#44" "$OUT"
+check_grep "pass end dispatches=0 skips=5" "$OUT"
+# The retry is an unclaim and never a second close: #17 is closed once, by the
+# close-out that found it open.
+check "a closed issue is never closed twice" \
+  test "$(grep -cF 'gh-axi issue close 17 --repo nywleswoey/automation' "$STUB_CALLS")" -eq 1
 
 setup "a failed merged-pr query is logged and the pass continues"
 export STUB_MERGED=set STUB_GH_FAIL=merged
