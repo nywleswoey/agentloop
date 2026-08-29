@@ -1256,10 +1256,11 @@ query_repo_open_prs() {
 # unverified assumption about what GitHub stamps on a bot push.
 #
 # `mergeable` and `mergeStateStatus` are the risk gate's V3, and they are two
-# fields rather than one because `mergeable: MERGEABLE` is *also* true of the
-# unstable and blocked states — the two a naive mergeability test gets wrong.
-# Both are computed lazily and both can come back `UNKNOWN` on a first read,
-# with no documented retry contract anywhere; that is what `defer` is for.
+# fields rather than one because they carry different facts: the first is the
+# conflict axis, the second is everything else GitHub folds into one enum, of
+# which V3 owns base drift alone. Both are computed lazily and both can come back
+# `UNKNOWN` on a first read, with no documented retry contract anywhere; that is
+# what `defer` is for.
 #
 # `files` is V4's blast radius. `totalCount` is fetched alongside the page so a
 # pull request with more than a hundred files is *known* to be truncated rather
@@ -1772,11 +1773,30 @@ escalate() {
 # autofix does not resolve what it fixes, so the rubric cannot lean on "threads
 # are clean" as a proxy for "concerns addressed".
 #
+# **One signal, one veto, and terminality.** Two rules govern what a veto may
+# say, and every veto below is written to them:
+#
+#   - For every underlying *fact* about a pull request, exactly one veto owns it,
+#     and only the owner may let that fact move its verdict. A veto reading a
+#     value whose causes include a fact it does not own must return a verdict
+#     carrying no information about that fact.
+#   - A veto may say `no` only on a cause that is **operator-retractable** and
+#     **not produced by the loop's own writes**. Self-retracting causes rot —
+#     the record is false before anyone reads it — and loop-produced causes are
+#     the loop's to clear, not the operator's. Unknown classifies as
+#     self-retracting and defers.
+#
+# `ok`, `defer` and `merge` cannot go stale, because the gate derives and acts on
+# the same pass. Only `escalate` is written down, so **a recorded `no` is the
+# only gate output that can rot**, and the second rule is about that one output.
+#
 # `defer` is the third outcome and it is not a failure. A signal that is simply
-# **not computed yet** — a check still running, a mergeability GitHub has not
+# **not computed yet** — a check still running, a conflict axis GitHub has not
 # finished calculating — is re-derived next pass in silence, because an unknown
 # mergeability state is routine and has no documented retry contract to follow.
-# What stops that being forever is the clock, V5.
+# What stops that being forever is the clock, V5. And *silent* means only
+# GitHub-visible: `GATE_KV` is on the per-pass log line for every verdict, so a
+# `defer` is fully diagnosable without a round-trip.
 #
 # **All four vetoes evaluate — no short-circuit — and escalate beats defer.**
 # One message carries every reason, the passes as well as the failures: an
@@ -1892,7 +1912,7 @@ risk_gate() {
   local limited=false level="" abbrev="" block="" mergeable="" mergestate=""
   local green=0 pending=0 failed=0 total=0 pendingnames="" failednames=""
   local filecount=0 truncated=false guarded=""
-  local v1 v2 v3 v4 age clock="" deferred=false expired=false
+  local v1 v2 v3 v3conflict v3state v4 age clock="" deferred=false expired=false
 
   GATE_VERDICT=defer
   GATE_KIND=""
@@ -2003,26 +2023,104 @@ risk_gate() {
       "green=$green pending=$pending failed=$failed total=$total")")
   fi
 
-  # V3 — mergeability. Both axes, because `mergeable` alone is true of the
-  # unstable and blocked states too. `UNKNOWN` on either is GitHub still
-  # calculating, which is a defer and not a verdict — a gate that read it as
-  # "no conflicts detected" would merge conflicted pull requests.
+  # V3 — conflicts and base drift, and **nothing else**. One signal, one veto:
+  # for every underlying fact about a pull request exactly one veto owns it, and
+  # a veto reading a value whose causes include a fact it does not own must
+  # return a verdict carrying no information about that fact. V3 owns the facts
+  # that are functions of `(head, base tip)` alone — whether head and base tip
+  # conflict, and whether base has moved past the merge base — and it is silent
+  # about checks in either direction.
+  #
+  # That second clause is the one today's specimen lacked. `mergeStateStatus`
+  # reports *a required check has not reported yet* as `BLOCKED`; reading that as
+  # a permanent veto handed over a pull request whose check went green
+  # twenty-nine seconds later, while V2 was simultaneously and correctly
+  # deferring on the same underlying fact through a different field.
+  #
+  # The classification, for a veto `X` and a value `v`, over the set `cause(v)`
+  # of repository conditions that can produce it:
+  #
+  #   1  every fact in it is owned by another veto            → `ok`
+  #   2  fully known, wholly X's, operator-retractable, and
+  #      not produced by the loop's own writes                → `no`
+  #   3  otherwise — mixed, unknown, unowned, self-retracting → `defer`
+  #
+  # Rule 1 returns `ok` rather than `defer` because a veto that deferred on
+  # another veto's fact would suppress the owner's own `no`. Rule 3 is what makes
+  # this safe under the rows GitHub does not document: `defer` is closed under
+  # union of causes where `no` and `ok` are not, so the `else` arm on both axes
+  # defers. **There is no ordering logic anywhere** — precedence between
+  # simultaneous merge-state values is undocumented, and classifying by cause set
+  # never needs it.
+  #
+  # **Two rows, one veto.** The axes are reported separately so that a `no` never
+  # appears in the handover beside a raw value reading `mergeable`, and V3's
+  # outcome is the strictest of the two. "Strictest wins" over a total order is
+  # associative, which is what makes the split free — and what would make a fifth
+  # veto verdict-neutral.
   #
   # **A branch that is behind is never updated.** That write would move the head,
   # void the verdict just validated, and spend metered review budget re-reviewing
   # what was already reviewed. It escalates instead.
-  if [[ "$mergeable" == "MERGEABLE" && "$mergestate" == "CLEAN" ]]; then
-    v3=ok
-    GATE_REASONS+=("$(reason ok "GitHub reports this pull request mergeable and clean" \
-      "mergeable=$mergeable state=$mergestate")")
-  elif [[ -z "$mergeable" || -z "$mergestate" || "$mergeable" == "UNKNOWN" || "$mergestate" == "UNKNOWN" ]]; then
-    v3=defer
-    GATE_REASONS+=("$(reason defer "GitHub has not finished computing mergeability" \
-      "mergeable=${mergeable:-none} state=${mergestate:-none}")")
-  else
+  # The conflict axis. Both named values are fully known and wholly V3's, so
+  # this axis may speak decisively in either direction — and `CONFLICTING`
+  # satisfies rule 2 in full, because a conflict retracts only when somebody
+  # pushes.
+  case "$mergeable" in
+    MERGEABLE)
+      v3conflict=ok
+      GATE_REASONS+=("$(reason ok "GitHub reports no conflict between this head and its base" \
+        "mergeable=$mergeable")") ;;
+    CONFLICTING)
+      v3conflict=no
+      GATE_REASONS+=("$(reason no "this pull request conflicts with its base" \
+        "mergeable=$mergeable")") ;;
+    # Rule 3 — `UNKNOWN` is GitHub still calculating, and empty or unrecognised
+    # is a cause set that cannot be established at all. Reading either as "no
+    # conflicts detected" is how a gate merges a conflicted pull request.
+    *)
+      v3conflict=defer
+      GATE_REASONS+=("$(reason defer "GitHub has not settled whether this pull request conflicts" \
+        "mergeable=${mergeable:-none}")") ;;
+  esac
+
+  # The merge-state axis. GitHub folds a dozen unrelated repository conditions
+  # into one enum here, and exactly one of them is V3's.
+  case "$mergestate" in
+    # Rule 2 — base drift, the other half of what V3 owns. It is fully known,
+    # wholly V3's, and clears only because somebody acts.
+    BEHIND)
+      v3state=no
+      GATE_REASONS+=("$(reason no "the base has moved on past this pull request's merge base" \
+        "state=$mergestate")") ;;
+    # Rule 1. `CLEAN` is check-derived by definition, so requiring it here would
+    # re-import V2's fact; `DIRTY` is the conflict fact, which the axis above
+    # owns and reads far more directly; `UNSTABLE` is the check fact, which V2
+    # owns — its rollup names the context and separates pending from failed,
+    # where `UNSTABLE` names nothing.
+    CLEAN|DIRTY|UNSTABLE)
+      v3state=ok
+      GATE_REASONS+=("$(reason ok "GitHub's merge state raises nothing this veto owns" \
+        "state=$mergestate")") ;;
+    # Rule 3 — `BLOCKED` (mixed causes, one of which retracts itself), `DRAFT`
+    # (the scope filter's fact, and un-drafting is not a push), `HAS_HOOKS` (a
+    # repository condition no veto owns), `UNKNOWN`, and the `else`: empty, or a
+    # value GitHub adds tomorrow. The `else` defers **one pull request** rather
+    # than escalating the queue, which is what makes a schema change a bounded
+    # surprise.
+    *)
+      v3state=defer
+      GATE_REASONS+=("$(reason defer "GitHub's merge state is not one this veto can conclude from" \
+        "state=${mergestate:-none}")") ;;
+  esac
+
+  # The strictest of the two axes is the veto's outcome.
+  if [[ "$v3conflict" == "no" || "$v3state" == "no" ]]; then
     v3=no
-    GATE_REASONS+=("$(reason no "GitHub does not report this pull request both mergeable and clean" \
-      "mergeable=$mergeable state=$mergestate")")
+  elif [[ "$v3conflict" == "defer" || "$v3state" == "defer" ]]; then
+    v3=defer
+  else
+    v3=ok
   fi
 
   # V4 — blast radius. *Never minimal if merging it changes what runs
@@ -2053,31 +2151,46 @@ risk_gate() {
       "files=$filecount guarded=none")")
   fi
 
-  if [[ "$v2" == "defer" || "$v3" == "defer" ]]; then deferred=true; fi
+  # **Any veto**, not `v2 || v3`. Stated over the whole set so that a defer arm
+  # added to a veto that has none today cannot be missed here.
+  if [[ "$v1" == "defer" || "$v2" == "defer" || "$v3conflict" == "defer" \
+        || "$v3state" == "defer" || "$v4" == "defer" ]]; then deferred=true; fi
 
-  # V5 — the clock, and it only exists because a `defer` is silent. It runs from
-  # the head commit's date, so no pull request can sit undecided forever.
+  # V5 — the clock, and it only exists because a `defer` is silent on GitHub. It
+  # runs from the head commit's date, so no pull request can sit undecided
+  # forever.
   #
-  # Whether it has run out is decided **once**, here, and read twice below: the
-  # row the handover carries and the verdict the loop acts on must never be able
-  # to disagree about what the clock said.
+  # **The clock is not a veto, and an expired defer is not a `no`.** Its row
+  # judged nothing at all, so it carries `note` — the fourth token — and it is
+  # the same row either side of the bound. A `no` here would itself break
+  # terminality: what retracts *a signal has not arrived* is the signal arriving
+  # on its own, which is not something an operator can do.
+  #
+  # For the same reason **the deferring rows are never reclassified at expiry**.
+  # A handover that is still waiting says so, and still names what it is waiting
+  # on; the kind on its first line is what carries the fact that the wait ran
+  # long.
+  #
+  # Whether it has run out is decided **once**, here, and read as a boolean by
+  # the combination below rather than through a row verdict: the row the handover
+  # carries and the verdict the loop acts on must never be able to disagree about
+  # what the clock said.
   age=$(( now - head_epoch ))
   if (( age > MERGE_GATE_TIMEOUT )); then expired=true; fi
   if $deferred; then
     clock=" age=$age bound=$MERGE_GATE_TIMEOUT"
-    if $expired; then
-      GATE_REASONS+=("$(reason no "a signal is still undecided past the gate clock" \
-        "age=${age}s bound=${MERGE_GATE_TIMEOUT}s head=$head_date")")
-    else
-      GATE_REASONS+=("$(reason defer "the gate clock has not run out yet" \
-        "age=${age}s bound=${MERGE_GATE_TIMEOUT}s head=$head_date")")
-    fi
+    GATE_REASONS+=("$(reason note "how long the undecided signals above have been waiting" \
+      "age=${age}s bound=${MERGE_GATE_TIMEOUT}s head=$head_date")")
   fi
 
   # **Escalate beats defer**, and a veto beats the clock: a pull request with
   # both a veto and an undecided signal is a handover about the veto, because
-  # that is the one the operator can do something about.
-  if [[ "$v1" == "no" || "$v2" == "no" || "$v3" == "no" || "$v4" == "no" ]]; then
+  # that is the one the operator can do something about. It costs nothing now
+  # that a `no` is only ever a cause an operator can retract — the failing check
+  # that reaches here is the most actionable veto in the gate, and delaying it
+  # behind a clock would buy no information.
+  if [[ "$v1" == "no" || "$v2" == "no" || "$v3conflict" == "no" \
+        || "$v3state" == "no" || "$v4" == "no" ]]; then
     GATE_VERDICT=escalate
     GATE_KIND=escalate
   elif $deferred; then
@@ -2094,9 +2207,10 @@ risk_gate() {
     GATE_VERDICT=merge
   fi
 
-  # `mergeability`, not `mergeable`: this is V3's *outcome*, and the raw
-  # `mergeable=MERGEABLE` GitHub answered with travels in the handover's table.
-  # One name for two different things is how a reader learns the wrong one.
+  # `mergeability`, not `mergeable`: this is V3's *outcome* — the strictest of
+  # its two axes — and the raw `mergeable=MERGEABLE` GitHub answered with travels
+  # in the handover's table, one axis per row. One name for two different things
+  # is how a reader learns the wrong one.
   GATE_KV="verdict=$GATE_VERDICT risk=$v1 checks=$v2 mergeability=$v3 blast=$v4$clock"
 }
 
