@@ -41,9 +41,11 @@
 #   api /repos/<o>/<n>/labels
 #                            the repo's labels, from repos.txt's second field
 #   api /repos/.../issues/<number>
-#                            one issue, answered from issue-<number>.json — but
-#                            reported closed once a close PATCH has landed on
-#                            it, so a second pass sees what the first one did
+#                            one issue, answered from issue-<number>.json with
+#                            every write the loop has since made to it replayed
+#                            over the top — reported closed once a close has
+#                            landed on it, and wearing the labels its edits left
+#                            it with, so a second pass sees what the first did
 #   api /repos/.../issues/<number>/dependencies/blocked_by
 #                            the issue's blockers, from blocked-<number>.json
 #                            when that fixture exists and `[]` otherwise
@@ -61,13 +63,15 @@
 #   pr edit <number> --add-label <name>
 #                            a label add, recorded by its argv
 #   issue edit <number> --add-label / --remove-label
-#                            a label swap, recorded by its argv
+#                            a label swap, recorded by its argv and as an
+#                            ordered delta in $STUB_STATE/labels-<number>, which
+#                            a later read of the issue replays
 #   issue edit <number> --body-file <path>
 #                            a body rewrite; the file is copied whole to
 #                            $STUB_STATE/body-<number>.txt so a test can compare
 #                            it byte for byte
-#   issue close <number>     a close, recorded so a later read of the same issue
-#                            reports it closed
+#   issue close <number>     a close, recorded in $STUB_STATE/closed-<number> so
+#                            a later read of the same issue reports it closed
 #   label create --name ...  the loop's own three labels
 #
 # $STUB_WORLD names a directory under fixtures/worlds (default: "none") holding
@@ -248,8 +252,20 @@ if [[ "${1:-}" == "issue" ]]; then
     exit 0
   fi
 
-  # A label edit: the claim, the reclaim, or the unclaim that follows a close.
+  # A label edit: the claim, the reclaim, or the unclaim. Both halves are
+  # recorded, for the same reason a close is — a later read of the same issue
+  # has to see what the loop did to it rather than the fixture's own labels over
+  # again. Close-out keys its silence on the claim label, so a stub that forgot
+  # a removal would show a line repeating that the real loop does not repeat,
+  # and one that forgot the add would answer with an issue wearing neither
+  # label, which is a state GitHub never produces. They are appended as an
+  # ordered log because a swap is an add and a remove in one call, and a label
+  # can go on, come off and go back on across passes.
   fail_if claim
+  removed=$(flag_value --remove-label "$@")
+  added=$(flag_value --add-label "$@")
+  [[ -z "$added" ]] || printf '+%s\n' "$added" >> "$STUB_STATE/labels-$number"
+  [[ -z "$removed" ]] || printf -- '-%s\n' "$removed" >> "$STUB_STATE/labels-$number"
   printf 'issue:\n  number: %s\n' "$number"
   exit 0
 fi
@@ -397,11 +413,21 @@ fi
 if [[ "$path" == /repos/*/*/issues/* ]]; then
   fail_if issue
   number="${path##*/}"
-  if [[ -f "$STUB_STATE/closed-$number" ]]; then
-    emit "$(printf '{"number":%s,"state":"closed","labels":[],"body":""}' "$number")"
-  else
-    emit_file "$STUB_FIXTURES/issue-$number.json"
-  fi
+  # The fixture, with everything the loop has since done to this issue replayed
+  # over it: the close, and the ordered label deltas. Close-out reads an issue
+  # it has already written to on every later pass, and both of its guards read
+  # exactly these two fields, so a stub that answered with the untouched fixture
+  # would make a second pass repeat work the first one finished.
+  state=""
+  [[ -f "$STUB_STATE/closed-$number" ]] && state=closed
+  deltas=$(cat "$STUB_STATE/labels-$number" 2>/dev/null)
+  emit "$(jq -c --arg state "$state" --arg deltas "$deltas" '
+    (if $state == "" then . else .state = $state end)
+    | (reduce ($deltas | split("\n")[] | select(. != "")) as $d
+        ([.labels[]?.name];
+         if ($d | startswith("+")) then (. + [$d[1:]] | unique) else . - [$d[1:]] end)
+      ) as $names
+    | .labels = ($names | map({name: .}))' "$STUB_FIXTURES/issue-$number.json")"
   exit 0
 fi
 
