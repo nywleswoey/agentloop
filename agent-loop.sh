@@ -1277,11 +1277,12 @@ sweep_worktrees() {
 #                                                    any write on this pull
 #                                                    request
 #   merge -> refused -> retract on the gate saying
-#     merge again -> merge -> refused                **none.** Registered as a
-#                                                    defect rather than left out
-#                                                    — the merge spend is derived
-#                                                    from the record, and goes
-#                                                    down with it
+#     merge again -> merge -> refused                **none**, and tracked as
+#                                                    #100. Registered as a defect
+#                                                    rather than left out — the
+#                                                    merge spend is derived from
+#                                                    the record, and goes down
+#                                                    with it
 #
 # **A third party's automatic reaction to a loop-authored write is not an
 # external event.** Admitting it would make the invariant unfalsifiable, since

@@ -180,7 +180,7 @@ The second stated invariant, and it earns a register for the same reason the tab
 | a failing check → withdrawn when a re-run goes pending → re-escalated on a second failure | you re-running a check |
 | `needs-autofix` → autofix pushes a CodeRabbit-authored head → nudge and review → gate → `needs-autofix` at the next human head | a human push |
 | escalated → withdrawn when the rate-limit marker appears → re-escalated when it ages out | CodeRabbit's fair-usage window — a rolling window over the organisation, not a reaction to any write on this pull request |
-| `merge` → refused → withdrawn when the gate says `merge` again → merge → refused | **none.** Written down as a defect rather than left out — the merge spend is derived from the record and goes down with it |
+| `merge` → refused → withdrawn when the gate says `merge` again → merge → refused | **none**, and tracked as [#100](https://github.com/nywleswoey/agentloop/issues/100). Written down as a defect rather than left out — the merge spend is derived from the record and goes down with it |
 
 **A third party's automatic reaction to a loop-authored write is not an external event.** Admitting it would make the invariant unfalsifiable, since every loop write provokes some reaction. The line is the loop's causal closure: a human *choosing* to re-run a check is outside it; a bot firing because the loop pushed is not.
 
