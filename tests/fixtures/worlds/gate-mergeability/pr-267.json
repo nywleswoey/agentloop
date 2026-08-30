@@ -2,10 +2,10 @@
   "data": {
     "repository": {
       "pullRequest": {
-        "number": 401,
-        "headRefOid": "401a401a401a401a401a401a401a401a401a401a",
+        "number": 267,
+        "headRefOid": "267a267a267a267a267a267a267a267a267a267a",
         "mergeable": "MERGEABLE",
-        "mergeStateStatus": "BLOCKED",
+        "mergeStateStatus": "HAS_HOOKS",
         "files": {
           "totalCount": 1,
           "nodes": [
@@ -18,13 +18,8 @@
           "nodes": [
             {
               "commit": {
-                "oid": "401a401a401a401a401a401a401a401a401a401a",
+                "oid": "267a267a267a267a267a267a267a267a267a267a",
                 "committedDate": "2026-08-27T11:30:00Z",
-                "author": {
-                  "user": {
-                    "login": "nywleswoey"
-                  }
-                },
                 "statusCheckRollup": {
                   "state": "SUCCESS",
                   "contexts": {
@@ -48,16 +43,6 @@
                         "creator": {
                           "login": "github-actions"
                         }
-                      },
-                      {
-                        "__typename": "StatusContext",
-                        "context": "pg-gate",
-                        "state": "FAILURE",
-                        "description": "Postgres gate failed",
-                        "createdAt": "2026-08-27T11:32:00Z",
-                        "creator": {
-                          "login": "github-actions"
-                        }
                       }
                     ]
                   }
@@ -72,10 +57,10 @@
         "comments": {
           "nodes": [
             {
-              "databaseId": 5379000401,
-              "createdAt": "2026-08-27T09:00:00Z",
+              "databaseId": 5379000267,
+              "createdAt": "2026-08-20T09:00:00Z",
               "updatedAt": "2026-08-27T11:32:00Z",
-              "body": "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n<!-- recent_review_start -->\n## Walkthrough\n\nA localized change.\n<!-- recent_review_end -->\n<!-- final_review_risk_start -->\n**Merge Risk:** _⚪ Minimal_ · up to `401a4`\n\nProse CodeRabbit wrote about the change, which nothing parses.\n<!-- final_review_risk_end -->\n<!-- tips_start -->\n<details>\n<summary>📜 Recent review details</summary>\n\nConfiguration used: defaults\nReview profile: CHILL\nPlan: Pro Plus\n\nFiles that changed from the base of the PR and between dec0dec0dec0dec0dec0dec0dec0dec0dec0dec0 and 401a401a401a401a401a401a401a401a401a401a\n</details>\n<!-- tips_end -->\n",
+              "body": "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n<!-- recent_review_start -->\n## Walkthrough\n\nA localized change.\n<!-- recent_review_end -->\n<!-- final_review_risk_start -->\n**Merge Risk:** _⚪ Minimal_ · up to `267a2`\n\nProse CodeRabbit wrote about the change, which nothing parses.\n<!-- final_review_risk_end -->\n<!-- tips_start -->\n<details>\n<summary>📜 Recent review details</summary>\n\nConfiguration used: defaults\n</details>\n<!-- tips_end -->\n",
               "author": {
                 "login": "coderabbitai"
               }

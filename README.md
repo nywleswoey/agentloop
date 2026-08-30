@@ -68,13 +68,46 @@ A pull request that is ready to judge goes through four independent vetoes over 
 - **V3 — conflicts and base drift.** V3 owns the facts that are functions of `(head, base tip)` alone: whether head and base tip conflict, and whether base has moved past the merge base. It reads `mergeable` and `mergeStateStatus` and **says nothing about the values it reads but does not own** — a `mergeStateStatus` of `BLOCKED` is mixed or undocumented, with causes V3 does not own, so it defers rather than treating it as a specific check state; `DIRTY` is the conflict fact the other axis already owns, and `UNSTABLE` is a check, so both pass. Only `CONFLICTING` and `BEHIND` are a veto. Anything else — `DRAFT`, `HAS_HOOKS`, `UNKNOWN`, empty, or a value GitHub adds tomorrow — defers *that one pull request* rather than escalating the queue. The handover carries **two rows**, one per axis, and the log line's `mergeability=` key carries the stricter of them. A branch that is **behind is never updated** — that write would move the head, void the verdict just validated, and spend metered review budget re-reviewing it.
 - **V4 — blast radius.** Any change under `.github/workflows/`, or to `agent-loop.sh`, `pr-writeback.sh` or `gh.sh`, escalates. The principle is *never minimal if merging it changes what runs unattended*. There is **no diff-size ceiling** — a big change is not a risky one. A pull request touching more than 100 files escalates all the same, on the different ground that the read carries one page and merging on a file list known to be partial would let exactly the change this veto looks for slip past the page boundary.
 - **V5 — the clock, which is not a veto.** `defer` is the third outcome and is not a failure: a check still running, or a conflict axis GitHub has not finished computing, is re-derived next pass in silence. `mergeGateTimeoutSeconds` from the head commit's date is what stops that being forever. **An expired defer is not a `no`**: the deferring rows are never reclassified at expiry — they still read `defer` and still name what they are waiting on — and the clock gets its own row, verdict `note`, emitted whenever anything defers and never when nothing does. What changes past the bound is the kind on the handover's first line, not any row's verdict. A pull request whose review is merely rate-limited defers too — ahead of every veto, and exempt from that clock, because the rate limit self-clears on its own.
+- **The permanence mark — the gate owns judgement, the clock owns duration.** A deferring reason whose cause set is *fully established from a primary source* and *no member of which can be retracted by elapsed time alone* is marked **permanent**, and escalates as `stuck` on the pass it is derived instead of waiting out a clock that will decide nothing. The verdict stays `defer` and the mark rides on the reason: a `no` would fail the ownership rule above, and a fourth verdict bin has no honest position in `no > defer > ok`. Two values qualify today — `HAS_HOOKS` and `DRAFT` — and both are unreachable in practice, which is the point: **the value is the test, not the members.** The class cannot grow through `BLOCKED` or the unrecognised-value arm, because neither cause set is established. The clock's row says which of its three states it is in, and keeps `age=` and `bound=` on all three, so an early handover cannot be mistaken for a mis-set timeout:
+
+  | Condition | The row reads |
+  |---|---|
+  | unexpired, nothing marked | the merge-gate clock has not run out yet |
+  | expired | the merge-gate clock has run out |
+  | a deferring reason is marked permanent | the merge-gate clock does not apply — a deferring cause above is permanent, `permanent=HAS_HOOKS` |
 
 Two rules govern what a veto is allowed to say, and both are checkable against the next one somebody adds:
 
 - **One signal, one veto.** For every underlying *fact* about a pull request, exactly one veto owns it, and only the owner may let that fact move its verdict. A veto reading a value whose causes include a fact it does not own returns a verdict carrying no information about that fact — `ok` when every cause belongs to another veto, `defer` when the causes are mixed, unknown or unowned.
-- **Terminality.** A veto may say `no` only on a cause that is **operator-retractable** and **not produced by the loop's own writes**. A cause that retracts itself while nobody does anything makes the record false before it is read; a cause the loop itself created is not the operator's to clear. Unknown counts as self-retracting and defers. `ok`, `defer` and `merge` cannot go stale, because the gate derives and acts on the same pass — a recorded `no` is the only gate output that can rot.
+- **Terminality.** A veto may say `no` only on a cause that is **operator-retractable** and **not produced by the loop's own writes**. A cause that retracts itself while nobody does anything makes the record false before it is read; a cause the loop itself created is not the operator's to clear. Unknown counts as self-retracting and defers. `ok`, `defer` and `merge` cannot go stale, because the gate derives and acts on the same pass — a recorded `no` is the only gate output that can rot. This is one of the two sites of the rule **the loop does not act on its own output**; the other is autofix's refusal to spend at a head the loop minted.
 
-All four vetoes evaluate — nothing short-circuits — and **escalate beats defer**, so one handover carries every reason, the ones that passed included. That precedence costs nothing now that a `no` is only ever a cause an operator can retract: the failing check that reaches it is the most actionable veto in the gate, and holding it behind a clock would buy no information. The gate **never reads the pull request's reviews** and **never parses CodeRabbit's pre-merge checks**.
+All four vetoes evaluate — nothing short-circuits — and **a veto beats the clock**, so one handover carries every reason, the ones that passed included. That precedence costs nothing now that a `no` is only ever a cause an operator can retract: the failing check that reaches it is the most actionable veto in the gate, and holding it behind a clock would buy no information. The gate **never reads the pull request's reviews** and **never parses CodeRabbit's pre-merge checks**.
+
+**Who owns what**, which the classification is derived from. Ownership goes to the veto that reads the fact **most directly** — the input that discriminates most about it:
+
+| Fact | Owner |
+|---|---|
+| CodeRabbit's merge-risk judgement | V1 |
+| the state of every check on the head | V2 |
+| whether head and base tip conflict | V3 |
+| whether base has moved past the merge base | V3 |
+| what the change touches | V4 |
+| elapsed time | the clock, which is not a veto |
+| draft | the scope filter |
+| the walkthrough's commit abbreviation | loop-produced — no owner |
+| the repository's non-check merge rules, and the **existence** of required contexts | deliberately unowned |
+
+**Checking a fifth veto**, so the property survives the next person to add one:
+
+1. Name the fact it exists to judge, positively, as a function of inputs.
+2. Claim it. If another veto owns it, resolve by directness; the loser returns `ok`.
+3. For every value of every field it reads, write the **cause set** — the set of repository conditions, not the value's gloss.
+4. Apply the three rules. A `no` needs all four of: cause set fully known, wholly owned, operator-retractable, not loop-produced.
+5. Any cause set not establishable from a primary source is `defer`.
+
+**A veto whose `no` arm is an `else` has not done step 3.** V3's is gone. V1's and V4's are still there, and auditing them against this procedure would be well-founded work.
+
+**Two facts stay unestablished and ship that way on purpose:** the full cause set behind `mergeStateStatus = BLOCKED` — which is why it defers, and why it cannot be marked permanent — and whether the check rollup carries an entry for a required context that has never reported. Every classification above is deliberately robust to both.
 
 **The cost, on the record:** a pull request whose checks are green but whose merge GitHub blocks on a required review, an unresolved conversation, a deployment, a signature or a linear-history rule now waits out `mergeGateTimeoutSeconds` before arriving as `stuck`, where it used to be handed over on the first pass. None of those causes is owned by a veto, so none of them can be told apart from a check that has not reported yet. *Silent* means only silent on GitHub — the gate's `key=value` tail is on the per-pass log line for every verdict, including `defer`, so the wait is fully diagnosable without a round-trip.
 
@@ -100,7 +133,7 @@ The comment's first line names the kind, because the kind is what tells you what
 | Kind | Meaning | Where to look |
 |---|---|---|
 | `escalate` | a veto is present and says no | the diff, and the reasons in the comment |
-| `stuck` | signals still undecided past the merge-gate timeout — including a review that started and never finished | the checks, or CodeRabbit |
+| `stuck` | signals are undecided and waiting will not decide them — a review that started and never finished, or a deferring cause that is permanent | the checks, or CodeRabbit |
 | `stalled` | a CodeRabbit command was triggered and CodeRabbit never reported inside its bound | CodeRabbit's installation and seats — or, on the `other-head` route, the commit its verdict is pinned to |
 | `refused` | the gate said merge and GitHub said no | the rubric — *I said yes and reality disagreed* is evidence it is wrong |
 
@@ -124,12 +157,34 @@ There is deliberately **no override label** — an unscoped bypass token for the
 | `autofix-in-flight` | `autofixTimeoutSeconds` | the trigger comment |
 | `nudge-in-flight` | one poll interval | the nudge comment |
 | `needs-review`, `needs-autofix` | acts on the pass it is derived, or on the next when a standing record had to come down first | — |
-| `assessable` | `mergeGateTimeoutSeconds` (V5) | the head commit's date |
+| `assessable` | `mergeGateTimeoutSeconds` (V5); **the pass it is derived** when a deferring reason is marked permanent | the head commit's date, applied outside the gate |
 | `rate-limited` | **external** | the fair-usage rolling window |
+
+**Every bound in this table expires into a handover**, and the one-pass cost of retraction is on the two rows it delays — that is the whole bill for adding a fifth handover kind.
 
 There is no `escalated` row because there is no such state. A handover is a record the chain re-derives past every pass, not a state it parks in, so a pull request carrying one is in whichever state its signals actually put it — and that row's bound is the row's own. The record's own exit is the pass that stops deriving it: it is withdrawn by the loop, not waited out.
 
 `rate-limited` is the one state with no clock of the loop's own, and it is recorded as **correct rather than a hole**: unlike the review pause, which resets only when a command lifts it, the rate limit self-clears as usage ages out, and the comment carrying it ships its own estimate. Bounding it with a loop-owned clock would escalate the whole queue whenever the reviewer is merely slow.
+
+**`mergeGateTimeoutSeconds` is a floor with a named cost, not a tuned number, and this project deliberately sets none.** Its population divides in two. For transient computation — a check still running, a conflict axis GitHub has not finished calculating — it is a **floor**: the clock must outlast the slowest legitimate check run in your repository, or the loop hands you pull requests that were merely slow. For a permanent blocker no veto owns it is **pure latency**: nothing the wait buys can change the answer. One number cannot be right for both, so the number stays yours.
+
+### No cycle turns without an external event
+
+The second stated invariant, and it earns a register for the same reason the table above does. Un-latching restores derivation rather than writes, so the metered writes are untouched; what it makes possible is a pull request that oscillates. Every cycle the PR phase can turn is listed with the event that drives it, and **a cycle with no driver is a defect**.
+
+| Cycle | Driver |
+|---|---|
+| behind base → withdrawn when mergeability goes unknown → re-escalated | a merge into the base branch |
+| a failing check → withdrawn when a re-run goes pending → re-escalated on a second failure | you re-running a check |
+| `needs-autofix` → autofix pushes a CodeRabbit-authored head → nudge and review → gate → `needs-autofix` at the next human head | a human push |
+| escalated → withdrawn when the rate-limit marker appears → re-escalated when it ages out | CodeRabbit's fair-usage window — a rolling window over the organisation, not a reaction to any write on this pull request |
+| `merge` → refused → withdrawn when the gate says `merge` again → merge → refused | **none.** Written down as a defect rather than left out — the merge spend is derived from the record and goes down with it |
+
+**A third party's automatic reaction to a loop-authored write is not an external event.** Admitting it would make the invariant unfalsifiable, since every loop write provokes some reaction. The line is the loop's causal closure: a human *choosing* to re-run a check is outside it; a bot firing because the loop pushed is not.
+
+**The last row is the register earning its keep.** Killing that cycle needs a head-keyed fact that survives the withdrawal, and there is none in the read today. It is recorded here, undriven, rather than quietly omitted: a register that lists only the cycles that pass is not a register.
+
+**The rule both invariants lean on is: the loop does not act on its own output.** It has exactly two sites — terminality's ban on a `no` resting on a cause the loop's own writes produced, and autofix's ban on a spend at a head the loop minted.
 
 ### Branch protection is yours, not the loop's
 
