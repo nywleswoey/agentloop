@@ -351,6 +351,11 @@ load_config() {
   # Required for the same reason, and on thinner evidence still: this key bounds
   # the risk gate's `defer`, and there is **no sample at all** behind that use of
   # it. A default here would be a guess wearing a number's clothes.
+  #
+  # It is **a floor, not a tuned number**, and the block above the PR phase says
+  # what raising it costs. Nothing here validates that floor — the slowest
+  # legitimate check run is a property of the operator's repositories, not of
+  # this file — so all this can check is that a number was supplied.
   require_positive_int mergeGateTimeoutSeconds "$MERGE_GATE_TIMEOUT"
   require_field labels.ready "$LABEL_READY"
   require_field labels.claimed "$LABEL_CLAIMED"
@@ -1186,28 +1191,50 @@ sweep_worktrees() {
 #                                                  an instant
 #   autofix-in-flight  autofixTimeoutSeconds       the trigger comment
 #   nudge-in-flight    one poll interval           the nudge comment
-#   needs-review       acts on the pass it is derived, or on the next when a
-#                      standing record had to come down first
-#   needs-autofix      acts on the pass it is derived, or on the next when a
-#                      standing record had to come down first
+#   needs-review       acts on the pass it is      the retraction, when one has
+#                      derived; one poll interval  to come down first
+#                      later when a standing
+#                      handover must be retracted
+#                      first
+#   needs-autofix      acts on the pass it is      the retraction, when one has
+#                      derived; one poll interval  to come down first
+#                      later when a standing
+#                      handover must be retracted
+#                      first
 #   assessable         mergeGateTimeoutSeconds;    the head commit's date,
-#                      the pass it is derived      applied outside the gate
-#                      when a deferring reason
-#                      is marked permanent
+#                      the pass it is derived      applied outside the gate —
+#                      when a deferring reason is  and the retraction, when one
+#                      marked permanent; one poll  has to come down first
+#                      interval later when a
+#                      standing handover must be
+#                      retracted first
 #   rate-limited       external                    the fair-usage rolling window
 #
-# **Adding a state means adding a row**, and **every bound in this table expires
-# into a handover.**
+# **Adding a state means adding a row.** There is no `escalated` row because
+# there is no such state, and the table is checkable one row at a time only
+# because of that: a pull request carrying a handover is in whichever state its
+# signals actually put it, and that row's bound is the row's own.
 #
-# **There is no `escalated` row because there is no such state.** A handover is
-# a record the chain re-derives past every pass, not a state it parks in, so the
-# pull request carrying one is in whichever state its signals actually put it —
-# and that row's bound is the row's own. The record's own exit is the pass that
-# stops deriving it: it is withdrawn by the loop, not waited out.
+# **Every bound in this table expires into a handover, and the one-pass cost of
+# retraction is on every row whose action a standing record delays.** Those are
+# the only three writes a standing record holds — the nudge, the autofix trigger
+# and the merge — so they are the only rows that can carry the cost, and a fourth
+# action added to the chain adds a fourth. The tail's own writes are not among
+# them: the handover, the retraction and the label chase are what *consumes* the
+# record rather than what the record withholds. A record the loop cannot rewrite
+# is not one pass but the operator's move, which is what `bound=operator` says on
+# the log line. The cost is written on the rows rather than in a footnote so that
+# nobody adds a fifth handover kind without seeing the bill.
 #
 # `rate-limited` is the one state with no loop-owned clock, and that is recorded
 # as **correct** rather than left as a hole: unlike the review pause, the rate
 # limit self-clears as usage ages out, so its bound is external and documented.
+#
+# **A standing handover has no loop-owned bound either, and that is correct
+# rather than a hole** — the same shape as `rate-limited` and recorded the same
+# way. Its exits are the operator's three — merge by hand, push, convert to
+# draft — plus the loop's own **retraction**, when re-derivation stops agreeing
+# with the record.
 #
 # The three timeouts run off **three different origins** on purpose, which is
 # also why the two configured keys stay separate: the merge-gate key alone has
@@ -2172,7 +2199,7 @@ consume_record() {
 # Ownership goes to the veto that reads the fact **most directly** — the input
 # that discriminates most about it:
 #
-#   fact                                            owner
+#   fact                                             owner
 #   ---------------------------------------------------------------------------
 #   CodeRabbit's merge-risk judgement                V1
 #   the state of every check on the head             V2
@@ -2186,7 +2213,9 @@ consume_record() {
 #     the *existence* of required contexts           deliberately unowned
 #
 # **Checking a fifth veto against those two rules** — the procedure, so the
-# property survives the next person to add one:
+# property survives the next person to add one. Step 4's *three rules* are the
+# classification's three rows, which are how the two rules above are applied to
+# a value; the *four* are what rule 2 requires all of:
 #
 #   1  Name the fact it exists to judge, positively, as a function of inputs.
 #   2  Claim it. If another veto owns it, resolve by directness; the loser
@@ -2666,12 +2695,12 @@ risk_gate() {
     fi
   fi
 
-  # **A veto beats the clock:** a pull request with
-  # both a veto and an undecided signal is a handover about the veto, because
-  # that is the one the operator can do something about. It costs nothing now
-  # that a `no` is only ever a cause an operator can retract — the failing check
-  # that reaches here is the most actionable veto in the gate, and delaying it
-  # behind a clock would buy no information.
+  # **A veto beats the clock:** a pull request with both a veto and an undecided
+  # signal is a handover about the veto, because that is the one the operator can
+  # do something about. It costs nothing now that a `no` is only ever a cause an
+  # operator can retract — the failing check that reaches here is the most
+  # actionable veto in the gate, and delaying it behind a clock would buy no
+  # information.
   if [[ "$v1" == "no" || "$v2" == "no" || "$v3" == "no" || "$v4" == "no" ]]; then
     GATE_VERDICT=escalate
     GATE_KIND=escalate
