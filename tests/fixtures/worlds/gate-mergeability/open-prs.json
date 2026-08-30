@@ -1,0 +1,286 @@
+{
+  "data": {
+    "repository": {
+      "pullRequests": {
+        "pageInfo": {
+          "hasNextPage": false,
+          "endCursor": null
+        },
+        "nodes": [
+          {
+            "number": 250,
+            "title": "mergeable and clean",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/250",
+            "headRefName": "clean",
+            "headRefOid": "250a250a250a250a250a250a250a250a250a250a",
+            "labels": {
+              "nodes": []
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
+          },
+          {
+            "number": 251,
+            "title": "the dirty merge state, which the conflict axis owns",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/251",
+            "headRefName": "dirty",
+            "headRefOid": "251a251a251a251a251a251a251a251a251a251a",
+            "labels": {
+              "nodes": []
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
+          },
+          {
+            "number": 252,
+            "title": "the unstable merge state, which the checks veto owns",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/252",
+            "headRefName": "unstable",
+            "headRefOid": "252a252a252a252a252a252a252a252a252a252a",
+            "labels": {
+              "nodes": []
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
+          },
+          {
+            "number": 253,
+            "title": "the base has moved past the merge base",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/253",
+            "headRefName": "behind",
+            "headRefOid": "253a253a253a253a253a253a253a253a253a253a",
+            "labels": {
+              "nodes": []
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
+          },
+          {
+            "number": 254,
+            "title": "blocked, the state that produced the specimen",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/254",
+            "headRefName": "blocked",
+            "headRefOid": "254a254a254a254a254a254a254a254a254a254a",
+            "labels": {
+              "nodes": []
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
+          },
+          {
+            "number": 255,
+            "title": "the draft merge state",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/255",
+            "headRefName": "draftstate",
+            "headRefOid": "255a255a255a255a255a255a255a255a255a255a",
+            "labels": {
+              "nodes": []
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
+          },
+          {
+            "number": 256,
+            "title": "a pre-receive hook stands between this and the base",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/256",
+            "headRefName": "hashooks",
+            "headRefOid": "256a256a256a256a256a256a256a256a256a256a",
+            "labels": {
+              "nodes": []
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
+          },
+          {
+            "number": 257,
+            "title": "a merge state GitHub has not finished computing",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/257",
+            "headRefName": "stateunknown",
+            "headRefOid": "257a257a257a257a257a257a257a257a257a257a",
+            "labels": {
+              "nodes": []
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
+          },
+          {
+            "number": 258,
+            "title": "a merge state that arrived empty",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/258",
+            "headRefName": "stateempty",
+            "headRefOid": "258a258a258a258a258a258a258a258a258a258a",
+            "labels": {
+              "nodes": []
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
+          },
+          {
+            "number": 259,
+            "title": "a merge state the loop has never heard of",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/259",
+            "headRefName": "statenew",
+            "headRefOid": "259a259a259a259a259a259a259a259a259a259a",
+            "labels": {
+              "nodes": []
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
+          },
+          {
+            "number": 260,
+            "title": "head and base tip conflict",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/260",
+            "headRefName": "conflicting",
+            "headRefOid": "260a260a260a260a260a260a260a260a260a260a",
+            "labels": {
+              "nodes": []
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
+          },
+          {
+            "number": 261,
+            "title": "a conflict axis GitHub has not finished computing",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/261",
+            "headRefName": "conflictunknown",
+            "headRefOid": "261a261a261a261a261a261a261a261a261a261a",
+            "labels": {
+              "nodes": []
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
+          },
+          {
+            "number": 262,
+            "title": "a conflict axis that arrived empty",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/262",
+            "headRefName": "conflictempty",
+            "headRefOid": "262a262a262a262a262a262a262a262a262a262a",
+            "labels": {
+              "nodes": []
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
+          },
+          {
+            "number": 263,
+            "title": "a conflict axis the loop has never heard of",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/263",
+            "headRefName": "conflictnew",
+            "headRefOid": "263a263a263a263a263a263a263a263a263a263a",
+            "labels": {
+              "nodes": []
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
+          },
+          {
+            "number": 264,
+            "title": "a red check while the merge state defers",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/264",
+            "headRefName": "redcheck",
+            "headRefOid": "264a264a264a264a264a264a264a264a264a264a",
+            "labels": {
+              "nodes": []
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
+          },
+          {
+            "number": 265,
+            "title": "a merge state the loop has never heard of, and nothing else wrong",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/265",
+            "headRefName": "statenew-alone",
+            "headRefOid": "265a265a265a265a265a265a265a265a265a265a",
+            "labels": {
+              "nodes": []
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
+          },
+          {
+            "number": 266,
+            "title": "the specimen: a required check pending, reported twice through two fields",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/266",
+            "headRefName": "the-specimen",
+            "headRefOid": "266a266a266a266a266a266a266a266a266a266a",
+            "labels": {
+              "nodes": []
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
+          }
+        ]
+      }
+    }
+  }
+}
