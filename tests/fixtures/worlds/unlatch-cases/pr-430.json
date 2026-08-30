@@ -1,0 +1,123 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "number": 430,
+        "headRefOid": "430a430a430a430a430a430a430a430a430a430a",
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "CLEAN",
+        "files": {
+          "totalCount": 1,
+          "nodes": [
+            {
+              "path": "src/render.js"
+            }
+          ]
+        },
+        "commits": {
+          "nodes": [
+            {
+              "commit": {
+                "oid": "430a430a430a430a430a430a430a430a430a430a",
+                "committedDate": "2026-08-27T10:30:00Z",
+                "author": {
+                  "user": {
+                    "login": "nywleswoey"
+                  }
+                },
+                "statusCheckRollup": {
+                  "state": "SUCCESS",
+                  "contexts": {
+                    "nodes": [
+                      {
+                        "__typename": "StatusContext",
+                        "context": "CodeRabbit",
+                        "state": "SUCCESS",
+                        "description": "Review completed",
+                        "createdAt": "2026-08-27T10:31:00Z",
+                        "creator": {
+                          "login": "coderabbitai"
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "reviewThreads": {
+          "nodes": [
+            {
+              "id": "RT_430_0",
+              "isResolved": false,
+              "isOutdated": false,
+              "path": "src/render.js",
+              "line": 12,
+              "comments": {
+                "nodes": [
+                  {
+                    "databaseId": 904300,
+                    "createdAt": "2026-08-27T11:31:30Z",
+                    "author": {
+                      "login": "coderabbitai"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "id": "RT_430_1",
+              "isResolved": false,
+              "isOutdated": false,
+              "path": "src/render.js",
+              "line": 12,
+              "comments": {
+                "nodes": [
+                  {
+                    "databaseId": 904301,
+                    "createdAt": "2026-08-27T11:31:30Z",
+                    "author": {
+                      "login": "coderabbitai"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "comments": {
+          "nodes": [
+            {
+              "databaseId": 5379000430,
+              "createdAt": "2026-08-27T09:00:00Z",
+              "updatedAt": "2026-08-27T10:32:00Z",
+              "body": "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n<!-- recent_review_start -->\n## Walkthrough\n\nA localized change.\n<!-- recent_review_end -->\n<!-- final_review_risk_start -->\n**Merge Risk:** _⚪ Minimal_ · up to `430a4`\n\nProse CodeRabbit wrote about the change, which nothing parses.\n<!-- final_review_risk_end -->\n<!-- tips_start -->\n<details>\n<summary>📜 Recent review details</summary>\n\nConfiguration used: defaults\nReview profile: CHILL\nPlan: Pro Plus\n\nFiles that changed from the base of the PR and between dec0dec0dec0dec0dec0dec0dec0dec0dec0dec0 and 430a430a430a430a430a430a430a430a430a430a\n</details>\n<!-- tips_end -->\n",
+              "author": {
+                "login": "coderabbitai"
+              }
+            },
+            {
+              "databaseId": 5379000435,
+              "createdAt": "2026-08-27T11:00:00Z",
+              "updatedAt": "2026-08-27T11:00:00Z",
+              "author": {
+                "login": "nywleswoey"
+              },
+              "body": "@coderabbitai autofix\n<!-- agent-loop-autofix-head: 430a430a430a430a430a430a430a430a430a430a -->"
+            },
+            {
+              "databaseId": 5379000436,
+              "createdAt": "2026-08-27T11:30:00Z",
+              "updatedAt": "2026-08-27T11:30:00Z",
+              "author": {
+                "login": "nywleswoey"
+              },
+              "body": "**Escalated — `stalled`:** a CodeRabbit command was triggered and CodeRabbit never reported inside its bound.\n\nThe loop is holding this pull request at `430a430a430a430a430a430a430a430a430a430a` — no merge, no autofix trigger, no nudge — while this record stands. It re-reads every pass and **withdraws this record on its own** if the picture changes.\n\nRead at 2026-08-27T11:30:00Z.\n\n| Verdict | What | Raw values |\n|---|---|---|\n| ok | CodeRabbit's review finished on this commit | `review=terminal threads=2` |\n| no | the autofix trigger has gone unanswered past its bound | `trigger=2026-08-27T11:00:00Z age=5401s bound=5400s head=2026-08-27T10:30:00Z` |\n\n`ok` passed · `no` blocked the merge · `defer` not yet computed when this was read · `note` judged nothing at all.\n\n**Ways back in** — none of them required; the loop may clear this itself.\n\n- **Merge it by hand.** Close-out still ticks and closes the issue this branch names: it reads merged pull requests from GitHub and cannot tell whose hand pressed the button.\n- **Push a commit.** The head moves, this record stops matching it, and the loop re-derives from scratch on the next pass.\n- **Convert it to draft.** Draft is the hold gesture, and the loop stops seeing this pull request at all.\n\nThere is no override label. A push is both the fix and the re-engagement.\n\n<!-- agent-loop-escalated: 430a430a430a430a430a430a430a430a430a430a -->\n"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

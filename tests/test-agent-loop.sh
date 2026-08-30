@@ -1342,13 +1342,15 @@ check "the first line names the kind" \
   test "$(head -1 "$BODY")" = '**Escalated — `stuck`:** signals are still undecided past the merge-gate timeout.'
 check_grep "| ok | CodeRabbit acknowledged this commit — the review started | \`oldest-pending=2026-08-27T11:00:00Z origin=pending head=2026-08-27T07:00:00Z\` |" "$BODY"
 check_grep "| no | the review has not finished inside the gate clock | \`age=3601s bound=3600s\` |" "$BODY"
-check_grep "<!-- agent-loop-escalated: 250a250a250a250a250a250a250a250a250a250a -->" "$BODY"
+check_grep "<!-- agent-loop-escalated: 250a250a250a250a250a250a250a250a250a250a stuck -->" "$BODY"
 
 # --- pr phase: the handover ----------------------------------------------------------
 
-# Escalation is a handover, not a notification, and the two facts that makes it
-# are asserted here across five replayed passes: once escalated at a head the
-# loop stops acting, and when the head moves it re-derives from scratch.
+# Escalation is a handover, not a notification, and the facts that make it are
+# asserted here across five replayed passes: while a record stands at a head the
+# loop stops acting, a record whose kind the chain re-derives unchanged is held
+# rather than re-written, and when the head moves the record stops matching —
+# the flag chasing it off on the same pass.
 
 setup "a stalled autofix is handed over, and the handover is not repeated"
 PASS_N=0
@@ -1357,7 +1359,7 @@ PASS_N=0
 # answered. The record goes up, then the flag.
 replay escalation/pass1 2026-08-27T12:30:01Z
 check_status 0 "$STATUS"
-check_grep "pr nywleswoey/automation#601 601a601a601a601a601a601a601a601a601a601a autofix-stalled review=terminal threads=2 autofix=unspent age=5401 bound=5400 action=escalated kind=stalled label=added" "$PASS_LOG"
+check_grep "pr nywleswoey/automation#601 601a601a601a601a601a601a601a601a601a601a autofix-stalled review=terminal threads=2 autofix=unspent age=5401 bound=5400 action=escalated kind=stalled label=added handover=posted" "$PASS_LOG"
 
 # Comment then label, in that order, both through the real seam. The order is
 # what self-heals: the reverse would flag a pull request whose record never
@@ -1385,9 +1387,27 @@ check_grep "**Merge it by hand.**" "$BODY"
 check_grep "**Push a commit.**" "$BODY"
 check_grep "**Convert it to draft.**" "$BODY"
 check_grep "There is no override label." "$BODY"
-# The marker, stamped with the head and keyed on it alone.
-check_grep "<!-- agent-loop-escalated: 601a601a601a601a601a601a601a601a601a601a -->" "$BODY"
-check_no_grep "<!-- agent-loop-escalated: 601b601b601b601b601b601b601b601b601b601b -->" "$BODY"
+# The marker, stamped with the head **and the kind** — the second is what lets a
+# later pass tell *this same claim, still true* from *a different claim about
+# the same commit*.
+check_grep "<!-- agent-loop-escalated: 601a601a601a601a601a601a601a601a601a601a stalled -->" "$BODY"
+check_no_grep "<!-- agent-loop-escalated: 601b601b601b601b601b601b601b601b601b601b" "$BODY"
+# The sentence that had to change. The record promises a duration the loop now
+# honours, and says who ends it.
+check_grep "while this record stands" "$BODY"
+check_no_grep "until the head moves" "$BODY"
+check_grep "**withdraws this record on its own**" "$BODY"
+# The read timestamp goes once, above the table, so every row below it reads as
+# an observation made at one instant rather than as a standing claim.
+check "the read timestamp sits above the table" \
+  test "$(grep -n 'Read at 2026-08-27T12:30:01Z.' "$BODY" | cut -d: -f1)" \
+     -lt "$(grep -n '| Verdict | What | Raw values |' "$BODY" | cut -d: -f1)"
+# And the legend below it, which is what keeps a `defer` row beside a `no` row
+# from being read as a second finding.
+check "the legend sits below the table" \
+  test "$(grep -n 'blocked the merge' "$BODY" | cut -d: -f1)" \
+     -gt "$(grep -n '| Verdict | What | Raw values |' "$BODY" | cut -d: -f1)"
+check_grep "**Ways back in** — none of them required; the loop may clear this itself." "$BODY"
 # The captured world the next passes replay carries the loop's own words rather
 # than a paraphrase of them, so a change to the body cannot quietly stop the
 # marker being found.
@@ -1395,10 +1415,19 @@ check "the world the next pass replays carries the body just posted" \
   test "$(jq -r '.data.repository.pullRequest.comments.nodes[] | select((.body | contains("agent-loop-escalated"))) | .body' "$FIXTURES/worlds/escalation/pass2/pr-601.json")" = "$(cat "$BODY")"
 
 # Pass two: the record is on the timeline and the flag is on the pull request.
-# Nothing at all happens — no second comment, no merge, no trigger, no nudge.
+# **The chain re-derives all the way to the state it derived before** — the line
+# says `autofix-stalled`, not `escalated`, because that is what this pull
+# request is — and the record is held rather than re-written, because the kind
+# it carries is the kind the chain just derived again.
 replay escalation/pass2 2026-08-27T13:00:00Z
 check_status 0 "$STATUS"
-check_grep "pr nywleswoey/automation#601 601a601a601a601a601a601a601a601a601a601a escalated review=terminal threads=2 autofix=unspent label=present" "$PASS_LOG"
+check_grep "pr nywleswoey/automation#601 601a601a601a601a601a601a601a601a601a601a autofix-stalled review=terminal threads=2 autofix=unspent age=7200 bound=5400 handover=held label=present" "$PASS_LOG"
+# The state formerly known as escalated is gone. It was never a state — no
+# signal put a pull request in it — and a chain that re-derives has nothing left
+# to park in.
+check_no_grep "601a601a601a601a601a601a601a601a601a601a escalated" "$PASS_LOG"
+check "held writes nothing at all" \
+  test "$(grep -cE 'issues/comments/' "$STUB_CALLS")" -eq 0
 check "still exactly one escalation comment" \
   test "$(grep -cF 'pr comment 601 --repo nywleswoey/automation --body-file' "$STUB_CALLS")" -eq 1
 check "still exactly one label add" \
@@ -1413,38 +1442,48 @@ check "the head is still read exactly once per pass" \
 # self-heal the write order was chosen for.
 replay escalation/pass3 2026-08-27T13:30:00Z
 check_status 0 "$STATUS"
-check_grep "pr nywleswoey/automation#601 601a601a601a601a601a601a601a601a601a601a escalated review=terminal threads=2 autofix=unspent label=added" "$PASS_LOG"
+check_grep "pr nywleswoey/automation#601 601a601a601a601a601a601a601a601a601a601a autofix-stalled review=terminal threads=2 autofix=unspent age=9000 bound=5400 handover=held label=added" "$PASS_LOG"
 check "the label was added a second time" \
   test "$(grep -cF 'pr edit 601 --repo nywleswoey/automation --add-label agent-escalated' "$STUB_CALLS")" -eq 2
 check "and no second comment was posted" \
   test "$(grep -cF 'pr comment 601 --repo nywleswoey/automation --body-file' "$STUB_CALLS")" -eq 1
 
 # Pass four: the head moved. The record names the commit before it, so it no
-# longer matches, and the loop re-derives from scratch — right down to acting,
-# which an escalated head forbids. The label is still there and does not stop
-# it: the flag is not the record.
+# longer matches, the loop acts — and **the flag comes off on the same pass**,
+# because the label chases the marker in both directions. The chase is delivery
+# rather than action, so it runs alongside the trigger instead of consuming it.
 replay escalation/pass4 2026-08-27T14:05:00Z
 check_status 0 "$STATUS"
-check_grep "pr nywleswoey/automation#601 601b601b601b601b601b601b601b601b601b601b needs-autofix review=terminal threads=2 autofix=unspent action=triggered" "$PASS_LOG"
+check_grep "pr nywleswoey/automation#601 601b601b601b601b601b601b601b601b601b601b needs-autofix review=terminal threads=2 autofix=unspent action=triggered label=removed" "$PASS_LOG"
 check_no_grep "601b601b601b601b601b601b601b601b601b601b escalated" "$PASS_LOG"
 check_grep "gh-axi pr comment 601 --repo nywleswoey/automation --body @coderabbitai autofix" "$STUB_CALLS"
+check_grep "gh-axi pr edit 601 --repo nywleswoey/automation --remove-label agent-escalated" "$STUB_CALLS"
+# The record naming the old head is left exactly where it is. Nothing was edited
+# — a record of a handover that is over is history, not a false claim.
+check "a record at a head that has moved on is not rewritten" \
+  test "$(grep -cE 'issues/comments/' "$STUB_CALLS")" -eq 0
 
 # Pass five: the new head stalls the same way, so it is escalated again — and
 # only because it failed again. The new record names the new commit.
 replay escalation/pass5 2026-08-27T15:35:01Z
 check_status 0 "$STATUS"
-check_grep "pr nywleswoey/automation#601 601b601b601b601b601b601b601b601b601b601b autofix-stalled review=terminal threads=2 autofix=unspent age=5401 bound=5400 action=escalated kind=stalled label=added" "$PASS_LOG"
+check_grep "pr nywleswoey/automation#601 601b601b601b601b601b601b601b601b601b601b autofix-stalled review=terminal threads=2 autofix=unspent age=5401 bound=5400 action=escalated kind=stalled label=added handover=posted" "$PASS_LOG"
 check "one escalation per head, and two heads have now failed" \
   test "$(grep -cF 'pr comment 601 --repo nywleswoey/automation --body-file' "$STUB_CALLS")" -eq 2
-check_grep "<!-- agent-loop-escalated: 601b601b601b601b601b601b601b601b601b601b -->" "$STUB_STATE/pr-body-601.txt"
+check_grep "<!-- agent-loop-escalated: 601b601b601b601b601b601b601b601b601b601b stalled -->" "$STUB_STATE/pr-body-601.txt"
+# The record at the new head is a **new comment**, not an edit of the one at the
+# old head: the handover write is deliberately not metered per head, and the
+# comment the loop may edit is only ever one carrying a marker for the head
+# being derived.
+check "no comment was edited across all five passes" \
+  test "$(grep -cE 'issues/comments/' "$STUB_CALLS")" -eq 0
 
-# The flag is never taken off — not when the head moves, not ever. Removing it
-# would be untidy and inert: the record is the comment, and the label is what
-# makes every escalated pull request in every repository one query away. Five
-# passes and two heads have gone by above, so this negative has a run of real
-# behaviour behind it rather than standing alone.
-check "no label is ever removed from a pull request" \
-  test "$(grep -cE 'gh-axi pr edit .*--remove-label' "$STUB_CALLS")" -eq 0
+# The flag came off exactly once — on the pass after the marker stopped matching
+# — and went back on when a new record went up. Five passes and two heads have
+# gone by above, so the chase has a run of real behaviour behind it rather than
+# standing alone.
+check "the flag came off once, on the pass the marker stopped matching" \
+  test "$(grep -cE 'gh-axi pr edit .*--remove-label agent-escalated' "$STUB_CALLS")" -eq 1
 
 # --- pr phase: the handover's failure modes -------------------------------------------
 
@@ -1464,7 +1503,7 @@ check_grep "pass end dispatches=0 skips=1 sweeps=1" "$OUT"
 export STUB_GH_FAIL=""
 run_once
 check_status 0 "$STATUS"
-check_grep "#601 601a601a601a601a601a601a601a601a601a601a autofix-stalled review=terminal threads=2 autofix=unspent age=5401 bound=5400 action=escalated kind=stalled label=added" "$OUT"
+check_grep "#601 601a601a601a601a601a601a601a601a601a601a autofix-stalled review=terminal threads=2 autofix=unspent age=5401 bound=5400 action=escalated kind=stalled label=added handover=posted" "$OUT"
 
 setup "a handover whose label never lands keeps the record and is healed next pass"
 export STUB_WORLD=escalation/pass1 STUB_NOW=2026-08-27T12:30:01Z STUB_GH_FAIL=pr-edit
@@ -1478,9 +1517,226 @@ check_grep "pass end dispatches=0 skips=1 sweeps=1" "$OUT"
 export STUB_GH_FAIL="" STUB_WORLD=escalation/pass3 STUB_NOW=2026-08-27T13:30:00Z
 run_once
 check_status 0 "$STATUS"
-check_grep "#601 601a601a601a601a601a601a601a601a601a601a escalated review=terminal threads=2 autofix=unspent label=added" "$OUT"
+check_grep "#601 601a601a601a601a601a601a601a601a601a601a autofix-stalled review=terminal threads=2 autofix=unspent age=9000 bound=5400 handover=held label=added" "$OUT"
 check "the record was posted once across both passes" \
   test "$(grep -cF 'pr comment 601 --repo nywleswoey/automation --body-file' "$STUB_CALLS")" -eq 1
+
+# --- pr phase: un-latching, on the one head whose signals change -------------------
+
+# **The world the suite never had.** Every other multi-pass world here moves the
+# head between passes, so the suite has asserted idempotence at a fixed commit
+# and has never once asserted *signal change* at one — which is exactly the
+# shape the defect had. This replays the specimen: a handover written on a `no`
+# that a check retracted twenty-nine seconds later and that then stood for just
+# under two hours.
+#
+# One head, three passes. `BLOCKED` with a check still pending; the same head
+# with the check reported and the state clean; then the same head again with the
+# record withdrawn.
+
+setup "a record whose claim stops being true is withdrawn by the loop itself"
+PASS_N=0
+
+# Pass one: V3 says no, V2 defers on the check that has not reported, and
+# escalate beats defer — so the record goes up carrying both rows.
+replay unlatch/pass1 2026-08-27T11:35:00Z
+check_status 0 "$STATUS"
+check_grep "pr nywleswoey/automation#401 401a401a401a401a401a401a401a401a401a401a assessable review=terminal threads=0 autofix=unspent verdict=escalate risk=ok checks=defer mergeability=no blast=ok age=300 bound=3600 action=escalated kind=escalate label=added handover=posted" "$PASS_LOG"
+
+BODY="$STUB_STATE/pr-body-401.txt"
+check "the escalation body was captured" test -f "$BODY"
+check "the first line names the kind" \
+  test "$(head -1 "$BODY")" = '**Escalated — `escalate`:** a veto is present and says no.'
+check_grep "| no | GitHub does not report this pull request both mergeable and clean | \`mergeable=MERGEABLE state=BLOCKED\` |" "$BODY"
+check_grep "| defer | a status check on this commit has not reported yet | \`green=2 pending=1 failed=0 total=3 waiting=pg-gate\` |" "$BODY"
+check_grep "<!-- agent-loop-escalated: 401a401a401a401a401a401a401a401a401a401a escalate -->" "$BODY"
+# The world the next pass replays carries the loop's own words rather than a
+# paraphrase of them, so a change to the body cannot quietly stop the marker
+# being found — or its kind being read.
+check "the world the next pass replays carries the record just posted" \
+  test "$(jq -r '.data.repository.pullRequest.comments.nodes[] | select((.body | contains("agent-loop-escalated"))) | .body' "$FIXTURES/worlds/unlatch/pass2/pr-401.json")" = "$(cat "$BODY")"
+
+# Pass two: the same commit, the check reported, the state clean. The gate would
+# merge — and **that is precisely what the record promised would not happen** —
+# so the loop takes its own record down and spends the pass doing it.
+replay unlatch/pass2 2026-08-27T11:40:00Z
+check_status 0 "$STATUS"
+check_grep "pr nywleswoey/automation#401 401a401a401a401a401a401a401a401a401a401a assessable review=terminal threads=0 autofix=unspent verdict=merge risk=ok checks=ok mergeability=ok blast=ok action=deferred bound=retraction handover=retracted label=removed" "$PASS_LOG"
+# The record never stands while the loop does the thing it promised not to do,
+# so the merge waits a pass.
+check "no merge is written on the pass that retracts" \
+  test "$(grep -cF 'pulls/401/merge' "$STUB_CALLS")" -eq 0
+# **The retraction is an edit and a label removal, in that order, and nothing
+# else.** A counter-comment would churn the timeline two comments per base move
+# and push the record out of the window the derivation reads it from.
+check_grep "gh-axi api PATCH /repos/nywleswoey/automation/issues/comments/5379000411 --field body=@" "$STUB_CALLS"
+check_grep "gh-axi pr edit 401 --repo nywleswoey/automation --remove-label agent-escalated" "$STUB_CALLS"
+check "the comment is written before the label, on the way down as well as up" \
+  test "$(call_line 'issues/comments/5379000411')" \
+     -lt "$(call_line 'pr edit 401 --repo nywleswoey/automation --remove-label')"
+check "no comment is posted on a retraction" \
+  test "$(grep -cF 'pr comment 401 --repo nywleswoey/automation --body-file' "$STUB_CALLS")" -eq 1
+
+WITHDRAWN="$STUB_STATE/comment-body-5379000411.txt"
+check "the retraction body was captured" test -f "$WITHDRAWN"
+check "the first line withdraws the record" \
+  test "$(head -1 "$WITHDRAWN")" = '**Withdrawn.** A handover stood on this pull request at `401a401a401a401a401a401a401a401a401a401a`; the loop re-derived, the picture had changed, and it took the record down. The previous version of this comment holds what the gate saw.'
+# **Removing the marker is the retraction.** Nothing else has to come down,
+# because the marker is the whole of what the derivation reads.
+check_no_grep "agent-loop-escalated" "$WITHDRAWN"
+# **No live gate rows.** A notice saying the gate now says merge would be a
+# record written against a moving signal — the exact defect this path exists to
+# correct — so the body states only what is permanently true and leaves the
+# verdict to GitHub's own edit history.
+check_no_grep "| Verdict |" "$WITHDRAWN"
+check_no_grep "mergeable=" "$WITHDRAWN"
+
+# Pass three: no record, no flag, and the pull request derives like any other.
+replay unlatch/pass3 2026-08-27T11:45:00Z
+check_status 0 "$STATUS"
+check_grep "pr nywleswoey/automation#401 401a401a401a401a401a401a401a401a401a401a assessable review=terminal threads=0 autofix=unspent verdict=merge risk=ok checks=ok mergeability=ok blast=ok action=merged method=squash" "$PASS_LOG"
+check_grep "gh-axi api PUT /repos/nywleswoey/automation/pulls/401/merge --field sha=401a401a401a401a401a401a401a401a401a401a" "$STUB_CALLS"
+# The whole of the fix, in one line: the loop merged the commit it had vetoed,
+# on its own, without the head moving and without a human touching it.
+check "the head never moved across all three passes" \
+  test "$(grep -cF 'pullRequest(number: 401)' "$STUB_CALLS")" -eq 3
+
+setup "a retraction that never lands leaves the record standing and retracts again"
+PASS_N=0
+export STUB_WORLD=unlatch/pass2 STUB_NOW=2026-08-27T11:40:00Z STUB_GH_FAIL=comment-edit
+run_once
+check_status 0 "$STATUS"
+check_grep "#401 401a401a401a401a401a401a401a401a401a401a assessable review=terminal threads=0 autofix=unspent verdict=merge risk=ok checks=ok mergeability=ok blast=ok action=deferred bound=retraction handover=retract-failed rc=1" "$OUT"
+# **The label is not touched.** Comment then label is what makes that safe: the
+# record still stands, so the flag on it is still true, and the next pass finds
+# exactly the world this one did.
+check_no_grep "--remove-label" "$STUB_CALLS"
+check_grep "pass end dispatches=0 skips=1 sweeps=1" "$OUT"
+check "and nothing was merged behind a record that is still standing" \
+  test "$(grep -cF 'pulls/401/merge' "$STUB_CALLS")" -eq 0
+export STUB_GH_FAIL=""
+run_once
+check_status 0 "$STATUS"
+check_grep "#401 401a401a401a401a401a401a401a401a401a401a assessable review=terminal threads=0 autofix=unspent verdict=merge risk=ok checks=ok mergeability=ok blast=ok action=deferred bound=retraction handover=retracted label=removed" "$OUT"
+
+# --- pr phase: what the latch does with a record it did not just write -------------
+
+# Four pull requests at one head each, and a fifth that is the control. Every
+# one of the first four carries a standing record; none of them may be merged,
+# triggered or nudged while it does, and what happens to the record itself is
+# the whole of what separates them.
+
+setup "a standing record is held, replaced, retracted or left alone by whose it is"
+export STUB_WORLD=unlatch-cases STUB_NOW=2026-08-27T12:30:01Z
+run_once
+check_status 0 "$STATUS"
+
+# 410 — **the kind change.** A `stuck` record standing where the chain now
+# derives `escalate`: a different claim about the same commit, so the record is
+# replaced wholesale by an edit rather than retracted and re-posted a pass
+# later, which would leave the pull request carrying no record in between.
+check_grep "pr nywleswoey/automation#410 410a410a410a410a410a410a410a410a410a410a assessable review=terminal threads=0 autofix=unspent verdict=escalate risk=ok checks=ok mergeability=no blast=ok action=escalated kind=escalate label=added handover=posted" "$OUT"
+check_grep "gh-axi api PATCH /repos/nywleswoey/automation/issues/comments/5379000415 --field body=@" "$STUB_CALLS"
+KIND_CHANGE="$STUB_STATE/comment-body-5379000415.txt"
+check "the replacement body was captured" test -f "$KIND_CHANGE"
+check "the first line names the new kind" \
+  test "$(head -1 "$KIND_CHANGE")" = '**Escalated — `escalate`:** a veto is present and says no.'
+check_grep "<!-- agent-loop-escalated: 410a410a410a410a410a410a410a410a410a410a escalate -->" "$KIND_CHANGE"
+check_no_grep "agent-loop-escalated: 410a410a410a410a410a410a410a410a410a410a stuck" "$KIND_CHANGE"
+# It is a replacement and not a withdrawal: the record is a record throughout.
+check_no_grep "**Withdrawn.**" "$KIND_CHANGE"
+# The label stays. Nothing takes it off a pull request whose record was replaced
+# rather than withdrawn.
+check "the label stays on a kind change" \
+  test "$(grep -cF 'pr edit 410 --repo nywleswoey/automation --remove-label' "$STUB_CALLS")" -eq 0
+
+# 420 — **the foreign record.** The marker is there and it says the same thing,
+# but the loop did not write the comment carrying it, so it cannot un-write it.
+# The label chase is all that happens, and the line says why.
+# **The bound it names is the honest one.** No retraction is coming for a record
+# the loop cannot rewrite, so the line does not promise one: this pull request
+# waits on the operator, and the bounded-exit invariant is only worth carrying
+# if the row says which bound it is actually under.
+check_grep "pr nywleswoey/automation#420 420a420a420a420a420a420a420a420a420a420a assessable review=terminal threads=0 autofix=unspent verdict=merge risk=ok checks=ok mergeability=ok blast=ok action=deferred bound=operator handover=foreign label=added" "$OUT"
+check_no_grep "#420 420a420a420a420a420a420a420a420a420a420a assessable review=terminal threads=0 autofix=unspent verdict=merge risk=ok checks=ok mergeability=ok blast=ok action=deferred bound=retraction" "$OUT"
+check_grep "gh-axi pr edit 420 --repo nywleswoey/automation --add-label agent-escalated" "$STUB_CALLS"
+# **No comment the loop did not author is ever passed to the edit.** The one
+# comment carrying that marker has id 5379000425, and it is never named.
+check "a comment the loop did not write is never edited" \
+  test "$(grep -cF 'issues/comments/5379000425' "$STUB_CALLS")" -eq 0
+check "and no second record is posted beside it" \
+  test "$(grep -cF 'pr comment 420 --repo nywleswoey/automation --body-file' "$STUB_CALLS")" -eq 0
+# The cost, accepted: this pull request holds at this head until the operator
+# moves it, and the gate saying merge does not change that.
+check "nothing is merged behind a record the loop cannot take down" \
+  test "$(grep -cF 'pulls/420/merge' "$STUB_CALLS")" -eq 0
+
+# 430 — **the migration.** A marker written before the kind existed still
+# matches on its head, and reports no kind — which is no kind the chain can
+# derive, so the record is retracted and re-posted in the one write that does
+# both, and comes back carrying the kind. It happens once, and never again at
+# that head.
+check_grep "pr nywleswoey/automation#430 430a430a430a430a430a430a430a430a430a430a autofix-stalled review=terminal threads=2 autofix=unspent age=5401 bound=5400 action=escalated kind=stalled label=added handover=posted" "$OUT"
+MIGRATED="$STUB_STATE/comment-body-5379000436.txt"
+check "the migrated body was captured" test -f "$MIGRATED"
+check_grep "<!-- agent-loop-escalated: 430a430a430a430a430a430a430a430a430a430a stalled -->" "$MIGRATED"
+check "the migration is one write and not a new comment" \
+  test "$(grep -cF 'pr comment 430 --repo nywleswoey/automation --body-file' "$STUB_CALLS")" -eq 0
+# The record promises no autofix trigger, and a record being migrated is still a
+# record: nothing is fired at this head.
+check "no autofix trigger is written behind a standing record" \
+  test "$(grep -cF 'pr comment 430 --repo nywleswoey/automation --body @coderabbitai autofix' "$STUB_CALLS")" -eq 0
+
+# 440 — **the refused record.** The gate says merge, as it did on the pass that
+# was refused, and would say it again on every pass after. **A record naming
+# this head is a head-keyed merge spend**, read out of the comment the response
+# already carries, so the merge does not go out and the pass is spent taking the
+# record down instead.
+check_grep "pr nywleswoey/automation#440 440a440a440a440a440a440a440a440a440a440a assessable review=terminal threads=0 autofix=unspent verdict=merge risk=ok checks=ok mergeability=ok blast=ok action=deferred bound=retraction handover=retracted label=removed" "$OUT"
+check "no merge write happens at a head carrying a refused record" \
+  test "$(grep -cF 'pulls/440/merge' "$STUB_CALLS")" -eq 0
+
+# 450 — the control, and the reason the four negatives above mean anything: the
+# identical shape with no record on it merges on this very pass.
+check_grep "pr nywleswoey/automation#450 450a450a450a450a450a450a450a450a450a450a assessable review=terminal threads=0 autofix=unspent verdict=merge risk=ok checks=ok mergeability=ok blast=ok action=merged method=squash" "$OUT"
+check_grep "gh-axi api PUT /repos/nywleswoey/automation/pulls/450/merge --field sha=450a450a450a450a450a450a450a450a450a450a" "$STUB_CALLS"
+
+# **No `pr comment` is ever written on a retraction or a replacement** — only the
+# edit. Three records were rewritten in this pass and the timeline grew by
+# nothing at all.
+check "not one comment was posted across the whole world" \
+  test "$(grep -cE 'gh-axi pr comment [0-9]+ --repo nywleswoey/automation --body-file' "$STUB_CALLS")" -eq 0
+
+# The bill for un-latching a `refused` record, recorded on the row it falls on
+# rather than left for someone to find. **Retraction halves the oscillator; it
+# does not kill it.** The record naming the head is what suppresses the merge,
+# and the retraction that un-latches the pull request takes that fact down with
+# it — so the pass after a retraction merges again, and a refusal that is
+# permanent posts a fresh record, because the withdrawn comment no longer
+# carries a marker for the loop to write over.
+#
+# `unlatch/pass3` is the world one pass after a retraction, so no new fixture is
+# needed: it is the same commit with the record already withdrawn.
+
+setup "a retraction re-arms the merge, and a refusal at that head posts a new record"
+export STUB_WORLD=unlatch/pass3 STUB_NOW=2026-08-27T11:45:00Z
+export STUB_GH_FAIL=merge STUB_GH_ERROR=405-conflict
+run_once
+check_status 0 "$STATUS"
+check_grep "#401 401a401a401a401a401a401a401a401a401a401a assessable review=terminal threads=0 autofix=unspent verdict=merge risk=ok checks=ok mergeability=ok blast=ok merge=refused rc=3 action=escalated kind=refused label=added handover=posted" "$OUT"
+# The withdrawn comment is not the one written to. A record the loop withdrew
+# carries no marker, so there is nothing at this head for the edit to name, and
+# the handover write is deliberately not metered per head — it has to stay
+# re-postable or a retraction could never re-escalate.
+check "the refusal posts a comment rather than editing the withdrawn one" \
+  test "$(grep -cF 'pr comment 401 --repo nywleswoey/automation --body-file' "$STUB_CALLS")" -eq 1
+check "and the withdrawn comment is left alone" \
+  test "$(grep -cF 'issues/comments/5379000411' "$STUB_CALLS")" -eq 0
+REFUSED="$STUB_STATE/pr-body-401.txt"
+check "the refusal body was captured" test -f "$REFUSED"
+check "the first line names the kind" \
+  test "$(head -1 "$REFUSED")" = '**Escalated — `refused`:** the gate said merge and GitHub said no.'
+check_grep "<!-- agent-loop-escalated: 401a401a401a401a401a401a401a401a401a401a refused -->" "$REFUSED"
 
 # --- pr phase: the escalation label exists -------------------------------------------
 

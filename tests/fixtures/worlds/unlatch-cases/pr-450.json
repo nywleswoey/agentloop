@@ -1,0 +1,78 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "number": 450,
+        "headRefOid": "450a450a450a450a450a450a450a450a450a450a",
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "CLEAN",
+        "files": {
+          "totalCount": 1,
+          "nodes": [
+            {
+              "path": "src/render.js"
+            }
+          ]
+        },
+        "commits": {
+          "nodes": [
+            {
+              "commit": {
+                "oid": "450a450a450a450a450a450a450a450a450a450a",
+                "committedDate": "2026-08-27T12:25:00Z",
+                "author": {
+                  "user": {
+                    "login": "nywleswoey"
+                  }
+                },
+                "statusCheckRollup": {
+                  "state": "SUCCESS",
+                  "contexts": {
+                    "nodes": [
+                      {
+                        "__typename": "StatusContext",
+                        "context": "CodeRabbit",
+                        "state": "SUCCESS",
+                        "description": "Review completed",
+                        "createdAt": "2026-08-27T12:26:00Z",
+                        "creator": {
+                          "login": "coderabbitai"
+                        }
+                      },
+                      {
+                        "__typename": "StatusContext",
+                        "context": "ci/build",
+                        "state": "SUCCESS",
+                        "description": "Build passed",
+                        "createdAt": "2026-08-27T12:26:00Z",
+                        "creator": {
+                          "login": "github-actions"
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "reviewThreads": {
+          "nodes": []
+        },
+        "comments": {
+          "nodes": [
+            {
+              "databaseId": 5379000450,
+              "createdAt": "2026-08-27T09:00:00Z",
+              "updatedAt": "2026-08-27T12:26:00Z",
+              "body": "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n<!-- recent_review_start -->\n## Walkthrough\n\nA localized change.\n<!-- recent_review_end -->\n<!-- final_review_risk_start -->\n**Merge Risk:** _⚪ Minimal_ · up to `450a4`\n\nProse CodeRabbit wrote about the change, which nothing parses.\n<!-- final_review_risk_end -->\n<!-- tips_start -->\n<details>\n<summary>📜 Recent review details</summary>\n\nConfiguration used: defaults\nReview profile: CHILL\nPlan: Pro Plus\n\nFiles that changed from the base of the PR and between dec0dec0dec0dec0dec0dec0dec0dec0dec0dec0 and 450a450a450a450a450a450a450a450a450a450a\n</details>\n<!-- tips_end -->\n",
+              "author": {
+                "login": "coderabbitai"
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

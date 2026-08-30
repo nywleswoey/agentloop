@@ -1,0 +1,97 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "number": 401,
+        "headRefOid": "401a401a401a401a401a401a401a401a401a401a",
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "CLEAN",
+        "files": {
+          "totalCount": 1,
+          "nodes": [
+            {
+              "path": "src/render.js"
+            }
+          ]
+        },
+        "commits": {
+          "nodes": [
+            {
+              "commit": {
+                "oid": "401a401a401a401a401a401a401a401a401a401a",
+                "committedDate": "2026-08-27T11:30:00Z",
+                "author": {
+                  "user": {
+                    "login": "nywleswoey"
+                  }
+                },
+                "statusCheckRollup": {
+                  "state": "SUCCESS",
+                  "contexts": {
+                    "nodes": [
+                      {
+                        "__typename": "StatusContext",
+                        "context": "CodeRabbit",
+                        "state": "SUCCESS",
+                        "description": "Review completed",
+                        "createdAt": "2026-08-27T11:31:00Z",
+                        "creator": {
+                          "login": "coderabbitai"
+                        }
+                      },
+                      {
+                        "__typename": "StatusContext",
+                        "context": "ci/build",
+                        "state": "SUCCESS",
+                        "description": "Build passed",
+                        "createdAt": "2026-08-27T11:31:00Z",
+                        "creator": {
+                          "login": "github-actions"
+                        }
+                      },
+                      {
+                        "__typename": "StatusContext",
+                        "context": "pg-gate",
+                        "state": "SUCCESS",
+                        "description": "Gate passed",
+                        "createdAt": "2026-08-27T11:34:29Z",
+                        "creator": {
+                          "login": "github-actions"
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "reviewThreads": {
+          "nodes": []
+        },
+        "comments": {
+          "nodes": [
+            {
+              "databaseId": 5379000401,
+              "createdAt": "2026-08-27T09:00:00Z",
+              "updatedAt": "2026-08-27T11:32:00Z",
+              "body": "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n<!-- recent_review_start -->\n## Walkthrough\n\nA localized change.\n<!-- recent_review_end -->\n<!-- final_review_risk_start -->\n**Merge Risk:** _⚪ Minimal_ · up to `401a4`\n\nProse CodeRabbit wrote about the change, which nothing parses.\n<!-- final_review_risk_end -->\n<!-- tips_start -->\n<details>\n<summary>📜 Recent review details</summary>\n\nConfiguration used: defaults\nReview profile: CHILL\nPlan: Pro Plus\n\nFiles that changed from the base of the PR and between dec0dec0dec0dec0dec0dec0dec0dec0dec0dec0 and 401a401a401a401a401a401a401a401a401a401a\n</details>\n<!-- tips_end -->\n",
+              "author": {
+                "login": "coderabbitai"
+              }
+            },
+            {
+              "databaseId": 5379000411,
+              "createdAt": "2026-08-27T11:35:00Z",
+              "updatedAt": "2026-08-27T11:40:00Z",
+              "body": "**Withdrawn.** A handover stood on this pull request at `401a401a401a401a401a401a401a401a401a401a`; the loop re-derived, the picture had changed, and it took the record down. The previous version of this comment holds what the gate saw.\n\nThe loop is deriving this pull request normally again.\n",
+              "author": {
+                "login": "nywleswoey"
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
