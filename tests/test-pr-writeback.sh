@@ -378,6 +378,18 @@ check_status 1 "$STATUS"
 check_grep "label takes --add or --remove, not both" "$ERR"
 check_writes 0
 
+setup "a label to add is provided only once"
+run label --repo "$REPO" --pr 12 --add agent-needs-review --add agent-escalated
+check_status 1 "$STATUS"
+check_grep "--add may only be provided once" "$ERR"
+check_writes 0
+
+setup "a label to remove is provided only once"
+run label --repo "$REPO" --pr 12 --remove agent-needs-review --remove agent-escalated
+check_status 1 "$STATUS"
+check_grep "--remove may only be provided once" "$ERR"
+check_writes 0
+
 setup "a label to remove needs a value"
 run label --repo "$REPO" --pr 12 --remove
 check_status 1 "$STATUS"

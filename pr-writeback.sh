@@ -132,6 +132,8 @@ COMMENT=""
 BODY_FILE=""
 ADD_LABEL=""
 REMOVE_LABEL=""
+ADD_PROVIDED=0
+REMOVE_PROVIDED=0
 SHA=""
 METHOD=""
 
@@ -258,10 +260,12 @@ while [[ $# -gt 0 ]]; do
       BODY_FILE="${2:-}"; [[ -n "$BODY_FILE" ]] || die "--body-file needs a value"; shift 2 ;;
     --add)
       flag_of --add label
-      ADD_LABEL="${2:-}"; [[ -n "$ADD_LABEL" ]] || die "--add needs a value"; shift 2 ;;
+      [[ "$ADD_PROVIDED" -eq 0 ]] || die "--add may only be provided once"
+      ADD_LABEL="${2:-}"; [[ -n "$ADD_LABEL" ]] || die "--add needs a value"; ADD_PROVIDED=1; shift 2 ;;
     --remove)
       flag_of --remove label
-      REMOVE_LABEL="${2:-}"; [[ -n "$REMOVE_LABEL" ]] || die "--remove needs a value"; shift 2 ;;
+      [[ "$REMOVE_PROVIDED" -eq 0 ]] || die "--remove may only be provided once"
+      REMOVE_LABEL="${2:-}"; [[ -n "$REMOVE_LABEL" ]] || die "--remove needs a value"; REMOVE_PROVIDED=1; shift 2 ;;
     --sha)
       flag_of --sha autofix merge
       SHA="${2:-}"; [[ -n "$SHA" ]] || die "--sha needs a value"; shift 2 ;;
