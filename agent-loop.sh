@@ -1190,8 +1190,14 @@ sweep_worktrees() {
 #                      standing record had to come down first
 #   needs-autofix      acts on the pass it is derived, or on the next when a
 #                      standing record had to come down first
-#   assessable         mergeGateTimeoutSeconds     headDate, inside the gate (V5)
+#   assessable         mergeGateTimeoutSeconds;    the head commit's date,
+#                      the pass it is derived      applied outside the gate
+#                      when a deferring reason
+#                      is marked permanent
 #   rate-limited       external                    the fair-usage rolling window
+#
+# **Adding a state means adding a row**, and **every bound in this table expires
+# into a handover.**
 #
 # **There is no `escalated` row because there is no such state.** A handover is
 # a record the chain re-derives past every pass, not a state it parks in, so the
@@ -1206,6 +1212,65 @@ sweep_worktrees() {
 # The three timeouts run off **three different origins** on purpose, which is
 # also why the two configured keys stay separate: the merge-gate key alone has
 # two consumers, and the measurements behind them differ by orders of magnitude.
+#
+# **`mergeGateTimeoutSeconds` is a floor with a named cost, not a tuned number,
+# and this file deliberately sets none.** Its population divides in two. For
+# transient computation — a check still running, a conflict axis GitHub has not
+# finished calculating — it is a **floor**: the clock must outlast the slowest
+# legitimate check run in the repository, or the loop hands over pull requests
+# that were merely slow. For a permanent blocker no veto owns it is **pure
+# latency**: nothing the wait buys can change the answer, and every second of it
+# is an operator kept waiting. One number cannot be right for both, so the number
+# stays the operator's. Deriving it from a single observed specimen was rejected
+# — one sample is a floor observation, not a timeout — and so was splitting the
+# gate's consumer into a config key of its own, which is real ergonomics debt but
+# a breaking required-key change.
+#
+# **A second invariant, with its own register: no cycle in the PR phase may turn
+# without an external event.** Un-latching restores derivation rather than
+# writes, so the metered writes are untouched; what it makes possible is a pull
+# request that oscillates between states. Every cycle the phase can turn is
+# listed here with the event that drives it, and a cycle with no driver is a
+# defect:
+#
+#   cycle                                            driver
+#   ---------------------------------------------------------------------------
+#   BEHIND -> retract on UNKNOWN -> re-escalate      a merge into the base branch
+#   V2 FAILURE -> retract on a re-run going
+#     pending -> re-escalate on a second failure     the operator re-running a
+#                                                    check
+#   needs-autofix -> autofix pushes a CodeRabbit-
+#     authored head -> nudge and review -> gate ->
+#     needs-autofix at the next human head           a human push
+#   escalate -> retract when the rate-limit marker
+#     appears -> re-escalate when it ages out        CodeRabbit's fair-usage
+#                                                    window, which is a rolling
+#                                                    window over an organisation
+#                                                    rather than a reaction to
+#                                                    any write on this pull
+#                                                    request
+#   merge -> refused -> retract on the gate saying
+#     merge again -> merge -> refused                **none.** Registered as a
+#                                                    defect rather than left out
+#                                                    — the merge spend is derived
+#                                                    from the record, and goes
+#                                                    down with it
+#
+# **A third party's automatic reaction to a loop-authored write is not an
+# external event.** Admitting it would make the invariant unfalsifiable, since
+# every loop write provokes some reaction. The line is the loop's causal closure:
+# a human *choosing* to re-run a check is outside it; a bot firing because the
+# loop pushed is not.
+#
+# **The last row is the register earning its keep.** Killing that cycle needs a
+# head-keyed fact that survives the withdrawal, and there is none in the read
+# today. It is written down here, undriven, rather than quietly omitted, because
+# a register that only lists the cycles that pass is not a register.
+#
+# **The rule both invariants lean on is: the loop does not act on its own
+# output.** It has exactly two sites, and they are meant to read as one
+# principle — terminality's ban on a `no` resting on a cause the loop's own
+# writes produced, and autofix's ban on a spend at a head the loop minted.
 
 # One read per repository, in configuration order. Not the global
 # `is:pr is:open` search the phase used to make: search is an index and lags
@@ -1663,6 +1728,14 @@ merge_pr() {
 # is not a veto, so any verdict on that row would be a judgement the combination
 # does not read and the operator would have to reconcile against the rows that
 # actually deferred.
+#
+# **The fourth field is the permanence mark, and it is not rendered.** It names
+# the value whose cause set is fully sourced and cannot be retracted by elapsed
+# time alone — *the gate owns judgement; the clock owns duration.* It rides on
+# the row rather than in a variable beside it so that a veto which grows a new
+# marked defer arm is picked up by the combination without that line being
+# re-enumerated, exactly as `deferred` is stated over the whole set. What the
+# operator sees of it is the clock's own row and the tail's `permanent=` token.
 # The tab is the join and the newline ends the row, so either one inside a field
 # would reshape the row into a different one rather than corrupt it visibly —
 # the one failure a record must not have. The reader is a `read` with `IFS`, and
@@ -1678,7 +1751,10 @@ merge_pr() {
 # that has already survived being read back. By then the loss has happened.
 reason() {
   local verdict="${1//$'\t'/ }" what="${2//$'\t'/ }" raw="${3//$'\t'/ }"
-  printf '%s\t%s\t%s' "${verdict//$'\n'/ }" "${what//$'\n'/ }" "${raw//$'\n'/ }"
+  local mark="${4-}"
+  mark="${mark//$'\t'/ }"
+  printf '%s\t%s\t%s\t%s' "${verdict//$'\n'/ }" "${what//$'\n'/ }" \
+    "${raw//$'\n'/ }" "${mark//$'\n'/ }"
 }
 
 # A table cell. Three characters can break one: the pipe that draws the table,
@@ -1706,12 +1782,17 @@ md_cell() {
 # risk gate and from the review clock, `escalate` from the gate's vetoes, and
 # `refused` from the merge.
 escalation_body() {
-  local kind="$1" head="$2" read_at="$3" meaning r verdict what raw
+  local kind="$1" head="$2" read_at="$3" meaning r verdict what raw mark
   shift 3
 
   case "$kind" in
     escalate) meaning="a veto is present and says no" ;;
-    stuck)    meaning="signals are still undecided past the merge-gate timeout" ;;
+    # Restated: the older line — *past the merge-gate timeout* — is false for the
+    # population that reaches `stuck` with the clock unspent, on a deferring
+    # cause marked permanent. This sentence is true for both, and is the better
+    # one for the old population too, the timeout having only ever been a proxy
+    # for it.
+    stuck)    meaning="signals are undecided and waiting will not decide them" ;;
     stalled)  meaning="a CodeRabbit command was triggered and CodeRabbit never reported inside its bound" ;;
     refused)  meaning="the gate said merge and GitHub said no" ;;
     # Not reachable from this file, and it still must not lose the record: a
@@ -1740,7 +1821,10 @@ escalation_body() {
 
   printf '| Verdict | What | Raw values |\n|---|---|---|\n'
   for r in "$@"; do
-    IFS=$'\t' read -r verdict what raw <<< "$r"
+    # The fourth field is the permanence mark, read so that it cannot leak into
+    # the raw column, and rendered nowhere: what it changes is the clock's own
+    # row and the log line's tail.
+    IFS=$'\t' read -r verdict what raw mark <<< "$r"
     printf '| %s | %s | `%s` |\n' "$(md_cell "$verdict")" "$(md_cell "$what")" "$(md_cell "$raw")"
   done
 
@@ -2061,7 +2145,9 @@ consume_record() {
 #     **not produced by the loop's own writes**. Self-retracting causes rot —
 #     the record is false before anyone reads it — and loop-produced causes are
 #     the loop's to clear, not the operator's. Unknown classifies as
-#     self-retracting and defers.
+#     self-retracting and defers. The second half of that is the rule **the loop
+#     does not act on its own output**, stated here at its first of two sites;
+#     the other is autofix refusing to spend at a head the loop minted.
 #
 # `ok`, `defer` and `merge` cannot go stale, because the gate derives and acts on
 # the same pass. Only `escalate` is written down, so **a recorded `no` is the
@@ -2075,10 +2161,51 @@ consume_record() {
 # GitHub-visible: `GATE_KV` is on the per-pass log line for every verdict, so a
 # `defer` is fully diagnosable without a round-trip.
 #
-# **All four vetoes evaluate — no short-circuit — and escalate beats defer.**
-# One message carries every reason, the passes as well as the failures: an
-# operator reading a handover needs to know where *not* to look as much as where
-# to.
+# **All four vetoes evaluate — no short-circuit.** One message carries every
+# reason, the passes as well as the failures: an operator reading a handover
+# needs to know where *not* to look as much as where to. A veto beats the clock,
+# and that costs nothing now that a `no` is only ever a cause an operator can
+# retract: the failing check that reaches here is the most actionable veto in the
+# gate, and delaying it behind a clock would buy no information.
+#
+# **The ownership map**, which the classification below is derived from.
+# Ownership goes to the veto that reads the fact **most directly** — the input
+# that discriminates most about it:
+#
+#   fact                                            owner
+#   ---------------------------------------------------------------------------
+#   CodeRabbit's merge-risk judgement                V1
+#   the state of every check on the head             V2
+#   whether head and base tip conflict               V3
+#   whether base has moved past the merge base       V3
+#   what the change touches                          V4
+#   elapsed time                                     the clock, not a veto
+#   draft                                            the scope filter
+#   the walkthrough's commit abbreviation            loop-produced — no owner
+#   the repository's non-check merge rules, and
+#     the *existence* of required contexts           deliberately unowned
+#
+# **Checking a fifth veto against those two rules** — the procedure, so the
+# property survives the next person to add one:
+#
+#   1  Name the fact it exists to judge, positively, as a function of inputs.
+#   2  Claim it. If another veto owns it, resolve by directness; the loser
+#      applies rule 1 of the classification and returns `ok`.
+#   3  For every value of every field it reads, write the cause set — the set of
+#      repository conditions, not the value's gloss.
+#   4  Apply the three rules. A `no` needs all four of: cause set fully known,
+#      wholly owned, operator-retractable, not loop-produced.
+#   5  Any cause set not establishable from a primary source is `defer`.
+#
+# **A veto whose `no` arm is an `else` has not done step 3.** V3's is gone. V1's
+# and V4's are still there, and auditing them against this procedure would be
+# well-founded work.
+#
+# **Two facts stay unestablished and are shipped that way on purpose.** The full
+# cause set behind `mergeStateStatus = BLOCKED` — which is why it defers and why
+# it cannot be marked permanent — and whether `statusCheckRollup.contexts`
+# carries an entry for a required context that has never reported. Every
+# classification here is deliberately robust to both.
 
 # Everything the gate runs on, one value per line, in the order the reader below
 # takes them. Same protocol as pr_facts and for the same reason: several of
@@ -2099,9 +2226,15 @@ consume_record() {
 #   guarded      the touched paths V4 refuses to merge unattended
 #
 # **Required-ness is not read, and its absence from the query is the proof.**
-# It is structurally always false once repository protection is out of scope, so
-# a gate that only looked at required checks would have no check that could ever
-# block a merge.
+# Reading every context is strictly stricter than reading the required ones, and
+# it holds however a given repository happens to be configured.
+#
+# The justification this used to carry — *required-ness is structurally always
+# false once repository protection is out of scope* — was simply false, and is
+# named here rather than quietly deleted. The specimen repository has an active
+# ruleset; *out of scope* means the loop does not **provision** protection, not
+# that no repository has any. V2's behaviour is unaffected and better founded
+# without it.
 #
 # **Pre-merge checks are not read either.** They are computed from the same
 # review as the merge-risk verdict, they measure hygiene rather than merge risk,
@@ -2190,6 +2323,7 @@ risk_gate() {
   local green=0 pending=0 failed=0 total=0 pendingnames="" failednames=""
   local filecount=0 truncated=false guarded=""
   local v1 v2 v3 v3conflict v3state v4 age clock="" deferred=false expired=false
+  local marked="" r rverdict rwhat rraw rmark
 
   GATE_VERDICT=defer
   GATE_KIND=""
@@ -2379,13 +2513,46 @@ risk_gate() {
       v3state=ok
       GATE_REASONS+=("$(reason ok "GitHub's merge state raises nothing this veto owns" \
         "state=$mergestate")") ;;
-    # Rule 3 — `BLOCKED` (mixed causes, one of which retracts itself), `DRAFT`
-    # (the scope filter's fact; the enumeration drops drafts, so only a pull
-    # request drafted between that read and this one arrives here, and it is not
-    # V3's to judge either way), `HAS_HOOKS` (a repository condition no veto
-    # owns), `UNKNOWN`, and the `else`: empty, or a value GitHub adds tomorrow.
-    # The `else` defers **one pull request** rather than escalating the queue,
-    # which is what makes a schema change a bounded surprise.
+    # Rule 3, **marked permanent**. `DRAFT` is the scope filter's fact — the
+    # enumeration drops drafts, so only a pull request drafted between that read
+    # and this one arrives here — and `HAS_HOOKS` is a repository condition no
+    # veto owns. Neither is V3's to judge, so both defer; but both pass the
+    # two-clause permanence test, so the mark rides on the row and the routing
+    # outside the gate reads it.
+    #
+    #   1  the cause set is fully established from a primary source
+    #   2  no member of it can be retracted by elapsed time alone — every member
+    #      is a standing property of the repository or the pull request, not an
+    #      in-flight computation and not an unreported signal
+    #
+    # Clause 2 is stated against what the clock can buy, which is the only lever
+    # in question: an admin removing a pre-receive hook retracts `HAS_HOOKS`,
+    # and waiting does not. Clause 1 is what stops the class growing through
+    # `BLOCKED` or the `else` arm below — both are unestablished cause sets, so
+    # both fail it permanently until somebody sources them, and unmarked stays
+    # closed under union of causes exactly as `defer` is.
+    #
+    # **The mark is a lookup in this table, not a runtime judgement.** No veto
+    # inspects duration, and the verdict stays `defer`: `no` was rejected because
+    # it fails the classification's ownership clause, and a fourth verdict bin
+    # was rejected because it has no honest position in `no > defer > ok` and
+    # would cost the associativity that makes splitting a veto free.
+    #
+    # ponytail: both members are unreachable in practice — `HAS_HOOKS` is
+    # GitHub-Enterprise-only and `DRAFT` is filtered at the read. **The value is
+    # the test, not the members.**
+    DRAFT|HAS_HOOKS)
+      v3state=defer
+      GATE_REASONS+=("$(reason defer "GitHub's merge state is not one this veto can conclude from" \
+        "state=$mergestate" "$mergestate")") ;;
+    # Rule 3, ordinary — `BLOCKED` (mixed causes, one of which retracts itself),
+    # `UNKNOWN`, and the `else`: empty, or a value GitHub adds tomorrow. The
+    # `else` defers **one pull request** rather than escalating the queue, which
+    # is what makes a schema change a bounded surprise.
+    #
+    # None of these can be marked, and clause 1 is why: `BLOCKED`'s cause set is
+    # an undocumented union, `UNKNOWN` is GitHub still computing, and a value
+    # nobody has seen has no cause set at all.
     #
     # ponytail: the accepted cost of this arm is a pull request GitHub blocks on
     # a required review, an unresolved conversation, a deployment, a signature or
@@ -2393,7 +2560,8 @@ risk_gate() {
     # reason. It defers to the gate clock and arrives as `stuck` where it used to
     # be handed over on the first pass. Nothing here can tell those apart from a
     # check that has not reported yet, because `BLOCKED`'s cause set is not
-    # documented; a fact that discriminates between them would let this arm split.
+    # documented; a fact that discriminates between them would let this arm split
+    # and would settle the mark for it at the same time.
     *)
       v3state=defer
       GATE_REASONS+=("$(reason defer "GitHub's merge state is not one this veto can conclude from" \
@@ -2445,6 +2613,20 @@ risk_gate() {
   if [[ "$v1" == "defer" || "$v2" == "defer" || "$v3" == "defer" \
         || "$v4" == "defer" ]]; then deferred=true; fi
 
+  # **The gate owns judgement; the clock owns duration.** The mark is read back
+  # off the rows rather than tracked in a variable beside them, for the same
+  # reason `deferred` is stated over the whole set: a veto that grows a marked
+  # defer arm is picked up here without this line being re-enumerated, and a row
+  # and its mark cannot come to disagree.
+  #
+  # Only a `defer` row can carry one. An `ok` or a `no` has already decided, and
+  # a `note` judged nothing at all.
+  for r in "${GATE_REASONS[@]+"${GATE_REASONS[@]}"}"; do
+    IFS=$'\t' read -r rverdict rwhat rraw rmark <<< "$r"
+    [[ "$rverdict" == "defer" && -n "$rmark" ]] || continue
+    marked="${marked:+$marked,}$rmark"
+  done
+
   # V5 — the clock, and it only exists because a `defer` is silent on GitHub. It
   # runs from the head commit's date, so no pull request can sit undecided
   # forever.
@@ -2467,12 +2649,24 @@ risk_gate() {
   age=$(( now - head_epoch ))
   if (( age > MERGE_GATE_TIMEOUT )); then expired=true; fi
   if $deferred; then
-    clock=" age=$age bound=$MERGE_GATE_TIMEOUT"
-    GATE_REASONS+=("$(reason note "how long the undecided signals above have been waiting" \
-      "age=${age}s bound=${MERGE_GATE_TIMEOUT}s head=$head_date")")
+    clock=" age=$age bound=$MERGE_GATE_TIMEOUT${marked:+ permanent=$marked}"
+    # Three branches, and the age and the bound are on all three. Keeping them on
+    # the third is the point of it: an operator who gets a handover on the first
+    # pass must be able to see that the timeout is not mis-set, or they will go
+    # and change a number that had nothing to do with it.
+    if [[ -n "$marked" ]]; then
+      GATE_REASONS+=("$(reason note "the merge-gate clock does not apply — a deferring cause above is permanent" \
+        "age=${age}s bound=${MERGE_GATE_TIMEOUT}s permanent=$marked head=$head_date")")
+    elif $expired; then
+      GATE_REASONS+=("$(reason note "the merge-gate clock has run out" \
+        "age=${age}s bound=${MERGE_GATE_TIMEOUT}s head=$head_date")")
+    else
+      GATE_REASONS+=("$(reason note "the merge-gate clock has not run out yet" \
+        "age=${age}s bound=${MERGE_GATE_TIMEOUT}s head=$head_date")")
+    fi
   fi
 
-  # **Escalate beats defer**, and a veto beats the clock: a pull request with
+  # **A veto beats the clock:** a pull request with
   # both a veto and an undecided signal is a handover about the veto, because
   # that is the one the operator can do something about. It costs nothing now
   # that a `no` is only ever a cause an operator can retract — the failing check
@@ -2482,11 +2676,25 @@ risk_gate() {
     GATE_VERDICT=escalate
     GATE_KIND=escalate
   elif $deferred; then
-    if $expired; then
+    # **Two sufficient conditions, and the mark is the second.** A deferring
+    # cause whose cause set is fully sourced and cannot be retracted by elapsed
+    # time alone escalates on the pass it is derived, rather than waiting out a
+    # clock that will decide nothing. An operator should not wait an hour for
+    # information the loop already had.
+    #
+    # A marked cause standing beside an unmarked one still escalates here, and
+    # that is right: the marked one is not going to clear, so the wait would buy
+    # only the unmarked one's answer, and the handover carries both rows.
+    if $expired || [[ -n "$marked" ]]; then
       GATE_VERDICT=escalate
-      # `stuck`, not `escalate`: nothing here said no, the signals simply never
-      # arrived, and the kind is what tells the operator to go and look at the
-      # checks rather than at the diff.
+      # `stuck`, not `escalate`: nothing here said no, the signals are simply
+      # undecided, and the kind is what tells the operator to go and look at the
+      # checks rather than at the diff. **One kind, two populations** — signals
+      # genuinely in flight, and pull requests GitHub will never merge for a
+      # reason no veto owns. Splitting was rejected: `BLOCKED`'s cause set is
+      # undocumented, so any second kind would rest on a proxy, and the
+      # handover's table already discriminates — V2 `defer` reads as in flight,
+      # V2 `ok` beside V3 `defer` reads as green but blocked.
       GATE_KIND=stuck
     else
       GATE_VERDICT=defer

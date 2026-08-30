@@ -278,6 +278,38 @@
               "login": "nywleswoey"
             },
             "baseRefName": "main"
+          },
+          {
+            "number": 267,
+            "title": "a deferring cause the clock cannot buy an answer to",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/267",
+            "headRefName": "permanent-cause",
+            "headRefOid": "267a267a267a267a267a267a267a267a267a267a",
+            "labels": {
+              "nodes": []
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
+          },
+          {
+            "number": 268,
+            "title": "a marked cause standing beside an unmarked one",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/268",
+            "headRefName": "marked-beside-unmarked",
+            "headRefOid": "268a268a268a268a268a268a268a268a268a268a",
+            "labels": {
+              "nodes": []
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
           }
         ]
       }

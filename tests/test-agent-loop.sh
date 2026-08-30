@@ -1339,7 +1339,7 @@ check "the escalation body was captured" test -f "$BODY"
 # `stuck`, not `stalled`, and the kind is what tells the operator whether to
 # read the diff: CodeRabbit answered and is still thinking.
 check "the first line names the kind" \
-  test "$(head -1 "$BODY")" = '**Escalated — `stuck`:** signals are still undecided past the merge-gate timeout.'
+  test "$(head -1 "$BODY")" = '**Escalated — `stuck`:** signals are undecided and waiting will not decide them.'
 check_grep "| ok | CodeRabbit acknowledged this commit — the review started | \`oldest-pending=2026-08-27T11:00:00Z origin=pending head=2026-08-27T07:00:00Z\` |" "$BODY"
 check_grep "| no | the review has not finished inside the gate clock | \`age=3601s bound=3600s\` |" "$BODY"
 check_grep "<!-- agent-loop-escalated: 250a250a250a250a250a250a250a250a250a250a stuck -->" "$BODY"
@@ -1537,18 +1537,28 @@ check "the record was posted once across both passes" \
 setup "a record whose claim stops being true is withdrawn by the loop itself"
 PASS_N=0
 
-# Pass one: V3 says no, V2 defers on the check that has not reported, and
-# escalate beats defer — so the record goes up carrying both rows.
+# Pass one: the required check reported **badly**, so V2 says no; the merge state
+# carries the same underlying fact through the other field and defers on it,
+# because its causes are not V3's. A veto beats the clock, so the record goes up
+# carrying both rows.
+#
+# The veto here is the failing check and not the merge state, and that is the
+# specimen read correctly rather than a change of subject: a check that has not
+# *reported* beside `BLOCKED` is exactly the shape that must **defer**, so a case
+# about a record that stops being true needs a veto that really said no. This is
+# the second row of the driven-cycle register — a failing check, re-run green.
 replay unlatch/pass1 2026-08-27T11:35:00Z
 check_status 0 "$STATUS"
-check_grep "pr nywleswoey/automation#401 401a401a401a401a401a401a401a401a401a401a assessable review=terminal threads=0 autofix=unspent verdict=escalate risk=ok checks=defer mergeability=no blast=ok age=300 bound=3600 action=escalated kind=escalate label=added handover=posted" "$PASS_LOG"
+check_grep "pr nywleswoey/automation#401 401a401a401a401a401a401a401a401a401a401a assessable review=terminal threads=0 autofix=unspent verdict=escalate risk=ok checks=no mergeability=defer blast=ok age=300 bound=3600 action=escalated kind=escalate label=added handover=posted" "$PASS_LOG"
 
 BODY="$STUB_STATE/pr-body-401.txt"
 check "the escalation body was captured" test -f "$BODY"
 check "the first line names the kind" \
   test "$(head -1 "$BODY")" = '**Escalated — `escalate`:** a veto is present and says no.'
-check_grep "| no | GitHub does not report this pull request both mergeable and clean | \`mergeable=MERGEABLE state=BLOCKED\` |" "$BODY"
-check_grep "| defer | a status check on this commit has not reported yet | \`green=2 pending=1 failed=0 total=3 waiting=pg-gate\` |" "$BODY"
+check_grep "| no | a status check on this commit is not green | \`green=2 pending=0 failed=1 total=3 failing=pg-gate=FAILURE\` |" "$BODY"
+# **One signal, one veto**, in the record itself: the merge state reports the
+# same underlying fact and says nothing about it, because it does not own it.
+check_grep "| defer | GitHub's merge state is not one this veto can conclude from | \`state=BLOCKED\` |" "$BODY"
 check_grep "<!-- agent-loop-escalated: 401a401a401a401a401a401a401a401a401a401a escalate -->" "$BODY"
 # The world the next pass replays carries the loop's own words rather than a
 # paraphrase of them, so a change to the body cannot quietly stop the marker
@@ -1635,7 +1645,7 @@ check_status 0 "$STATUS"
 # derives `escalate`: a different claim about the same commit, so the record is
 # replaced wholesale by an edit rather than retracted and re-posted a pass
 # later, which would leave the pull request carrying no record in between.
-check_grep "pr nywleswoey/automation#410 410a410a410a410a410a410a410a410a410a410a assessable review=terminal threads=0 autofix=unspent verdict=escalate risk=ok checks=ok mergeability=no blast=ok action=escalated kind=escalate label=added handover=posted" "$OUT"
+check_grep "pr nywleswoey/automation#410 410a410a410a410a410a410a410a410a410a410a assessable review=terminal threads=0 autofix=unspent verdict=escalate risk=ok checks=no mergeability=ok blast=ok action=escalated kind=escalate label=added handover=posted" "$OUT"
 check_grep "gh-axi api PATCH /repos/nywleswoey/automation/issues/comments/5379000415 --field body=@" "$STUB_CALLS"
 KIND_CHANGE="$STUB_STATE/comment-body-5379000415.txt"
 check "the replacement body was captured" test -f "$KIND_CHANGE"
@@ -2010,7 +2020,7 @@ check_grep "| ok | every status check on this commit is green | \`green=2 pendin
 check_grep "| ok | nothing here changes what runs unattended | \`files=1 guarded=none\` |" "$GATE_BOTH"
 # **The clock judged nothing**, and its row says so: `note` is the fourth token
 # and the escalation here is the veto's, not the clock's.
-check_grep "| note | how long the undecided signals above have been waiting | \`age=1800s bound=3600s head=2026-08-27T11:30:00Z\` |" "$GATE_BOTH"
+check_grep "| note | the merge-gate clock has not run out yet | \`age=1800s bound=3600s head=2026-08-27T11:30:00Z\` |" "$GATE_BOTH"
 check "one row per veto — V3 in two — plus the clock, plus the table head" \
   test "$(grep -cE '^\|' "$GATE_BOTH")" -eq 8
 
@@ -2088,7 +2098,7 @@ check_grep "pr nywleswoey/automation#240 240a240a240a240a240a240a240a240a240a240
 # the diff.
 STUCK="$STUB_STATE/pr-body-240.txt"
 check "the first line names the kind" \
-  test "$(head -1 "$STUCK")" = '**Escalated — `stuck`:** signals are still undecided past the merge-gate timeout.'
+  test "$(head -1 "$STUCK")" = '**Escalated — `stuck`:** signals are undecided and waiting will not decide them.'
 # **`escalate` is never reached from a `defer` at expiry.** The deferring rows
 # still read `defer` and still name what they are waiting on — nothing is
 # reclassified, because what would retract them is the signal landing on its own
@@ -2096,7 +2106,7 @@ check "the first line names the kind" \
 # nothing, and the verdict reads the expiry boolean rather than this row.
 check_grep "| defer | GitHub has not settled whether this pull request conflicts | \`mergeable=UNKNOWN\` |" "$STUCK"
 check_grep "| defer | GitHub's merge state is not one this veto can conclude from | \`state=UNKNOWN\` |" "$STUCK"
-check_grep "| note | how long the undecided signals above have been waiting | \`age=3601s bound=3600s head=2026-08-27T12:00:00Z\` |" "$STUCK"
+check_grep "| note | the merge-gate clock has run out | \`age=3601s bound=3600s head=2026-08-27T12:00:00Z\` |" "$STUCK"
 check_no_grep "| no |" "$STUCK"
 
 # --- pr phase: the rate limit defers, ahead of every veto and outside the clock --------
@@ -2173,7 +2183,11 @@ check_status 0 "$STATUS"
 MG_PR="pr nywleswoey/automation"
 MG_TAIL="review=terminal threads=0 autofix=unspent"
 MG_HEAD="head=2026-08-27T11:30:00Z"
-MG_CLOCK="| note | how long the undecided signals above have been waiting | \`age=1800s bound=3600s $MG_HEAD\` |"
+MG_CLOCK="| note | the merge-gate clock has not run out yet | \`age=1800s bound=3600s $MG_HEAD\` |"
+# The clock row's third branch. It keeps the age and the bound — which is the
+# point of it: an operator who gets a handover on the first pass must be able to
+# see that the timeout is not mis-set.
+MG_PERMANENT_CLOCK="| note | the merge-gate clock does not apply — a deferring cause above is permanent | \`age=1800s bound=3600s permanent="
 
 # The conflict axis passes on every one of these, and its row is the same row
 # each time — which is the point of splitting: a `no` on the drift axis never
@@ -2218,14 +2232,21 @@ check_grep "$MG_CLOCK" "$STUB_STATE/pr-body-254.txt"
 # here carrying this value is one drafted between that read and this one — the
 # fixture is not draft, because what is under test is the classification and not
 # the race that delivers it.
-check_grep "$MG_PR#255 255a255a255a255a255a255a255a255a255a255a assessable $MG_TAIL verdict=escalate risk=ok checks=ok mergeability=defer blast=no" "$OUT"
+check_grep "$MG_PR#255 255a255a255a255a255a255a255a255a255a255a assessable $MG_TAIL verdict=escalate risk=ok checks=ok mergeability=defer blast=no age=1800 bound=3600 permanent=DRAFT" "$OUT"
 check_grep "| defer | GitHub's merge state is not one this veto can conclude from | \`state=DRAFT\` |" "$STUB_STATE/pr-body-255.txt"
+# **Marked permanent.** Both clauses hold: the cause set is sourced, and nothing
+# in it can be retracted by elapsed time alone. The verdict is still `defer` —
+# the mark rides on the reason and the routing outside the gate reads it.
+check_grep "${MG_PERMANENT_CLOCK}DRAFT head=2026-08-27T11:30:00Z\` |" "$STUB_STATE/pr-body-255.txt"
+check_no_grep "$MG_CLOCK" "$STUB_STATE/pr-body-255.txt"
 check_grep "$MG_CONFLICT_OK" "$STUB_STATE/pr-body-255.txt"
 
 # `HAS_HOOKS` — rule 3, reclassified from `no`. A pre-receive hook is a
 # repository condition no veto owns.
-check_grep "$MG_PR#256 256a256a256a256a256a256a256a256a256a256a assessable $MG_TAIL verdict=escalate risk=ok checks=ok mergeability=defer blast=no" "$OUT"
+check_grep "$MG_PR#256 256a256a256a256a256a256a256a256a256a256a assessable $MG_TAIL verdict=escalate risk=ok checks=ok mergeability=defer blast=no age=1800 bound=3600 permanent=HAS_HOOKS" "$OUT"
 check_grep "| defer | GitHub's merge state is not one this veto can conclude from | \`state=HAS_HOOKS\` |" "$STUB_STATE/pr-body-256.txt"
+check_grep "${MG_PERMANENT_CLOCK}HAS_HOOKS head=2026-08-27T11:30:00Z\` |" "$STUB_STATE/pr-body-256.txt"
+check_no_grep "$MG_CLOCK" "$STUB_STATE/pr-body-256.txt"
 check_grep "$MG_CONFLICT_OK" "$STUB_STATE/pr-body-256.txt"
 
 # `UNKNOWN` — rule 3, unchanged. GitHub is still computing.
@@ -2329,11 +2350,69 @@ check_no_grep "pr edit 266 --repo nywleswoey/automation" "$STUB_CALLS"
 check "the two fields really do carry the one fact" \
   test "$(jq -r '[.data.repository.pullRequest.mergeStateStatus, ([.data.repository.pullRequest.commits.nodes[-1].commit.statusCheckRollup.contexts.nodes[] | select(.state == "PENDING") | .context] | join(","))] | join(" ")' "$FIXTURES/worlds/gate-mergeability/pr-266.json")" = "BLOCKED pg-gate"
 
+# --- a deferring cause the clock cannot buy an answer to ---------------------------------
+
+# 267 carries the same permanent merge state as 256 and **nothing else wrong** —
+# V4 clears it, the checks are green, the conflict axis passes. It is the only
+# pull request here whose handover the mark alone produces, and it arrives on the
+# **first pass**: the cause set is sourced and no member of it can be retracted
+# by elapsed time, so the clock would decide nothing and is not waited out.
+#
+# The kind is `stuck` and not `escalate`. Nothing said no — the gate owns
+# judgement, the clock owns duration, and *waiting will not decide this* is what
+# `stuck` now means for both of its populations.
+check_grep "$MG_PR#267 267a267a267a267a267a267a267a267a267a267a assessable $MG_TAIL verdict=escalate risk=ok checks=ok mergeability=defer blast=ok age=1800 bound=3600 permanent=HAS_HOOKS action=escalated kind=stuck label=added handover=posted" "$OUT"
+MG_PERM="$STUB_STATE/pr-body-267.txt"
+check "the first line names the kind" \
+  test "$(head -1 "$MG_PERM")" = '**Escalated — `stuck`:** signals are undecided and waiting will not decide them.'
+# The deferring row is **not** reclassified by the mark either: the mark changes
+# when the handover arrives and nothing else.
+check_grep "| defer | GitHub's merge state is not one this veto can conclude from | \`state=HAS_HOOKS\` |" "$MG_PERM"
+check_grep "${MG_PERMANENT_CLOCK}HAS_HOOKS head=2026-08-27T11:30:00Z\` |" "$MG_PERM"
+check_no_grep "| no |" "$MG_PERM"
+
+# 268 carries the same permanent merge state **beside an ordinary one** — a check
+# that has not reported yet, whose cause set is sourced but clears itself, so it
+# cannot be marked. The pull request still escalates on the first pass: the
+# marked cause is not going to clear, so waiting would buy only the unmarked
+# one's answer, and the handover carries both rows.
+check_grep "$MG_PR#268 268a268a268a268a268a268a268a268a268a268a assessable $MG_TAIL verdict=escalate risk=ok checks=defer mergeability=defer blast=ok age=1800 bound=3600 permanent=HAS_HOOKS action=escalated kind=stuck label=added handover=posted" "$OUT"
+MG_BOTH="$STUB_STATE/pr-body-268.txt"
+check_grep "| defer | a status check on this commit has not reported yet | \`green=1 pending=1 failed=0 total=2 waiting=ci/build\` |" "$MG_BOTH"
+check_grep "| defer | GitHub's merge state is not one this veto can conclude from | \`state=HAS_HOOKS\` |" "$MG_BOTH"
+# One clock row for both, naming only what is marked: the mark is a property of
+# a reason, and the unmarked one is still waiting and still says so.
+check_grep "${MG_PERMANENT_CLOCK}HAS_HOOKS head=2026-08-27T11:30:00Z\` |" "$MG_BOTH"
+check "the clock still gets exactly one row" \
+  test "$(grep -cF '| note |' "$MG_BOTH")" -eq 1
+
 # One line per pull request, one action at most on each, and nothing merged.
 check "one state line per pull request" \
-  test "$(grep -cE '^[0-9TZ:-]+ pr nywleswoey/automation#' "$OUT")" -eq 17
+  test "$(grep -cE '^[0-9TZ:-]+ pr nywleswoey/automation#' "$OUT")" -eq 19
 check "nothing at all was merged" \
   test "$(grep -cE 'pulls/[0-9]+/merge' "$STUB_CALLS")" -eq 0
+
+# --- the mark is what changes the timing, proven by a mutant twin ------------------------
+
+# The identical world at a second frozen instant, an hour and a half further on
+# and well past the bound. **The marked pull requests reach the same verdict at
+# both instants** — they never waited — while the two that defer on ordinary
+# causes only reach `stuck` here. One fixture, one code path, two clocks: what
+# differs is caused by the mark and by nothing else.
+setup "a marked cause does not wait out the clock, and an unmarked one does"
+export STUB_WORLD=gate-mergeability STUB_NOW=2026-08-27T13:30:01Z
+run_once
+check_status 0 "$STATUS"
+check_grep "$MG_PR#267 267a267a267a267a267a267a267a267a267a267a assessable $MG_TAIL verdict=escalate risk=ok checks=ok mergeability=defer blast=ok age=7201 bound=3600 permanent=HAS_HOOKS action=escalated kind=stuck label=added handover=posted" "$OUT"
+# 265's cause set is not established, so it cannot be marked; 266's clears
+# itself. Both waited the whole bound out to arrive where 267 already was.
+check_grep "$MG_PR#265 265a265a265a265a265a265a265a265a265a265a assessable $MG_TAIL verdict=escalate risk=ok checks=ok mergeability=defer blast=ok age=7201 bound=3600 action=escalated kind=stuck label=added handover=posted" "$OUT"
+check_grep "$MG_PR#266 266a266a266a266a266a266a266a266a266a266a assessable $MG_TAIL verdict=escalate risk=ok checks=defer mergeability=defer blast=ok age=7201 bound=3600 action=escalated kind=stuck label=added handover=posted" "$OUT"
+# The expired clock reads `note` too, and says which of its three branches it is
+# in. Neither the mark nor expiry reclassifies a deferring row.
+check_grep "| note | the merge-gate clock has run out | \`age=7201s bound=3600s $MG_HEAD\` |" "$STUB_STATE/pr-body-265.txt"
+check_grep "| defer | a status check on this commit has not reported yet | \`green=1 pending=1 failed=0 total=2 waiting=pg-gate\` |" "$STUB_STATE/pr-body-266.txt"
+check_no_grep "permanent=" "$STUB_STATE/pr-body-266.txt"
 
 # --- pr phase: the merge ---------------------------------------------------------------
 

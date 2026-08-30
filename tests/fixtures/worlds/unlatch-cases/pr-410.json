@@ -42,8 +42,8 @@
                       {
                         "__typename": "StatusContext",
                         "context": "ci/build",
-                        "state": "SUCCESS",
-                        "description": "Build passed",
+                        "state": "FAILURE",
+                        "description": "Build failed",
                         "createdAt": "2026-08-27T12:26:00Z",
                         "creator": {
                           "login": "github-actions"
