@@ -78,7 +78,15 @@ Two things bound the merge itself:
 
 ### What it hands back, and how you take it
 
-**Escalation is a handover, not a notification.** The loop acts as your own account, and GitHub never notifies you of your own actions, so no arrangement of writes can push one. A pull request the loop will not act on gets a comment carrying every reason and the raw values behind it, then the `agent-escalated` label, in that order — the record first, so a missing flag is re-added on a later pass without the record being posted twice. Once escalated at a head commit the loop takes **no further action on that pull request at that commit**.
+**Escalation is a handover, not a notification.** The loop acts as your own account, and GitHub never notifies you of your own actions, so no arrangement of writes can push one. A pull request the loop will not act on gets a comment carrying every reason and the raw values behind it, then the `agent-escalated` label, in that order — the record first, so a missing flag is re-added on a later pass without the record being posted twice. While that record stands the loop takes **no further action on that pull request at that commit** — no merge, no autofix trigger, no nudge.
+
+**A handover is re-derived every pass, and the loop withdraws it when it stops being true.** There is no latch: the whole state machine runs from scratch on every pass, at no extra read, and the record standing is consumed at the end of it. If the chain derives the same kind again the record is held and nothing is written. If it derives a different kind, the record is replaced wholesale. If it derives anything else at all — a merge, a defer, a wait, an action — the record is **withdrawn**: the comment is edited to a withdrawal notice, the marker goes with it, and the `agent-escalated` label comes off. The withdrawal carries no live verdict rows; GitHub's own comment history holds what the gate saw.
+
+Retraction spends the pass's one action, so the loop takes the record down on one pass and acts on the next. That is what keeps the record from ever standing while the loop does the thing it promised not to do. A record naming the head is also a **merge spend at that head**, so a `refused` handover holds the merge that produced it — but only while it stands: the retraction that un-latches the pull request takes that spend down with it, so a head whose refusal is permanent is retried every second pass and posts a fresh record each time. That cost is known, pinned by a test, and not yet paid off.
+
+**The label chases the record in both directions**, so *every escalated pull request in one query* stops filling with pull requests the loop let go of hours ago. It is delivery rather than action: a pass that finds the flag disagreeing with the record fixes the flag and says nothing else.
+
+**A record the loop did not write is one it cannot un-write.** If the marker is in someone else's comment — an operator quoting the record back, say — the loop does the label chase, says `handover=foreign` on its log line, and touches nothing. That pull request then holds at that head until you move it; the three exits below all still work. A bot rewriting a human's comment is the worse failure.
 
 The comment's first line names the kind, because the kind is what tells you what to go and look at:
 
@@ -91,7 +99,7 @@ The comment's first line names the kind, because the kind is what tells you what
 
 A merge that fails **transiently** is neither escalated nor retried within the pass; the poll interval is the whole of the backoff.
 
-**The three ways back in are the ones GitHub already gives you:**
+**The three ways back in are the ones GitHub already gives you — and none of them is required, since the loop may clear the record itself:**
 
 - **Merge it by hand.** Close-out still ticks the issue the branch names, drops the claim, and closes it if GitHub has not already: it reads merged pull requests from GitHub and cannot tell whose hand pressed the button.
 - **Push a commit.** The head moves, the record stops matching it, and the loop re-derives from scratch on the next pass.
@@ -108,10 +116,11 @@ There is deliberately **no override label** — an unscoped bypass token for the
 | `reviewing` | `mergeGateTimeoutSeconds` | oldest pending signal on the head, or the head commit itself when no signal names an instant |
 | `autofix-in-flight` | `autofixTimeoutSeconds` | the trigger comment |
 | `nudge-in-flight` | one poll interval | the nudge comment |
-| `needs-review`, `needs-autofix` | acts on the pass it is derived | — |
+| `needs-review`, `needs-autofix` | acts on the pass it is derived, or on the next when a standing record had to come down first | — |
 | `assessable` | `mergeGateTimeoutSeconds` (V5) | the head commit's date |
-| `escalated` | the head moving | — |
 | `rate-limited` | **external** | the fair-usage rolling window |
+
+There is no `escalated` row because there is no such state. A handover is a record the chain re-derives past every pass, not a state it parks in, so a pull request carrying one is in whichever state its signals actually put it — and that row's bound is the row's own. The record's own exit is the pass that stops deriving it: it is withdrawn by the loop, not waited out.
 
 `rate-limited` is the one state with no clock of the loop's own, and it is recorded as **correct rather than a hole**: unlike the review pause, which resets only when a command lifts it, the rate limit self-clears as usage ages out, and the comment carrying it ships its own estimate. Bounding it with a loop-owned clock would escalate the whole queue whenever the reviewer is merely slow.
 

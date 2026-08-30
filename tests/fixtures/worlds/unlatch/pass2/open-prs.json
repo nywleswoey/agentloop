@@ -8,15 +8,19 @@
         },
         "nodes": [
           {
-            "number": 601,
-            "title": "Bound the wait on a stalled autofix",
+            "number": 401,
+            "title": "Widen the render path",
             "isDraft": false,
             "isCrossRepository": false,
-            "url": "https://github.com/nywleswoey/automation/pull/601",
-            "headRefName": "issue-99-bound-the-wait",
-            "headRefOid": "601b601b601b601b601b601b601b601b601b601b",
+            "url": "https://github.com/nywleswoey/automation/pull/401",
+            "headRefName": "agent-loop-fix-99-widen-render",
+            "headRefOid": "401a401a401a401a401a401a401a401a401a401a",
             "labels": {
-              "nodes": []
+              "nodes": [
+                {
+                  "name": "agent-escalated"
+                }
+              ]
             },
             "author": {
               "login": "nywleswoey"

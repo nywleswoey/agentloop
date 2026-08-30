@@ -1,0 +1,106 @@
+{
+  "data": {
+    "repository": {
+      "pullRequests": {
+        "pageInfo": {
+          "hasNextPage": false,
+          "endCursor": null
+        },
+        "nodes": [
+          {
+            "number": 410,
+            "title": "Rework the cache key",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/410",
+            "headRefName": "agent-loop-fix-110-cache-key",
+            "headRefOid": "410a410a410a410a410a410a410a410a410a410a",
+            "labels": {
+              "nodes": [
+                {
+                  "name": "agent-escalated"
+                }
+              ]
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
+          },
+          {
+            "number": 420,
+            "title": "Widen the import path",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/420",
+            "headRefName": "agent-loop-fix-120-import-path",
+            "headRefOid": "420a420a420a420a420a420a420a420a420a420a",
+            "labels": {
+              "nodes": []
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
+          },
+          {
+            "number": 430,
+            "title": "Bound the retry",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/430",
+            "headRefName": "agent-loop-fix-130-bound-retry",
+            "headRefOid": "430a430a430a430a430a430a430a430a430a430a",
+            "labels": {
+              "nodes": [
+                {
+                  "name": "agent-escalated"
+                }
+              ]
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
+          },
+          {
+            "number": 440,
+            "title": "Split the writer",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/440",
+            "headRefName": "agent-loop-fix-140-split-writer",
+            "headRefOid": "440a440a440a440a440a440a440a440a440a440a",
+            "labels": {
+              "nodes": [
+                {
+                  "name": "agent-escalated"
+                }
+              ]
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
+          },
+          {
+            "number": 450,
+            "title": "Tidy the fixture",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/450",
+            "headRefName": "agent-loop-fix-150-tidy-fixture",
+            "headRefOid": "450a450a450a450a450a450a450a450a450a450a",
+            "labels": {
+              "nodes": []
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
+          }
+        ]
+      }
+    }
+  }
+}
