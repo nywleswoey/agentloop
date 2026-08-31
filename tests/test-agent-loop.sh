@@ -56,7 +56,7 @@ setup() {
   write_config "nywleswoey/automation" "repo-aaa"
 }
 
-# write_config <github-full-name> <orca-repo-id> [poll-interval-seconds] [max-workers] [autofix-timeout] [merge-gate-timeout] [merge-method]
+# write_config <github-full-name> <orca-repo-id> [poll-interval-seconds] [max-workers] [autofix-timeout] [merge-gate-timeout] [merge-method] [review-retry-timeout]
 write_config() {
   cat > "$CONFIG" <<JSON
 {
@@ -64,6 +64,7 @@ write_config() {
   "maxWorkers": ${4:-3},
   "autofixTimeoutSeconds": ${5:-5400},
   "mergeGateTimeoutSeconds": ${6:-3600},
+  "reviewRetryTimeoutSeconds": ${8:-5400},
   "logPath": "$LOG",
   "labels": { "ready": "ready-for-agent", "claimed": "agent-in-progress" },
   "projects": [
@@ -225,6 +226,7 @@ cat > "$CONFIG" <<JSON
   "maxWorkers": 3,
   "autofixTimeoutSeconds": 5400,
   "mergeGateTimeoutSeconds": 3600,
+  "reviewRetryTimeoutSeconds": 5400,
   "logPath": "$LOG",
   "labels": { "ready": "ready-for-agent", "claimed": "agent-in-progress" },
   "projects": [
@@ -1410,12 +1412,15 @@ check_no_grep "#260 260a260a260a260a260a260a260a260a260a260a assessable" "$OUT"
 
 # 261 — the rate-limit path posts a *passing check*, which is a second and
 # independent route to the same false green. The predicate is cause-blind, so it
-# catches this one too — and the rate-limit marker is tested first, so a
-# throttled reviewer waits instead of escalating the queue.
-check_grep "pr nywleswoey/automation#261 261b261b261b261b261b261b261b261b261b261b rate-limited review=terminal threads=0 autofix=unspent route=no-block" "$OUT"
-check "a throttled pull request is not nudged" \
-  test "$(grep -cF 'pr comment 261 --repo nywleswoey/automation --body @coderabbitai review' "$STUB_CALLS")" -eq 0
+# catches this one too — and the pull request is **nudged**, where it used to
+# park in `rate-limited` with no clock and no exit. Asking into a limit costs
+# latency and nothing else, so asking is the remedy.
+check_grep "pr nywleswoey/automation#261 261b261b261b261b261b261b261b261b261b261b needs-review review=terminal threads=0 autofix=unspent route=no-block action=nudged" "$OUT"
+check_grep "gh-axi pr comment 261 --repo nywleswoey/automation --body @coderabbitai review" "$STUB_CALLS"
 check_no_grep "#261 261b261b261b261b261b261b261b261b261b261b assessable" "$OUT"
+# The deleted state, asserted gone across the whole pass rather than only on
+# this pull request: a park with no exit must not be reachable by any route.
+check_no_grep "rate-limited review=" "$OUT"
 
 # 262 — nothing rolled up on the head at all, and a merge-risk block that does
 # name it. The first clause holds alone, which is what makes it a clause.
@@ -1490,7 +1495,7 @@ check_no_grep "@coderabbitai resume" "$STUB_CALLS"
 # edits. Read the updated one and this pass would be nine seconds old.
 replay nudge/pass2 2026-08-27T11:59:59Z
 check_status 0 "$STATUS"
-check_grep "pr nywleswoey/automation#272 272a272a272a272a272a272a272a272a272a272a nudge-in-flight review=pending threads=0 autofix=unspent route=no-signal,no-block age=299 bound=300" "$PASS_LOG"
+check_grep "pr nywleswoey/automation#272 272a272a272a272a272a272a272a272a272a272a nudge-in-flight review=pending threads=0 autofix=unspent route=no-signal,no-block age=299 bound=300 answer=none" "$PASS_LOG"
 check "once per head: no second nudge" \
   test "$(grep -cF 'pr comment 272 --repo nywleswoey/automation --body @coderabbitai review' "$STUB_CALLS")" -eq 1
 check_no_grep "action=escalated" "$PASS_LOG"
@@ -1500,7 +1505,7 @@ setup "the same nudge one second past its bound is handed over"
 PASS_N=0
 replay nudge/pass2 2026-08-27T12:00:01Z
 check_status 0 "$STATUS"
-check_grep "pr nywleswoey/automation#272 272a272a272a272a272a272a272a272a272a272a nudge-stalled review=pending threads=0 autofix=unspent route=no-signal,no-block age=301 bound=300 action=escalated kind=stalled label=added" "$PASS_LOG"
+check_grep "pr nywleswoey/automation#272 272a272a272a272a272a272a272a272a272a272a nudge-stalled review=pending threads=0 autofix=unspent route=no-signal,no-block age=301 bound=300 answer=none action=escalated kind=stalled label=added" "$PASS_LOG"
 check_no_grep "nudge-in-flight" "$PASS_LOG"
 check "the stalled nudge is not sent again" \
   test "$(grep -cF 'pr comment 272 --repo nywleswoey/automation --body @coderabbitai review' "$STUB_CALLS")" -eq 0
@@ -1560,7 +1565,7 @@ setup "the same verdict one second past the nudge's bound is handed over"
 PASS_N=0
 replay other-head/pass2 2026-08-27T12:00:01Z
 check_status 0 "$STATUS"
-check_grep "pr nywleswoey/automation#280 280a280a280a280a280a280a280a280a280a280a nudge-stalled review=terminal threads=0 autofix=unspent route=other-head age=301 bound=300 action=escalated kind=stalled label=added" "$PASS_LOG"
+check_grep "pr nywleswoey/automation#280 280a280a280a280a280a280a280a280a280a280a nudge-stalled review=terminal threads=0 autofix=unspent route=other-head age=301 bound=300 answer=none action=escalated kind=stalled label=added" "$PASS_LOG"
 
 OTHER_BODY="$STUB_STATE/pr-body-280.txt"
 check "the escalation body was captured" test -f "$OTHER_BODY"
@@ -1587,12 +1592,207 @@ check "the stalled nudge is not sent again" \
 #
 # `no-block` cannot join `other-head`: no block anywhere leaves nothing to parse
 # an abbreviation out of. This is the only pairing there is.
-check_grep "pr nywleswoey/automation#281 281b281b281b281b281b281b281b281b281b281b nudge-stalled review=pending threads=0 autofix=unspent route=no-signal,other-head age=301 bound=300 action=escalated kind=stalled label=added" "$PASS_LOG"
+check_grep "pr nywleswoey/automation#281 281b281b281b281b281b281b281b281b281b281b nudge-stalled review=pending threads=0 autofix=unspent route=no-signal,other-head age=301 bound=300 answer=none action=escalated kind=stalled label=added" "$PASS_LOG"
 BOTH_BODY="$STUB_STATE/pr-body-281.txt"
 check "the escalation body was captured" test -f "$BOTH_BODY"
 check_grep "not be installed on this repository, or the organisation may be out of seats" "$BOTH_BODY"
 check_no_grep "CodeRabbit reviewed this head and left its merge-risk verdict on another commit" "$BOTH_BODY"
 check_grep "age=301s bound=300s nudge=2026-08-27T11:55:00Z route=no-signal,other-head" "$BOTH_BODY"
+
+# --- pr phase: a refused command --------------------------------------------------
+
+# The loop is the sole source of CodeRabbit reviews on the watched repositories,
+# so `@coderabbitai review` is load-bearing on every pull request — and when
+# CodeRabbit **refuses** that command, the loop used to be unable to see the
+# refusal and stopped asking. These cases are the read, the un-spend and the
+# bound that replaced that park.
+#
+# What is lost to a refusal is **latency, not budget**: the review meter is per
+# repository and a refused command consumes neither a review nor any delay
+# before the next one. So asking again is free, and the only question is when to
+# stop.
+
+setup "a refused command un-spends the meter and the loop asks again"
+PASS_N=0
+replay refused/pass1 2026-08-27T11:10:00Z
+check_status 0 "$STATUS"
+# `spent` now means **awaiting an answer**, not *asked once at this head*: the
+# status is newer than the nudge and does not say `Review completed`, so the
+# nudge is un-spent and the loop writes again on the very next pass.
+check_grep "pr nywleswoey/automation#290 290a290a290a290a290a290a290a290a290a290a needs-review review=terminal threads=0 autofix=unspent route=no-block retries=1 age=300 bound=5400 origin=first-nudge answer=refused action=nudged signal=Review rate limited" "$PASS_LOG"
+check_grep "gh-axi pr comment 290 --repo nywleswoey/automation --body @coderabbitai review" "$STUB_CALLS"
+# The counter-assertion matters as much as the line: the park this replaced had
+# no loop-owned clock and no exit, and it must not be reachable by any route.
+check_no_grep "rate-limited" "$PASS_LOG"
+check_no_grep "action=escalated" "$PASS_LOG"
+# `terminal` is deliberately **untouched** by the refusal. A refusal is
+# CodeRabbit stopping, and reading it as non-terminal would drop the pass into
+# the pending branch and wait out the whole gate clock before handing over.
+check_grep "290a290a290a290a290a290a290a290a290a290a needs-review review=terminal" "$PASS_LOG"
+
+# The retry bound, proven by a mutant twin: the same world one second either
+# side of `reviewRetryTimeoutSeconds`, measured from the **first** nudge at this
+# head and not the newest. Three nudges stand, so a window measured from the
+# newest would read 1190 seconds here rather than 5400.
+
+setup "a refused command one second inside the retry bound is asked again"
+PASS_N=0
+replay refused/pass2 2026-08-27T12:35:00Z
+check_status 0 "$STATUS"
+check_grep "pr nywleswoey/automation#290 290a290a290a290a290a290a290a290a290a290a needs-review review=terminal threads=0 autofix=unspent route=no-block retries=3 age=5400 bound=5400 origin=first-nudge answer=refused action=nudged signal=Review rate limited" "$PASS_LOG"
+check_no_grep "nudge-declined" "$PASS_LOG"
+
+setup "the same refusal one second past the retry bound is handed over as declined"
+PASS_N=0
+replay refused/pass2 2026-08-27T12:35:01Z
+check_status 0 "$STATUS"
+check_grep "pr nywleswoey/automation#290 290a290a290a290a290a290a290a290a290a290a nudge-declined review=terminal threads=0 autofix=unspent route=no-block retries=3 age=5401 bound=5400 origin=first-nudge answer=refused action=escalated kind=declined label=added handover=posted signal=Review rate limited" "$PASS_LOG"
+check "the expired retry is not asked again" \
+  test "$(grep -cF 'pr comment 290 --repo nywleswoey/automation --body @coderabbitai review' "$STUB_CALLS")" -eq 0
+# `signal=` is **last on the line**, after the handover's own keys, because it is
+# the one free-text value in the project and everything after it is the value.
+check "CodeRabbit's own words close the line" \
+  test "$(grep -c 'answer=refused action=escalated kind=declined label=added handover=posted signal=Review rate limited$' "$PASS_LOG")" -eq 1
+
+DECLINED_BODY="$STUB_STATE/pr-body-290.txt"
+check "the escalation body was captured" test -f "$DECLINED_BODY"
+# Its **own kind**. `stalled` means *CodeRabbit never reported inside the bound*
+# and would be false of a pull request CodeRabbit answered every single time.
+check "the first line names the kind" \
+  test "$(head -1 "$DECLINED_BODY")" = '**Escalated — `declined`:** CodeRabbit answered every command and never ran a review inside the retry window.'
+check_grep "first-nudge=2026-08-27T11:05:00Z retries=3 route=no-block" "$DECLINED_BODY"
+# The `no` row pastes CodeRabbit's own newest description **verbatim** rather
+# than guessing at seats and installations. That is safe precisely because
+# `signalAt > nudgeAt` is what got the pass here, so the description is
+# guaranteed to be an answer to the loop's own command and not a stale slot.
+check_grep 'its newest answer was "Review rate limited"' "$DECLINED_BODY"
+check_no_grep "not be installed on this repository, or the organisation may be out of seats" "$DECLINED_BODY"
+check_grep "age=5401s bound=5400s" "$DECLINED_BODY"
+# The reply is still a witness nothing parses: created as *Actions performed* on
+# every command and edited to its outcome afterwards, so no rule may read it.
+check_grep "CodeRabbit's reply to the last nudge, verbatim and unparsed" "$DECLINED_BODY"
+check_grep "**Actions performed**" "$DECLINED_BODY"
+# All three manual exits are on a `declined` record exactly as on any other.
+check_grep "Merge it by hand." "$DECLINED_BODY"
+check_grep "Push a commit." "$DECLINED_BODY"
+check_grep "Convert it to draft." "$DECLINED_BODY"
+
+# The arm ordering, which is the whole of the two-clock design: the retry window
+# is read **only** where nothing is outstanding. This world is past the outer
+# bound and carries a nudge newer than the newest signal, so a command is in
+# flight — and a command in flight is never pre-empted, because it may be the
+# one that lands and pre-empting it would post a record the next pass retracts.
+setup "a command still in flight is not pre-empted by the retry bound"
+PASS_N=0
+replay refused/pass3 2026-08-27T12:36:00Z
+check_status 0 "$STATUS"
+check_grep "pr nywleswoey/automation#290 290a290a290a290a290a290a290a290a290a290a nudge-in-flight review=terminal threads=0 autofix=unspent route=no-block age=120 bound=300 answer=none" "$PASS_LOG"
+check_no_grep "nudge-declined" "$PASS_LOG"
+check_no_grep "action=escalated" "$PASS_LOG"
+# `signal=` is **omitted entirely** when nothing refused, so the field's
+# presence is itself the fact that something answered.
+check_no_grep "signal=" "$PASS_LOG"
+check "no second command four seconds after the first" \
+  test "$(grep -cF 'pr comment 290 --repo nywleswoey/automation --body @coderabbitai review' "$STUB_CALLS")" -eq 0
+
+# Once the record stands the pull request parks with a record and a label —
+# where before this work it parked with neither.
+setup "a standing declined record gates the nudge site"
+PASS_N=0
+replay refused/pass4 2026-08-27T12:36:00Z
+check_status 0 "$STATUS"
+check_grep "pr nywleswoey/automation#290 290a290a290a290a290a290a290a290a290a290a nudge-declined review=terminal threads=0 autofix=unspent route=no-block retries=1 age=5460 bound=5400 origin=first-nudge answer=refused handover=held label=added signal=Review rate limited" "$PASS_LOG"
+check "the parked pull request is not nudged" \
+  test "$(grep -cF 'pr comment 290 --repo nywleswoey/automation --body @coderabbitai review' "$STUB_CALLS")" -eq 0
+check "the same kind is still true, so nothing is written over the record" \
+  test "$(grep -cF 'issues/comments/5379000297' "$STUB_CALLS")" -eq 0
+check_grep "gh-axi pr edit 290 --repo nywleswoey/automation --add-label agent-escalated" "$STUB_CALLS"
+
+# --- pr phase: what the description may and may not decide --------------------------
+
+# One world separating the six things the description read has to get right. The
+# rule it is testing, stated once for the whole project: the description is
+# **control input only through the one-value allowlist** and **diagnosis input
+# only verbatim**, with nothing in between.
+setup "the description decides only whether to ask again"
+export STUB_WORLD=declined STUB_NOW=2026-08-27T12:40:01Z
+run_once
+check_status 0 "$STATUS"
+
+# 291 — **`nudge-stalled` survives.** A nudge stands, nothing answered it, and
+# the pass is a poll interval past the *retry* bound as well as past its own.
+# Deleting the park must not delete the state that catches real silence, and
+# what still reaches here is only genuine silence — a rate limit always writes a
+# status, so it always answers, so it always un-spends, and it can no longer
+# arrive at this branch at all. That is what keeps `stalled`'s prose true rather
+# than repairing it.
+check_grep "pr nywleswoey/automation#291 291a291a291a291a291a291a291a291a291a291a nudge-stalled review=pending threads=0 autofix=unspent route=no-signal,no-block age=5701 bound=300 answer=none action=escalated kind=stalled label=added" "$OUT"
+SILENT_BODY="$STUB_STATE/pr-body-291.txt"
+check "the escalation body was captured" test -f "$SILENT_BODY"
+check "the first line still names stalled" \
+  test "$(head -1 "$SILENT_BODY")" = '**Escalated — `stalled`:** a CodeRabbit command was triggered and CodeRabbit never reported inside its bound.'
+check_grep "not be installed on this repository, or the organisation may be out of seats" "$SILENT_BODY"
+
+# 292 — the finance-manager#162 tail: a CodeRabbit-authored head whose nudge is
+# refused. Autofix will not run again at a head CodeRabbit wrote and the review
+# that head needs is the thing being refused, so the loop has **no remaining
+# path to a verdict at all** — which is the difference between *wait for the
+# limit to lift* and *go and look now*, and the operator cannot derive it from
+# the other rows.
+check_grep "pr nywleswoey/automation#292 292b292b292b292b292b292b292b292b292b292b nudge-declined review=terminal threads=0 autofix=spent:own-head route=other-head retries=1 age=5701 bound=5400 origin=first-nudge answer=refused action=escalated kind=declined label=added handover=posted signal=Review rate limited" "$OUT"
+OWN_HEAD_BODY="$STUB_STATE/pr-body-292.txt"
+check "the escalation body was captured" test -f "$OWN_HEAD_BODY"
+check_grep "the loop has no remaining path to a verdict on this pull request" "$OWN_HEAD_BODY"
+check_grep "autofix=spent:own-head route=other-head" "$OWN_HEAD_BODY"
+# The severity row is the `spent:own-head` route's alone: the twin above is a
+# `declined` body on an unspent head and must not carry it.
+check_no_grep "no remaining path to a verdict" "$DECLINED_BODY"
+
+# 293 — **the one-way constraint, tested.** The head's newest signal says
+# `Review completed`, and the merge-risk block still names another commit. The
+# description may only ever make the loop *ask*: it may never conclude
+# *reviewed* and never remove a route, so this is still `needs-review` by
+# `other-head`. *Was this head reviewed* stays the block test's question alone,
+# which is what keeps a two-second `Review completed` no-op caught where it is
+# caught today.
+check_grep "pr nywleswoey/automation#293 293c293c293c293c293c293c293c293c293c293c needs-review review=terminal threads=0 autofix=unspent route=other-head action=nudged" "$OUT"
+check_grep "gh-axi pr comment 293 --repo nywleswoey/automation --body @coderabbitai review" "$STUB_CALLS"
+
+# 294 — **an allowlist, never a denylist.** The description is a value the
+# observed vocabulary does not contain, which is what a rename looks like from
+# here. A denylist would read it as an *acceptance* and stop; the allowlist
+# reads it as *ask again*. A rename costs extra nudges, which are free, and
+# never a skipped review.
+check_grep "pr nywleswoey/automation#294 294d294d294d294d294d294d294d294d294d294d needs-review review=terminal threads=0 autofix=unspent route=no-block retries=1 age=121 bound=5400 origin=first-nudge answer=refused action=nudged signal=Review dispatched" "$OUT"
+check_grep "gh-axi pr comment 294 --repo nywleswoey/automation --body @coderabbitai review" "$STUB_CALLS"
+
+# 295 — **both surfaces, classified identically.** The same refusal delivered as
+# a passing check's `title` rather than a status's `description`. On this
+# account CodeRabbit reports through the legacy status API and emits no check
+# runs at all, while its own changelog says check runs are the default — so a
+# fact reading only one surface would be blind on half the accounts the loop
+# runs against. 294 and 295 differ in nothing but the surface, and their lines
+# differ in nothing but the words CodeRabbit wrote.
+check_grep "pr nywleswoey/automation#295 295e295e295e295e295e295e295e295e295e295e needs-review review=terminal threads=0 autofix=unspent route=no-block retries=1 age=121 bound=5400 origin=first-nudge answer=refused action=nudged signal=Review rate limited" "$OUT"
+check "295's refusal really arrives as a check run's title" \
+  test "$(jq -r '.data.repository.pullRequest.commits.nodes[-1].commit.statusCheckRollup.contexts.nodes[0] | .__typename + "/" + .title' "$FIXTURES/worlds/declined/pr-295.json")" = "CheckRun/Review rate limited"
+check "294's arrives as a status's description" \
+  test "$(jq -r '.data.repository.pullRequest.commits.nodes[-1].commit.statusCheckRollup.contexts.nodes[0].__typename' "$FIXTURES/worlds/declined/pr-294.json")" = "StatusContext"
+
+# 296 — a **force-pushed head**, which orphans the status onto a sha the rollup
+# no longer reaches. It falls to `no-signal` and is nudged, which is the read
+# staying cause-blind: confirmed rather than handled.
+check_grep "pr nywleswoey/automation#296 296f296f296f296f296f296f296f296f296f296f needs-review review=pending threads=0 autofix=unspent route=no-signal,other-head action=nudged" "$OUT"
+check_grep "gh-axi pr comment 296 --repo nywleswoey/automation --body @coderabbitai review" "$STUB_CALLS"
+
+# `answer=` and `signal=` appear only where a command stands at this head. 293
+# and 296 have never been nudged, so there is nothing for a signal to be an
+# answer to and neither key is on their lines.
+check "no answer key on a pull request that has never been nudged" \
+  test "$(grep -cE '#(293|296) .* (answer|signal)=' "$OUT")" -eq 0
+check "one state line per pull request" \
+  test "$(grep -cE '^[0-9TZ:-]+ pr nywleswoey/automation#' "$OUT")" -eq 6
+
 
 # --- pr phase: the review clock, proven by a mutant twin ----------------------------
 
@@ -2850,6 +3050,7 @@ cat > "$CONFIG" <<JSON
   "maxWorkers": 3,
   "autofixTimeoutSeconds": 5400,
   "mergeGateTimeoutSeconds": 3600,
+  "reviewRetryTimeoutSeconds": 5400,
   "noMerge": true,
   "logPath": "$LOG",
   "labels": { "ready": "ready-for-agent", "claimed": "agent-in-progress" },
@@ -2938,6 +3139,7 @@ cat > "$CONFIG" <<JSON
   "maxWorkers": 3,
   "autofixTimeoutSeconds": 5400,
   "mergeGateTimeoutSeconds": 3600,
+  "reviewRetryTimeoutSeconds": 5400,
   "logPath": "$LOG",
   "labels": { "ready": "ready-for-agent", "claimed": "agent-in-progress" },
   "projects": [
@@ -2993,6 +3195,7 @@ cat > "$CONFIG" <<JSON
   "maxWorkers": 3,
   "autofixTimeoutSeconds": 5400,
   "mergeGateTimeoutSeconds": 3600,
+  "reviewRetryTimeoutSeconds": 5400,
   "logPath": "$LOG",
   "labels": { "ready": "ready-for-agent", "claimed": "agent-in-progress" },
   "projects": [
@@ -3129,6 +3332,7 @@ cat > "$CONFIG" <<JSON
   "maxWorkers": 3,
   "autofixTimeoutSeconds": 5400,
   "mergeGateTimeoutSeconds": 3600,
+  "reviewRetryTimeoutSeconds": 5400,
   "seenListPath": "$WORK/seen.jsonl",
   "logPath": "$LOG",
   "labels": { "ready": "ready-for-agent", "claimed": "agent-in-progress" },
@@ -3148,6 +3352,7 @@ cat > "$CONFIG" <<JSON
   "pollIntervalSeconds": 300,
   "maxWorkers": 3,
   "mergeGateTimeoutSeconds": 3600,
+  "reviewRetryTimeoutSeconds": 5400,
   "logPath": "$LOG",
   "labels": { "ready": "ready-for-agent", "claimed": "agent-in-progress" },
   "projects": [
@@ -3186,6 +3391,34 @@ write_config "nywleswoey/automation" "repo-aaa" 300 3 5400 0
 run_once
 check_status nonzero "$STATUS"
 check_grep "config mergeGateTimeoutSeconds must be a positive integer, got: 0" "$OUT"
+
+# The retry bound is required on the same argument as the other two: this config
+# has no defaults anywhere, and a typo must fail at second zero rather than
+# quietly at the clock.
+setup "the review-retry timeout is required, not defaulted"
+cat > "$CONFIG" <<JSON
+{
+  "pollIntervalSeconds": 300,
+  "maxWorkers": 3,
+  "autofixTimeoutSeconds": 5400,
+  "mergeGateTimeoutSeconds": 3600,
+  "logPath": "$LOG",
+  "labels": { "ready": "ready-for-agent", "claimed": "agent-in-progress" },
+  "projects": [
+    { "github": "nywleswoey/automation", "orcaRepoId": "repo-aaa", "mergeMethod": "squash" }
+  ]
+}
+JSON
+run_once
+check_status nonzero "$STATUS"
+check_grep "config is missing reviewRetryTimeoutSeconds" "$OUT"
+check "no pass ran" test "$(grep -cF 'pass start' "$OUT")" -eq 0
+
+setup "a review-retry timeout that is not a positive integer fails at startup"
+write_config "nywleswoey/automation" "repo-aaa" 300 3 5400 3600 squash 0
+run_once
+check_status nonzero "$STATUS"
+check_grep "config reviewRetryTimeoutSeconds must be a positive integer, got: 0" "$OUT"
 
 setup "the loop keeps no local state for the PR phase"
 export STUB_WORLD=states STUB_NOW=2026-08-27T12:00:00Z

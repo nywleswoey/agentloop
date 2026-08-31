@@ -1,0 +1,77 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "number": 294,
+        "headRefOid": "294d294d294d294d294d294d294d294d294d294d",
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "CLEAN",
+        "files": {
+          "totalCount": 1,
+          "nodes": [
+            {
+              "path": "src/renamed.js"
+            }
+          ]
+        },
+        "commits": {
+          "nodes": [
+            {
+              "commit": {
+                "oid": "294d294d294d294d294d294d294d294d294d294d",
+                "committedDate": "2026-08-27T12:30:00Z",
+                "author": {
+                  "user": {
+                    "login": "nywleswoey"
+                  }
+                },
+                "statusCheckRollup": {
+                  "state": "SUCCESS",
+                  "contexts": {
+                    "nodes": [
+                      {
+                        "__typename": "StatusContext",
+                        "context": "CodeRabbit",
+                        "state": "SUCCESS",
+                        "description": "Review dispatched",
+                        "createdAt": "2026-08-27T12:38:20Z",
+                        "creator": {
+                          "login": "coderabbitai"
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "reviewThreads": {
+          "nodes": []
+        },
+        "comments": {
+          "nodes": [
+            {
+              "databaseId": 5379000294,
+              "createdAt": "2026-08-27T12:38:00Z",
+              "updatedAt": "2026-08-27T12:38:00Z",
+              "body": "@coderabbitai review",
+              "author": {
+                "login": "nywleswoey"
+              }
+            },
+            {
+              "databaseId": 5379000395,
+              "createdAt": "2026-08-27T12:38:08Z",
+              "updatedAt": "2026-08-27T12:38:08Z",
+              "body": "<!-- This is an auto-generated reply by CodeRabbit -->\n\n**Actions performed**\n\nReview triggered.\n\n> Note: CodeRabbit is an incremental review system and does not re-review already reviewed commits.",
+              "author": {
+                "login": "coderabbitai"
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,81 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "number": 295,
+        "headRefOid": "295e295e295e295e295e295e295e295e295e295e",
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "CLEAN",
+        "files": {
+          "totalCount": 1,
+          "nodes": [
+            {
+              "path": "src/check-run.js"
+            }
+          ]
+        },
+        "commits": {
+          "nodes": [
+            {
+              "commit": {
+                "oid": "295e295e295e295e295e295e295e295e295e295e",
+                "committedDate": "2026-08-27T12:30:00Z",
+                "author": {
+                  "user": {
+                    "login": "nywleswoey"
+                  }
+                },
+                "statusCheckRollup": {
+                  "state": "SUCCESS",
+                  "contexts": {
+                    "nodes": [
+                      {
+                        "__typename": "CheckRun",
+                        "name": "CodeRabbit",
+                        "title": "Review rate limited",
+                        "status": "COMPLETED",
+                        "conclusion": "SUCCESS",
+                        "startedAt": "2026-08-27T12:38:20Z",
+                        "completedAt": "2026-08-27T12:38:20Z",
+                        "checkSuite": {
+                          "app": {
+                            "slug": "coderabbitai"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "reviewThreads": {
+          "nodes": []
+        },
+        "comments": {
+          "nodes": [
+            {
+              "databaseId": 5379000295,
+              "createdAt": "2026-08-27T12:38:00Z",
+              "updatedAt": "2026-08-27T12:38:00Z",
+              "body": "@coderabbitai review",
+              "author": {
+                "login": "nywleswoey"
+              }
+            },
+            {
+              "databaseId": 5379000396,
+              "createdAt": "2026-08-27T12:38:08Z",
+              "updatedAt": "2026-08-27T12:38:08Z",
+              "body": "<!-- This is an auto-generated reply by CodeRabbit -->\n\n**Actions performed**\n\nReview triggered.\n\n> Note: CodeRabbit is an incremental review system and does not re-review already reviewed commits.",
+              "author": {
+                "login": "coderabbitai"
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
