@@ -769,11 +769,14 @@ check_grep "dispatched nywleswoey/automation#95" "$OUT"
 # fence line inside is code, not the end of that tilde fence, so the claim text
 # after it remains quoted and anchors nothing.
 check_grep "dispatched nywleswoey/automation#96" "$OUT"
+# #98 keeps a matching fence run with a non-whitespace suffix inside the block,
+# so the template below it remains quoted rather than becoming a live claim.
+check_grep "dispatched nywleswoey/automation#98" "$OUT"
 # #97 has two blank lines between its claim and a list. One blank is markdown's
 # own separator; a second is a gap, and the list below it is not the claim's.
 check_grep "issue nywleswoey/automation#97 refused edges=missing:nywleswoey/automation#61" "$OUT"
 check_no_grep "#99" "$STUB_STATE/issue-body-97.txt"
-check_grep "pass end dispatches=7 skips=0 sweeps=1 refusals=6" "$OUT"
+check_grep "pass end dispatches=8 skips=0 sweeps=1 refusals=6" "$OUT"
 
 setup "referents inside a claim, and the prose beside them"
 export STUB_ISSUES=claim-referents

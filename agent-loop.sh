@@ -1185,7 +1185,7 @@ blocking_claims() {
             fence_run = run
             next
           }
-          if (marker == fence_marker && run >= fence_run) {
+          if (marker == fence_marker && run >= fence_run && substr(fence_line, run + 1) ~ /^[ \t]*$/) {
             fence_marker = ""
             fence_run = 0
             next
