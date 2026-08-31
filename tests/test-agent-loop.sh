@@ -4006,7 +4006,7 @@ check_no_grep "decomposed nywleswoey/automation#93" "$OUT"
 # children it has, and the filter is ahead of the read, so it costs nothing to
 # find that out.
 check_no_grep "gh-axi api /repos/nywleswoey/automation/issues/17 " "$STUB_CALLS"
-check_no_grep "decomposed nywleswoey/automation#17" "$STUB_CALLS"
+check_no_grep "decomposed nywleswoey/automation#17" "$OUT"
 
 # The reclaim, on the same pass. A claimed `to-tickets` issue is never handed
 # back — a worker that linked its children by prose alone leaves the count at

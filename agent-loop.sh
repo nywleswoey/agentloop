@@ -1077,8 +1077,8 @@ reclaim_stale_claims() {
 # repository per pass as well, because close-out's second entry path enumerates
 # the loop's claims — which is the read that path is costed on.
 #
-# `labels(first: 20)` is what both readers derive the change type, the verb and
-# the refusal flag from. It **truncates**: an issue wearing more than twenty
+# `labels(first: 100)` is what both readers derive the change type, the verb and
+# the refusal flag from. It **truncates**: an issue wearing more than one hundred
 # labels can have its verb fall off the end of the page and be refused for
 # declaring none. That fails closed — a stalled issue you can see — and no
 # repository is near the limit. Named here so it is not rediscovered as a
