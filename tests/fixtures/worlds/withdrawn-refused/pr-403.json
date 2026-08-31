@@ -2,8 +2,8 @@
   "data": {
     "repository": {
       "pullRequest": {
-        "number": 401,
-        "headRefOid": "401a401a401a401a401a401a401a401a401a401a",
+        "number": 403,
+        "headRefOid": "403a403a403a403a403a403a403a403a403a403a",
         "mergeable": "MERGEABLE",
         "mergeStateStatus": "CLEAN",
         "files": {
@@ -18,7 +18,7 @@
           "nodes": [
             {
               "commit": {
-                "oid": "401a401a401a401a401a401a401a401a401a401a",
+                "oid": "403a403a403a403a403a403a403a403a403a403a",
                 "committedDate": "2026-08-27T11:30:00Z",
                 "author": {
                   "user": {
@@ -72,19 +72,28 @@
         "comments": {
           "nodes": [
             {
-              "databaseId": 5379000401,
+              "databaseId": 5379000403,
               "createdAt": "2026-08-27T09:00:00Z",
               "updatedAt": "2026-08-27T11:32:00Z",
-              "body": "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n<!-- recent_review_start -->\n## Walkthrough\n\nA localized change.\n<!-- recent_review_end -->\n<!-- final_review_risk_start -->\n**Merge Risk:** _⚪ Minimal_ · up to `401a4`\n\nProse CodeRabbit wrote about the change, which nothing parses.\n<!-- final_review_risk_end -->\n<!-- tips_start -->\n<details>\n<summary>📜 Recent review details</summary>\n\nConfiguration used: defaults\nReview profile: CHILL\nPlan: Pro Plus\n\nFiles that changed from the base of the PR and between dec0dec0dec0dec0dec0dec0dec0dec0dec0dec0 and 401a401a401a401a401a401a401a401a401a401a\n</details>\n<!-- tips_end -->\n",
+              "body": "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n<!-- recent_review_start -->\n## Walkthrough\n\nA localized change.\n<!-- recent_review_end -->\n<!-- final_review_risk_start -->\n**Merge Risk:** _⚪ Minimal_ · up to `403a4`\n\nProse CodeRabbit wrote about the change, which nothing parses.\n<!-- final_review_risk_end -->\n<!-- tips_start -->\n<details>\n<summary>📜 Recent review details</summary>\n\nConfiguration used: defaults\nReview profile: CHILL\nPlan: Pro Plus\n\nFiles that changed from the base of the PR and between dec0dec0dec0dec0dec0dec0dec0dec0dec0dec0 and 403a403a403a403a403a403a403a403a403a403a\n</details>\n<!-- tips_end -->\n",
               "author": {
                 "login": "coderabbitai"
               }
             },
             {
-              "databaseId": 5379000411,
+              "databaseId": 5379000413,
               "createdAt": "2026-08-27T11:35:00Z",
-              "updatedAt": "2026-08-27T11:40:00Z",
-              "body": "**Withdrawn.** A handover stood on this pull request at `401a401a401a401a401a401a401a401a401a401a`; the loop re-derived, the picture had changed, and it took the record down. The previous version of this comment holds what the gate saw.\n\nThe loop is deriving this pull request normally again.\n\n<!-- agent-loop-withdrawn: 401a401a401a401a401a401a401a401a401a401a escalate -->\n",
+              "updatedAt": "2026-08-27T11:36:00Z",
+              "body": "**Withdrawn.** A handover stood on this pull request at `403a403a403a403a403a403a403a403a403a403a`; the loop re-derived, the picture had changed, and it took the record down. The previous version of this comment holds what the gate saw.\n\nThe loop is deriving this pull request normally again.\n\n<!-- agent-loop-withdrawn: 403a403a403a403a403a403a403a403a403a403a refused -->\n",
+              "author": {
+                "login": "nywleswoey"
+              }
+            },
+            {
+              "databaseId": 5379000423,
+              "createdAt": "2026-08-27T11:38:00Z",
+              "updatedAt": "2026-08-27T11:39:00Z",
+              "body": "**Withdrawn.** A handover stood on this pull request at `403a403a403a403a403a403a403a403a403a403a`; the loop re-derived, the picture had changed, and it took the record down. The previous version of this comment holds what the gate saw.\n\nThe loop is deriving this pull request normally again.\n\n<!-- agent-loop-withdrawn: 403a403a403a403a403a403a403a403a403a403a stuck -->\n",
               "author": {
                 "login": "nywleswoey"
               }

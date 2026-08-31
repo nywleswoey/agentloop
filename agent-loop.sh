@@ -210,6 +210,48 @@ CODERABBIT_STATUS_REVIEWED='Review completed'
 # let go of hours ago.
 ESCALATION_MARKER_PREFIX='<!-- agent-loop-escalated: '
 ESCALATION_MARKER_SUFFIX=' -->'
+# The withdrawal notice's own marker — the escalation marker's shape, one prefix
+# over, and read the same way: a `contains` on prefix-plus-head with the kind
+# read out separately.
+#
+# **It is a spend record, not a claim.** The one thing the withdrawal notice may
+# not carry is a live verdict, because a record written against a moving signal
+# is the exact defect the retraction path exists to correct. This asserts
+# nothing about mergeability and carries no rows: it says the loop wrote a
+# record of that kind at that commit and then took it down, which is
+# permanently true of that head and moves with nothing.
+#
+# **What it buys is the one head-keyed fact that survives a withdrawal.** A
+# standing record is itself a merge spend — no merge write happens while one
+# stands, whatever its kind — so un-latching used to take the spend down with
+# the record, and a head whose refusal was permanent merged again, was refused
+# again, and grew a fresh comment every second pass, unbounded, on a pull
+# request already asking for a human. The token is what the pass after a
+# withdrawal reads instead.
+#
+# **A distinct prefix, so the two tests cannot see each other.** *A record
+# stands at this head* is a `contains` on `<!-- agent-loop-escalated: <head>`
+# and this is `<!-- agent-loop-withdrawn: <head>`; neither string contains the
+# other, so a withdrawn marker never reads as a standing record and a standing
+# record never reads as a withdrawal.
+#
+# **One vocabulary read two ways, rather than two vocabularies.** A bespoke
+# `refused`-only token would be narrower, but it would mint a second marker
+# shape and put a kind-shaped branch inside a function whose kind-blindness is
+# settled: the marker is written on every retraction, of every kind, and only
+# the reader asks which kind it names.
+#
+# **Tokens accumulate at a head rather than replacing one another, and the read
+# is a set test because of it.** A record standing at a head the loop has
+# already withdrawn one at is posted as a *new* comment — the withdrawn one
+# carries no record marker to write over — so the older notice survives beside
+# it, and its own withdrawal later writes a second token elsewhere on the
+# timeline. A read that took only the newest would let a `stuck` withdrawal
+# mask a `refused` one at the same commit and re-arm a merge GitHub durably
+# refused. What each token says is true of that commit forever, so *any* of
+# them naming a kind is that kind's spend.
+WITHDRAWN_MARKER_PREFIX='<!-- agent-loop-withdrawn: '
+WITHDRAWN_MARKER_SUFFIX=' -->'
 LABEL_ESCALATED='agent-escalated'
 # The flag on an issue the loop refuses to dispatch: one refusal, one label, and
 # the reason in the comment rather than in the name. A constant for the same
@@ -1966,6 +2008,8 @@ sweep_worktrees() {
 #                      interval later when a
 #                      standing handover must be
 #                      retracted first
+#   merge withheld at  external                    a push, or a merge by hand
+#   a refused head
 #
 # The retry row is separate from the plain `needs-review` one because it bounds
 # something that row cannot speak to: the retry spans passes that are each
@@ -1990,8 +2034,20 @@ sweep_worktrees() {
 # because of that: a pull request carrying a handover is in whichever state its
 # signals actually put it, and that row's bound is the row's own.
 #
-# **Every bound in this table expires into a handover, and the one-pass cost of
-# retraction is on every row whose action a standing record delays.** Those are
+# **The last row is not a state, and it is the one exception that rule needs.**
+# A pull request whose merge is withheld at a refused head is `assessable` — its
+# signals put it there and the gate ran to completion. What no state row covers
+# is the *wait*: `assessable`'s bound is the gate clock, and the gate has already
+# decided, so nothing on that row reaches this. A standing handover needs no row
+# for the opposite reason — the wait it causes is one pass of retraction, and
+# that cost is written on the rows of the states whose action it delays. This one
+# is neither one pass nor the loop's to end, so it is either a row of its own or
+# a wait with no bound written down anywhere, which is exactly what this table
+# exists to make impossible.
+#
+# **Every loop-owned bound in this table expires into a handover, and the
+# one-pass cost of retraction is on every row whose action a standing record
+# delays.** Those are
 # the only three writes a standing record holds — the nudge, the autofix trigger
 # and the merge — so they are the only rows that can carry the cost, and a fourth
 # action added to the chain adds a fourth. The tail's own writes are not among
@@ -2001,11 +2057,31 @@ sweep_worktrees() {
 # the log line. The cost is written on the rows rather than in a footnote so that
 # nobody adds a fifth handover kind without seeing the bill.
 #
-# **A standing handover is the one thing here with no loop-owned bound, and that
-# is correct rather than a hole.** Its exits are the operator's three — merge by
-# hand, push, convert to draft — plus the loop's own **retraction**, when
-# re-derivation stops agreeing with the record. That is a real exit an observer
-# can see, which is exactly what `rate-limited` never had.
+# **The one externally-bounded row clears the bar `rate-limited` failed, and
+# that is why it is a bound rather than a second deadlock.** A merge withheld at
+# a head whose refusal was withdrawn has no loop-owned clock, because the loop
+# has already asked GitHub about this exact commit and been told no, and it does
+# not ask twice. What makes the wait bounded is the two things the rate limit
+# never had: **the exit is observable** — a push moves the head, a merge by hand
+# ends the pull request, and both are events on the pull request the next pass
+# reads off the same query — and **the exit is not the action the wait
+# forbids.** What is withheld is one merge write; what ends the wait is an
+# operator gesture the loop never held back. `rate-limited` could say neither.
+#
+# **It is still a decision rather than a property of GitHub, and the cost is
+# stated rather than hidden.** `refused` is every durable answer the merge call
+# can come back with, and a few of them clear without anybody pushing — an
+# unsatisfied review requirement approved, say. The loop will not go back and
+# look. What that buys is the end of a two-pass oscillator on a pull request
+# already asking for a human; what it costs is that the push is what re-arms it.
+# The row expires into re-derivation rather than into a handover, silently,
+# which is the whole of what being bound outside the loop means here.
+#
+# **A standing handover is the other thing here with no loop-owned bound, and
+# that is correct rather than a hole.** Its exits are the operator's three —
+# merge by hand, push, convert to draft — plus the loop's own **retraction**,
+# when re-derivation stops agreeing with the record. That is a real exit an
+# observer can see, which is exactly what `rate-limited` never had.
 #
 # The three timeouts run off **three different origins** on purpose, which is
 # also why the two configured keys stay separate: the merge-gate key alone has
@@ -2047,13 +2123,6 @@ sweep_worktrees() {
 #                                                    rather than a reaction to
 #                                                    any write on this pull
 #                                                    request
-#   merge -> refused -> retract on the gate saying
-#     merge again -> merge -> refused                **none**, and tracked as
-#                                                    #100. Registered as a defect
-#                                                    rather than left out — the
-#                                                    merge spend is derived from
-#                                                    the record, and goes down
-#                                                    with it
 #   nudge -> refusal -> nudge                        **none** — bounded in
 #                                                    aggregate instead, by
 #                                                    reviewRetryTimeoutSeconds
@@ -2078,10 +2147,13 @@ sweep_worktrees() {
 # a human *choosing* to re-run a check is outside it; a bot firing because the
 # loop pushed is not.
 #
-# **The last row is the register earning its keep.** Killing that cycle needs a
-# head-keyed fact that survives the withdrawal, and there is none in the read
-# today. It is written down here, undriven, rather than quietly omitted, because
-# a register that only lists the cycles that pass is not a register.
+# **The register shipped one undriven row and no longer does.** `merge ->
+# refused -> retract on the gate saying merge again -> merge -> refused` turned
+# on nothing at all: the merge spend was derived from the record and went down
+# with it. The withdrawal notice's marker is the head-keyed fact that survives
+# the withdrawal, so the cycle stops turning and stops being a cycle. The row is
+# gone rather than driven, and the state it leaves behind is a row in the table
+# above instead.
 #
 # **The rule both invariants lean on is: the loop does not act on its own
 # output.** It has exactly two sites, and they are meant to read as one
@@ -2193,7 +2265,7 @@ query_pr_state() {
   printf '%s' "$response"
 }
 
-# The twenty-one facts the state machine runs on, one per line — see the caller
+# The twenty-two facts the state machine runs on, one per line — see the caller
 # for why they are not one tab-separated line:
 #
 #   head        the head commit
@@ -2207,6 +2279,8 @@ query_pr_state() {
 #   escalated   true when a record stands at that head, whoever wrote it
 #   escKind     the kind that record carries, empty when it carries none
 #   escComment  the newest *loop-authored* comment carrying it, empty if none
+#   wdnKinds    every kind a withdrawal notice at that head names, space-
+#               separated, empty when no record has been withdrawn at it
 #   signal      true when CodeRabbit has reported *anything* on that commit
 #   pendingAt   oldest CodeRabbit signal on it that has not reported, ISO-8601
 #   signalDesc  what CodeRabbit's newest signal on the head says, verbatim,
@@ -2328,6 +2402,35 @@ query_pr_state() {
 # marker from before the kind existed — is not a kind, so it equals nothing the
 # chain can derive and migrates itself on the next pass.
 #
+# **The withdrawal marker splits into one fact, and it is the set of kinds.**
+# Whether a record was ever withdrawn at this head is not on its own worth
+# carrying — nothing acts on a withdrawal as such — so the existence test and
+# the kind collapse into one value: every kind a withdrawal notice at this head
+# names, one word each, space-separated and empty when there are none. Each is
+# read *exactly* as the record's kind is, on the same two constants and by
+# splitting rather than by a second spelling of the marker as a regex, for the
+# same reason: a marker changed in one place and not the other would read as no
+# kind on every pass forever.
+#
+# **Every notice at the head answers, not the newest one.** A withdrawn kind is
+# a record of a write the loop already made, so it is true of that commit
+# forever and nothing later can make it false — where the newest-wins reading
+# the record's own kind uses would let a second withdrawal *mask* the first. A
+# head really can carry two: a record standing at a head the loop has already
+# withdrawn one at is **posted as a new comment**, because the withdrawn one
+# carries no record marker to write over, so the older notice survives intact
+# and the newer one is written elsewhere. Read newest-first, a `refused` spend
+# would vanish the moment a `stuck` record came and went at the same commit,
+# and the oscillator this whole marker exists to kill would come back.
+#
+# Not author-scoped, for the same reason the record's existence test is not —
+# whoever wrote a marker naming this head has said the thing it says. The price
+# differs, though, and is worth stating: a foreign quote of a withdrawal notice
+# **withholds a merge** at that head. That fails in the safe direction, unlike
+# the record's own case — withholding is the conservative act, the pull request
+# is one a human has already been asked to look at, and the hand-merge exit is
+# untouched — so it is named here rather than guarded against.
+#
 # The reply is carried so the handover can paste it and for no other reason.
 # **Nothing keys on it** — a performed reply with no status is a CodeRabbit
 # failure and a not-completed reply is a refusal, and both escalate — so it is
@@ -2342,13 +2445,39 @@ pr_facts() {
     --arg statusmarker "$AUTOFIX_STATUS_MARKER" \
     --arg riskstart "$RISK_BLOCK_MARKER" \
     --arg escprefix "$ESCALATION_MARKER_PREFIX" \
-    --arg escsuffix "$ESCALATION_MARKER_SUFFIX" "$RISK_BLOCK_PARSE"'
+    --arg escsuffix "$ESCALATION_MARKER_SUFFIX" \
+    --arg wdnprefix "$WITHDRAWN_MARKER_PREFIX" \
+    --arg wdnsuffix "$WITHDRAWN_MARKER_SUFFIX" "$RISK_BLOCK_PARSE"'
     def is_coderabbit: (. // "") | ascii_downcase | startswith($crlogin);
     # A newline or a tab inside a value would reshape the one-value-per-line
     # protocol at the bottom of this program into a *different* set of values
     # rather than corrupt one visibly. Only the reply can carry either, and it
     # is the one value here written by something other than a machine.
     def flat: (. // "") | gsub("[\n\t]"; " ");
+    # The kind a marker in this body carries, cut apart on the two constants the
+    # match already uses — **not by a second spelling of the marker as a regex.**
+    # A regex copy would have to be escaped by hand against a marker that might
+    # one day gain a metacharacter, and worse, a marker changed in one place and
+    # not the other would read as no kind on every pass forever: the record would
+    # be replaced, the replacement would be just as unreadable, and the loop would
+    # rewrite it once per pass. Splitting cannot drift, because there is nothing
+    # to keep in step.
+    #
+    # <head_prefix> is the marker prefix with the head already on it, so a body
+    # carrying two markers cannot answer with the wrong one. `split` yields a
+    # one-element array on no match, so the absent cases fall through as null and
+    # then as "" — which is the answer a marker from before the kind existed has
+    # to be able to give. The result is a bare lowercase word or nothing: a marker
+    # whose suffix went missing would otherwise hand the rest of the comment over
+    # as a "kind", and every kind the loop writes is one lowercase word.
+    #
+    # One definition, two markers: the kind on a standing record and the kind on
+    # a withdrawal are the same question asked of different prefixes, and a
+    # second copy of this is how the two come to disagree about what a kind is.
+    def marker_kind(head_prefix; suffix):
+      (((((. // "") | split(head_prefix))[1] // "")
+        | (split(suffix)[0] // "") | ltrimstr(" ")) as $k
+       | if ($k | test("^[a-z]+$")) then $k else "" end);
     .data.repository.pullRequest as $pr
     | ($pr.commits.nodes[-1].commit // {}) as $head
     # Everything CodeRabbit put on the head commit, either surface, kept whole
@@ -2462,25 +2591,18 @@ pr_facts() {
     | ([ $records[]
          | select(((.author.login // "") | ascii_downcase) == ($me | ascii_downcase)) ]
        | max_by(.createdAt // "")) as $record
-    # The kind, read out of that same comment by cutting the marker apart on the
-    # two constants the match above already uses — **not by a second spelling of
-    # the marker as a regex.** A regex copy would have to be escaped by hand
-    # against a marker that might one day gain a metacharacter, and worse, a
-    # marker changed in one place and not the other would read as no kind on
-    # every pass forever: the record would be replaced, the replacement would be
-    # just as unreadable, and the loop would rewrite it once per pass. Splitting
-    # cannot drift, because there is nothing to keep in step.
-    #
-    # Split on head-and-prefix first, so a body carrying two markers cannot
-    # answer with the wrong one. `split` yields a one-element array on no match,
-    # so the absent cases fall through as null and then as "" — which is the
-    # answer a marker from before the kind existed has to be able to give.
-    | (((($record.body // "") | split($escprefix + $head.oid))[1] // "")
-       | (split($escsuffix)[0] // "") | ltrimstr(" ")) as $kindText
-    # A bare word or nothing. A marker whose suffix went missing would otherwise
-    # hand the rest of the comment over as a "kind", and every kind the loop
-    # writes is one lowercase word.
-    | (if ($kindText | test("^[a-z]+$")) then $kindText else "" end) as $escKind
+    # The kind, read off that same comment.
+    | ($record.body | marker_kind($escprefix + $head.oid; $escsuffix)) as $escKind
+    # Every withdrawal notice at this head, read the same way over a prefix that
+    # cannot collide with it, and over the comment bodies this response already
+    # carries — **no new read**. Sorted and de-duplicated, so the value is stable
+    # across passes whatever order the comments arrive in.
+    | ([ $pr.comments.nodes[]?
+         | select(($head.oid // "") != "")
+         | select((.body // "") | contains($wdnprefix + $head.oid))
+         | (.body | marker_kind($wdnprefix + $head.oid; $wdnsuffix))
+         | select(. != "") ]
+       | unique | join(" ")) as $wdnKinds
     | [ ($head.oid // ""),
         ($head.committedDate // ""),
         (($head.author.user.login | is_coderabbit) | tostring),
@@ -2492,6 +2614,7 @@ pr_facts() {
         ($escalated | tostring),
         $escKind,
         (($record.databaseId // "") | tostring),
+        $wdnKinds,
         ((($signals | length) > 0) | tostring),
         ([ $signals[] | select(.terminal | not) | .at | select(. != null) ] | min // ""),
         (($newest.desc // "") | flat),
@@ -2737,9 +2860,22 @@ escalation_body() {
 # path exists to correct — so it states only what is permanently true: a record
 # stood here, it does not any more, and the previous version holds what was
 # seen.
+#
+# **The marker at the foot is the one thing that is not prose, and it is not a
+# row.** It names the head and the kind of the record that came down, which is a
+# fact about a write the loop has already made and is permanently true of that
+# commit — so the ban above, which is on a live verdict, is not the one it
+# crosses. It renders invisibly and it is the only head-keyed thing that
+# survives the retraction: without it the merge spend a `refused` record carried
+# comes down with the record, and the head oscillates.
+#
+# The kind is an argument rather than a read. Every caller of the retraction
+# already holds it, and the retraction itself stays kind-blind — it fires on
+# every kind, unconditionally, and only what it *writes* names one.
 retraction_body() {
   printf '**Withdrawn.** A handover stood on this pull request at `%s`; the loop re-derived, the picture had changed, and it took the record down. The previous version of this comment holds what the gate saw.\n\n' "$1"
   printf 'The loop is deriving this pull request normally again.\n'
+  printf '\n%s%s %s%s\n' "$WITHDRAWN_MARKER_PREFIX" "$1" "$2" "$WITHDRAWN_MARKER_SUFFIX"
 }
 
 # The flag, on its own, in both directions. Reachable alone because that is what
@@ -2887,16 +3023,21 @@ escalate() {
 }
 
 # Take the record down. The withdrawal notice replaces the body wholesale and
-# the marker goes with it, which is the whole of the retraction — the label is
-# the caller's next move, in that order and never the other one.
+# the record's marker goes with it, which is the whole of the retraction — the
+# label is the caller's next move, in that order and never the other one.
+#
+# What replaces it is the withdrawal's own marker, which is a different prefix
+# and cannot read as a standing record. <kind> is the kind that came down, and
+# the caller holds it already: it is the kind the derivation read off the record
+# this call is about to overwrite.
 #
 # **Comment then label, here as well as on the way up.** Dying between the two
 # writes in the other order would leave a standing marker with no label, the
 # chase would put the label back, and the retraction would have undone itself.
 retract() {
-  local github="$1" head="$2" comment="$3" body status=0
+  local github="$1" head="$2" comment="$3" kind="$4" body status=0
   body=$(mktemp "${TMPDIR:-/tmp}/agent-loop-retraction.XXXXXX") || return 1
-  if ! retraction_body "$head" > "$body"; then
+  if ! retraction_body "$head" "$kind" > "$body"; then
     rm -f "$body"
     return 1
   fi
@@ -2980,7 +3121,7 @@ consume_record() {
     return 0
   fi
 
-  retract "$github" "$head" "$comment" || status=$?
+  retract "$github" "$head" "$comment" "$kind" || status=$?
   if (( status != 0 )); then
     # The record still stands and the flag is still on it, which is the right
     # pair to fail into: the next pass re-derives, finds the same record false,
@@ -3661,7 +3802,7 @@ pr_phase_project() {
 pr_phase_one() {
   local github="$1" number="$2" labelled="$3" method="$4"
   local response head head_date own_head terminal threads status_at status_head trigger_at escalated
-  local esc_kind esc_comment signal pending_at signal_desc signal_at block block_abbrev
+  local esc_kind esc_comment wdn_kinds signal pending_at signal_desc signal_at block block_abbrev
   local nudge_at nudge_first_at nudge_count reply
   local now read_at head_epoch status_epoch trigger_epoch pending_epoch nudge_epoch
   local signal_epoch first_epoch answered answer_refused ask signal_kv declined_rows
@@ -3673,7 +3814,7 @@ pr_phase_one() {
     SKIPS=$((SKIPS + 1))
     return 0
   fi
-  # One value per line, not one tab-separated line: ten of the twenty-one are
+  # One value per line, not one tab-separated line: eleven of the twenty-two are
   # routinely empty, and bash's `read` folds a run of tabs into a single
   # delimiter — so a pull request with no autofix status would silently have its
   # trigger read as its status, and every one of them would look spent.
@@ -3682,7 +3823,7 @@ pr_phase_one() {
   # and `set -e` would take the whole daemon down over one unreadable pull
   # request. The empty head below is what says so instead.
   head=""; head_date=""; own_head=false; terminal=""; threads=0; status_at=""; status_head=""
-  trigger_at=""; escalated=false; esc_kind=""; esc_comment=""; signal=false
+  trigger_at=""; escalated=false; esc_kind=""; esc_comment=""; wdn_kinds=""; signal=false
   pending_at=""; signal_desc=""; signal_at=""; block=""; block_abbrev=""
   nudge_at=""; nudge_first_at=""; nudge_count=0; reply=""
   HANDOVER_KIND=""; HANDOVER_REASONS=()
@@ -3701,6 +3842,7 @@ pr_phase_one() {
     read -r escalated
     read -r esc_kind
     read -r esc_comment
+    read -r wdn_kinds
     read -r signal
     read -r pending_at
     read -r signal_desc
@@ -4248,27 +4390,56 @@ pr_phase_one() {
       if $stands; then
         # The record promises no merge, so the pass spends its one action on
         # taking the record down and the merge is re-derived next pass. **This
-        # is also what keeps a `refused` record from oscillating**: the gate
-        # would say `merge` again at the same head, and a record naming that head
-        # is a head-keyed merge spend, read out of the comment the response
-        # already carries. Whatever the record's kind, no merge write happens
-        # while it stands.
-        #
-        # ponytail: **the spend goes down with the record, so this halves the
-        # oscillator rather than killing it.** A head whose refusal is permanent
-        # — the gate still says `merge` and GitHub still says no — is retried
-        # every second pass, and each refusal posts a fresh record, because the
-        # withdrawn comment no longer carries a marker for the loop to write
-        # over. That is comment growth on a two-pass cycle, which is the churn
-        # the counter-comment was rejected for, arriving by another door.
-        #
-        # It is left standing because every way out contradicts a settled
-        # decision: holding the latch through `refused` denies that `refused`
-        # un-latches, and keeping the spend in the withdrawal notice puts a
-        # claim back into the one body that is supposed to carry none. The cost
-        # is pinned by a test rather than hidden, so the next reader of this
-        # ticket sees the bill.
+        # is the first half of what keeps a `refused` record from oscillating**:
+        # the gate would say `merge` again at the same head, and a record naming
+        # that head is a head-keyed merge spend, read out of the comment the
+        # response already carries. Whatever the record's kind, no merge write
+        # happens while it stands.
         kv="$kv $withheld"
+      elif [[ " $wdn_kinds " == *" refused "* ]]; then
+        # **The second half, and the one that makes the spend survive.** Taking
+        # the record down un-latches the pull request, and without this the
+        # merge spend would come down with it: the gate says `merge` at the same
+        # head, GitHub refuses again, and a fresh record is posted, because the
+        # withdrawn comment carries no record marker to write over. One merge
+        # attempt and one new comment every two passes, unbounded, on a pull
+        # request that is already asking for a human.
+        #
+        # The withdrawal notice is what survives, and the kind it names is what
+        # makes this a merge spend rather than a latch: only `refused` says *the
+        # loop asked GitHub to merge this commit and GitHub said no*, which is
+        # permanently true of the commit. A withdrawn record of any other kind
+        # is a claim about signals that have since changed, and it withholds
+        # nothing. **Any** notice at this head naming `refused` answers, not the
+        # newest one — a head can carry several, and a later withdrawal of some
+        # other kind must not mask this one.
+        #
+        # **Silent, and the reason is on the pass line.** Posting anything here
+        # would be the comment growth this exists to stop, and the log carries
+        # every verdict GitHub never sees.
+        #
+        # **The merge only.** The handover write is deliberately not metered per
+        # head, so a re-escalation of a different kind at this head still posts
+        # its record — and the per-repository merge budget is not spent either,
+        # because nothing was merged.
+        #
+        # `merge=spent:<why>` rather than a bare `bound=` value, on the shape
+        # `autofix=spent:trigger` already uses: an operator asking why the merge
+        # did not go out cannot answer it from a blind *deferred*, and the same
+        # question about autofix is answered the same way one line over.
+        #
+        # The bound is external and the exits are the operator's: a push moves
+        # the head and the token stops matching it, and a merge by hand ends the
+        # pull request. That is the bounded-exit table's second externally-bound
+        # row, recorded as correct rather than as a hole.
+        #
+        # **Not asking again is the decision, and `refused` is broader than
+        # *GitHub will never merge this*.** It is every durable status the call
+        # can return, and a few of them clear on their own — a required review
+        # that is later approved leaves the head where it is. The loop will not
+        # notice, and the operator's push is what re-arms it. That is the price
+        # of killing the oscillator, paid here rather than left to be found.
+        kv="$kv action=deferred bound=external merge=spent:withdrawn-refusal"
       elif $REPO_MERGE_SPENT; then
         # Deferred to the next pass rather than dropped, and said out loud: with
         # no local state this line is the only record the candidate leaves.

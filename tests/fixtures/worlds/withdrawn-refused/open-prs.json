@@ -1,0 +1,78 @@
+{
+  "data": {
+    "repository": {
+      "pullRequests": {
+        "pageInfo": {
+          "hasNextPage": false,
+          "endCursor": null
+        },
+        "nodes": [
+          {
+            "number": 401,
+            "title": "Widen the render path",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/401",
+            "headRefName": "agent-loop-fix-99-widen-render",
+            "headRefOid": "401a401a401a401a401a401a401a401a401a401a",
+            "labels": {
+              "nodes": []
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
+          },
+          {
+            "number": 402,
+            "title": "Widen the render path, pushed",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/402",
+            "headRefName": "agent-loop-fix-98-widen-render-again",
+            "headRefOid": "402b402b402b402b402b402b402b402b402b402b",
+            "labels": {
+              "nodes": []
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
+          },
+          {
+            "number": 403,
+            "title": "Widen the render path, twice withdrawn",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/403",
+            "headRefName": "agent-loop-fix-97-widen-render-twice",
+            "headRefOid": "403a403a403a403a403a403a403a403a403a403a",
+            "labels": {
+              "nodes": []
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
+          },
+          {
+            "number": 404,
+            "title": "Widen the render path, now vetoed",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/404",
+            "headRefName": "agent-loop-fix-96-widen-render-vetoed",
+            "headRefOid": "404a404a404a404a404a404a404a404a404a404a",
+            "labels": {
+              "nodes": []
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
+          }
+        ]
+      }
+    }
+  }
+}
