@@ -497,6 +497,45 @@ run_once
 check_status 0 "$STATUS"
 check_grep "--name agent-loop-feat-17-agent-loop-issue-phase " "$STUB_CALLS"
 
+# --- issue phase: the body rides the candidate stream --------------------------
+
+setup "the ready-issue query asks for the body in the call it already makes"
+export STUB_ISSUES=workable
+run_once
+check_status 0 "$STATUS"
+check_grep "nodes { number title url body labels(first: 20)" "$STUB_CALLS"
+# One call per repository and label is what it was before the body joined the
+# selection set, and the body must not have bought a second one.
+check "the ready-issue query is still one call" \
+  test "$(grep -cF 'issues(labels: ["ready-for-agent"]' "$STUB_CALLS")" -eq 1
+
+setup "a body carrying newlines, tabs and backticks corrupts nothing it rides with"
+# The body is the one field that can hold a line break, and it travels on a
+# line-based stream. Every other field of the candidate is asserted here — a
+# body that broke the line, or that landed in the wrong column, shows up as a
+# wrong number, url, change type or title rather than as a wrong body.
+export STUB_ISSUES=body-multiline
+run_once
+check_status 0 "$STATUS"
+check_grep "$CLAIM_CALL" "$STUB_CALLS"
+check_grep "orca worktree create --repo id:repo-aaa --name agent-loop-fix-17-agent-loop-issue-phase --no-parent --agent claude --prompt /implement https://github.com/nywleswoey/automation/issues/17 --json" "$STUB_CALLS"
+check_grep "dispatched nywleswoey/automation#17" "$OUT"
+check_grep "pass end dispatches=1 skips=0 sweeps=1" "$OUT"
+
+setup "an issue whose body is null still dispatches"
+# GraphQL types `body` as a nullable string, so an issue with none is an ordinary
+# answer rather than a malformed one. The name asserted below is the one the
+# *title* makes, which is what catches the failure a null body invites: an empty
+# field in the middle of a tab-separated line vanishes under `read`, and every
+# field after it shifts up. Every other fixture omits `body` entirely and covers
+# the absent case the same way.
+export STUB_ISSUES=body-null
+run_once
+check_status 0 "$STATUS"
+check_grep "$CREATE_CALL" "$STUB_CALLS"
+check_grep "dispatched nywleswoey/automation#17" "$OUT"
+check_grep "pass end dispatches=1 skips=0 sweeps=1" "$OUT"
+
 # --- issue phase: a blocked issue is left alone --------------------------------
 
 setup "a blocked issue is neither claimed nor dispatched"
