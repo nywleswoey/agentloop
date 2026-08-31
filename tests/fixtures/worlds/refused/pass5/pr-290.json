@@ -1,0 +1,104 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "number": 290,
+        "headRefOid": "290b290b290b290b290b290b290b290b290b290b",
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "CLEAN",
+        "files": {
+          "totalCount": 1,
+          "nodes": [
+            {
+              "path": "src/x.js"
+            }
+          ]
+        },
+        "commits": {
+          "nodes": [
+            {
+              "commit": {
+                "oid": "290b290b290b290b290b290b290b290b290b290b",
+                "committedDate": "2026-08-27T12:50:00Z",
+                "author": {
+                  "user": {
+                    "login": "nywleswoey"
+                  }
+                },
+                "statusCheckRollup": {
+                  "state": "SUCCESS",
+                  "contexts": {
+                    "nodes": [
+                      {
+                        "__typename": "StatusContext",
+                        "context": "CodeRabbit",
+                        "state": "SUCCESS",
+                        "description": "Review rate limited",
+                        "createdAt": "2026-08-27T11:15:20Z",
+                        "creator": {
+                          "login": "coderabbitai"
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "reviewThreads": {
+          "nodes": []
+        },
+        "comments": {
+          "nodes": [
+            {
+              "databaseId": 5379000290,
+              "createdAt": "2026-08-27T11:05:00Z",
+              "updatedAt": "2026-08-27T11:05:00Z",
+              "body": "@coderabbitai review",
+              "author": {
+                "login": "nywleswoey"
+              }
+            },
+            {
+              "databaseId": 5379000291,
+              "createdAt": "2026-08-27T11:05:08Z",
+              "updatedAt": "2026-08-27T11:05:08Z",
+              "body": "<!-- This is an auto-generated reply by CodeRabbit -->\n\n**Actions performed**\n\nReview triggered.\n\n> Note: CodeRabbit is an incremental review system and does not re-review already reviewed commits.",
+              "author": {
+                "login": "coderabbitai"
+              }
+            },
+            {
+              "databaseId": 5379000294,
+              "createdAt": "2026-08-27T11:15:10Z",
+              "updatedAt": "2026-08-27T11:15:10Z",
+              "body": "@coderabbitai review",
+              "author": {
+                "login": "nywleswoey"
+              }
+            },
+            {
+              "databaseId": 5379000295,
+              "createdAt": "2026-08-27T11:15:18Z",
+              "updatedAt": "2026-08-27T11:15:18Z",
+              "body": "<!-- This is an auto-generated reply by CodeRabbit -->\n\n**Actions performed**\n\nReview triggered.\n\n> Note: CodeRabbit is an incremental review system and does not re-review already reviewed commits.",
+              "author": {
+                "login": "coderabbitai"
+              }
+            },
+            {
+              "databaseId": 5379000297,
+              "createdAt": "2026-08-27T12:35:01Z",
+              "updatedAt": "2026-08-27T12:35:01Z",
+              "body": "**Escalated — `declined`:** CodeRabbit answered every command and never ran a review inside the retry window.\n\n<!-- agent-loop-escalated: 290a290a290a290a290a290a290a290a290a290a declined -->\n",
+              "author": {
+                "login": "nywleswoey"
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

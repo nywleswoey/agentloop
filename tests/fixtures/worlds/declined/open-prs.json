@@ -102,6 +102,22 @@
               "login": "nywleswoey"
             },
             "baseRefName": "main"
+          },
+          {
+            "number": 297,
+            "title": "The nudge was answered by a review that ran",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/297",
+            "headRefName": "pr-answered",
+            "headRefOid": "297a297a297a297a297a297a297a297a297a297a",
+            "labels": {
+              "nodes": []
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
           }
         ]
       }

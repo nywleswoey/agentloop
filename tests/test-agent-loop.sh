@@ -1667,7 +1667,7 @@ check_grep "first-nudge=2026-08-27T11:05:00Z retries=3 route=no-block" "$DECLINE
 # guaranteed to be an answer to the loop's own command and not a stale slot.
 check_grep 'its newest answer was "Review rate limited"' "$DECLINED_BODY"
 check_no_grep "not be installed on this repository, or the organisation may be out of seats" "$DECLINED_BODY"
-check_grep "age=5401s bound=5400s" "$DECLINED_BODY"
+check_grep "age=5401s bound=5400s answered-at=2026-08-27T11:15:20Z" "$DECLINED_BODY"
 # The reply is still a witness nothing parses: created as *Actions performed* on
 # every command and edited to its outcome afterwards, so no rule may read it.
 check_grep "CodeRabbit's reply to the last nudge, verbatim and unparsed" "$DECLINED_BODY"
@@ -1707,6 +1707,25 @@ check "the parked pull request is not nudged" \
 check "the same kind is still true, so nothing is written over the record" \
   test "$(grep -cF 'issues/comments/5379000297' "$STUB_CALLS")" -eq 0
 check_grep "gh-axi pr edit 290 --repo nywleswoey/automation --add-label agent-escalated" "$STUB_CALLS"
+
+# The push exit, which is also the clock's reset. The head moves, the `declined`
+# record stops matching it, `nudgeFirstAt` is empty at the new head — so the
+# window's origin is gone with the code it measured — and the loop re-engages
+# from scratch. Two nudges and a record still stand on the timeline; none of
+# them says anything about this commit.
+setup "a push past a declined record resets the retry window"
+PASS_N=0
+replay refused/pass5 2026-08-27T12:55:00Z
+check_status 0 "$STATUS"
+check_grep "pr nywleswoey/automation#290 290b290b290b290b290b290b290b290b290b290b needs-review review=terminal threads=0 autofix=unspent route=no-block action=nudged" "$PASS_LOG"
+check_grep "gh-axi pr comment 290 --repo nywleswoey/automation --body @coderabbitai review" "$STUB_CALLS"
+# Not one key of the retry survives the push: no window, no origin, no answer —
+# and no handover, the record naming a commit this pull request has left behind.
+check_no_grep "origin=first-nudge" "$PASS_LOG"
+check_no_grep "answer=" "$PASS_LOG"
+check_no_grep "signal=" "$PASS_LOG"
+check_no_grep "nudge-declined" "$PASS_LOG"
+check_no_grep "action=escalated" "$PASS_LOG"
 
 # --- pr phase: what the description may and may not decide --------------------------
 
@@ -1785,13 +1804,26 @@ check "294's arrives as a status's description" \
 check_grep "pr nywleswoey/automation#296 296f296f296f296f296f296f296f296f296f296f needs-review review=pending threads=0 autofix=unspent route=no-signal,other-head action=nudged" "$OUT"
 check_grep "gh-axi pr comment 296 --repo nywleswoey/automation --body @coderabbitai review" "$STUB_CALLS"
 
+# 297 — the one-way rule on the arm where it actually bites: a `Review
+# completed` **newer than my own nudge**, with the merge-risk block still naming
+# another commit. The description may not conclude *reviewed*, so the route
+# stands; and it is not a refusal, so it does not un-spend either. The meter
+# stays spent and the pull request waits out the poll-interval clock exactly as
+# it did before this work — `answer=none`, and no `signal=`, because the field
+# is the un-spend's and the un-spend did not fire.
+check_grep "pr nywleswoey/automation#297 297a297a297a297a297a297a297a297a297a297a nudge-in-flight review=terminal threads=0 autofix=unspent route=other-head age=121 bound=300 answer=none" "$OUT"
+check "a review that answered is not asked for again" \
+  test "$(grep -cF 'pr comment 297 --repo nywleswoey/automation --body @coderabbitai review' "$STUB_CALLS")" -eq 0
+check "no retry window is opened by an answer that was not a refusal" \
+  test "$(grep -cE '#297 .* (retries|origin|signal)=' "$OUT")" -eq 0
+
 # `answer=` and `signal=` appear only where a command stands at this head. 293
 # and 296 have never been nudged, so there is nothing for a signal to be an
 # answer to and neither key is on their lines.
 check "no answer key on a pull request that has never been nudged" \
   test "$(grep -cE '#(293|296) .* (answer|signal)=' "$OUT")" -eq 0
 check "one state line per pull request" \
-  test "$(grep -cE '^[0-9TZ:-]+ pr nywleswoey/automation#' "$OUT")" -eq 6
+  test "$(grep -cE '^[0-9TZ:-]+ pr nywleswoey/automation#' "$OUT")" -eq 7
 
 
 # --- pr phase: the review clock, proven by a mutant twin ----------------------------

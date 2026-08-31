@@ -1805,7 +1805,7 @@ query_pr_state() {
 #               no block or its line does not parse
 #   nudgeAt     newest review nudge I posted, ISO-8601, empty if none
 #   nudgeFirstAt oldest review nudge I posted *at this head*, empty if none
-#   nudgeCount  how many nudges I posted at this head
+#   nudgeCount  how many review nudges I posted on this pull request
 #   reply       CodeRabbit's newest comment after that nudge, verbatim
 #
 # Eight judgements are made here and are worth naming:
@@ -1989,19 +1989,18 @@ pr_facts() {
         | select((.body // "") | contains($nudge))
         | .createdAt ] as $nudges
     | ($nudges | max // "") as $nudgeAt
-    # The origin of the retry window and its counter, both scoped **to this
-    # head**.
-    # `nudgeAt` is deliberately not scoped — the freshness test that selects the
-    # reply wants the newest nudge whatever commit it was aimed at — but the
-    # window is, because a push has to reset the clock: unscoped, a nudge posted
-    # at the commit before this one would start the window in the past, and the
-    # first refusal at fresh code would hand over on the spot.
+    # The origin of the retry window, and **the only head-scoped nudge fact
+    # there is**: empty exactly when no command of mine stands at this head, which is
+    # what the caller reads instead of spelling `nudgeAt > headDate` a second
+    # time in bash. One predicate, in one language.
+    #
+    # Head-scoped because a push has to reset the clock: unscoped, a nudge
+    # posted at the commit before this one would start the window in the past,
+    # and the first refusal at fresh code would hand over on the spot.
     #
     # ISO-8601 with a `Z` sorts lexicographically the way it sorts
-    # chronologically, so this is the same comparison the caller makes on
-    # epochs, made on strings.
-    | [ $nudges[] | select(. > ($head.committedDate // "")) ] as $headNudges
-    | ($headNudges | min // "") as $nudgeFirstAt
+    # chronologically, so a string comparison does a clock job here.
+    | ([ $nudges[] | select(. > ($head.committedDate // "")) ] | min // "") as $nudgeFirstAt
     # Whatever CodeRabbit said after it. Selected by the created timestamp
     # because a reply is a new comment rather than an edit of an old one — the
     # updated-timestamp binding is about the walkthrough, which CodeRabbit
@@ -2089,7 +2088,7 @@ pr_facts() {
         (((($blockComment.body // "") | risk_block).abbrev // "") | ascii_downcase),
         $nudgeAt,
         $nudgeFirstAt,
-        ($headNudges | length | tostring),
+        ($nudges | length | tostring),
         ($reply.body | flat) ]
     | .[]'
 }
@@ -2835,8 +2834,21 @@ risk_gate() {
   # staleness and route it to a handover, turning a transient throttle into a
   # permanent one — and throttling would then escalate the whole queue whenever
   # the reviewer is merely slow. So this defers, and it is the one defer the
-  # gate clock does not bound: the comment ships its own estimate, and unlike a
-  # review pause the rate limit self-clears as usage ages out.
+  # gate clock does not bound.
+  #
+  # **This is the gate's own question at the gate's own scope** — *is the
+  # verdict I am about to parse throttled* — and it is deliberately not the
+  # chain's, which asks whether the *reviewer* is and now answers it from the
+  # head-scoped status instead. One signal, one veto, on both sides.
+  #
+  # ponytail: the unbounded defer is the last thing standing on the argument the
+  # chain's `rate-limited` park was deleted for — *the rate limit self-clears,
+  # so its bound is external* — and that argument is measurably weak: nothing
+  # here reads the estimate the comment ships with, and the walkthrough is a
+  # slot rewritten only by a review. It is left exactly as it was because the
+  # scopes are genuinely different and because a bound here needs its own
+  # evidence, not this one's. Bound it, or fold it into the gate clock, when
+  # a pull request is observed parking on it.
   if [[ "$limited" == "true" ]]; then
     GATE_VERDICT=defer
     GATE_KV="verdict=defer gate=rate-limited"
@@ -3226,13 +3238,21 @@ pr_phase_project() {
 # repository, the number, the commit and the state, then a `key=value` tail
 # carrying the values the state was derived from. The tail is what keeps a new
 # reason from being a suite-wide edit.
+#
+# **The tail is strictly `key=value` with one deliberate exception, and the
+# exception is always last.** `signal=` carries CodeRabbit's own description
+# verbatim, which is the only value in the project that can contain a space.
+# Positioned last, everything after `signal=` is the value and nothing can be
+# shadowed by it; positioned anywhere else it would reshape the rest of the
+# line. It is appended after the handover's own keys for that reason, and it is
+# omitted entirely when nothing refused.
 pr_phase_one() {
   local github="$1" number="$2" labelled="$3" method="$4"
   local response head head_date own_head terminal threads status_at status_head trigger_at escalated
   local esc_kind esc_comment signal pending_at signal_desc signal_at block block_abbrev
   local nudge_at nudge_first_at nudge_count reply
   local now read_at head_epoch status_epoch trigger_epoch pending_epoch nudge_epoch
-  local signal_epoch first_epoch answered refused ask signal_kv
+  local signal_epoch first_epoch answered answer_refused ask signal_kv declined_rows
   local spent in_flight age status needs_review route origin stalled_reason
   local state review kv merge_out merge_status stands withheld
 
@@ -3562,9 +3582,9 @@ pr_phase_one() {
     # the poll-interval clock below runs exactly as it does today — and *was this
     # head reviewed* stays the merge-risk block test's sole property, so a
     # two-second no-op review is still caught where it is caught today.
-    refused=false
+    answer_refused=false
     if $answered && [[ "$signal_desc" != "$CODERABBIT_STATUS_REVIEWED" ]]; then
-      refused=true
+      answer_refused=true
     fi
     # **The meter, and it is *awaiting an answer* rather than *asked once
     # here*.** A nudge newer than the head used to be the whole of it; it keeps
@@ -3581,7 +3601,18 @@ pr_phase_one() {
     # to one poll interval before `declined` posts — the slack every clock in
     # this phase already has.
     ask=false
-    if [[ -z "$nudge_epoch" ]] || (( nudge_epoch <= head_epoch )); then
+    # **`nudgeFirstAt` is the whole of *is a command of mine outstanding at this
+    # head*.** The head-scoping is done once, in jq, and read here as an
+    # emptiness test — rather than spelled a second time in bash as
+    # `nudgeAt > headDate`. The two would be one predicate in two languages, one
+    # comparing strings and one comparing epochs, with the head-scoping *policy*
+    # living in both.
+    #
+    # The empty-`nudge_epoch` arm beside it is a **parse guard and not a second
+    # copy of the head test**: a timestamp that will not convert cannot start a
+    # clock, and the honest reading of that is *no command outstanding*, which
+    # asks again rather than waiting on a number that does not exist.
+    if [[ -z "$nudge_first_at" || -z "$nudge_epoch" ]]; then
       # The remedy, and it is a **write** because the cause does not clear on
       # its own: CodeRabbit auto-pauses incremental reviews after five
       # reviewed commits and the counter resets only when the pause is lifted,
@@ -3591,7 +3622,7 @@ pr_phase_one() {
       # answer to and no `answer=` on the line at all.
       state=needs-review
       ask=true
-    elif ! $refused; then
+    elif ! $answer_refused; then
       # A command is outstanding — either unanswered, or answered by a
       # `Review completed` the one-way rule forbids concluding anything from.
       # The meter stays spent and this is the clock it has always been.
@@ -3681,6 +3712,12 @@ pr_phase_one() {
       first_epoch=$(epoch_of "$nudge_first_at") || first_epoch=""
       [[ -n "$first_epoch" ]] || first_epoch="$nudge_epoch"
       age=$(( now - first_epoch ))
+      # `retries=` counts every nudge on the pull request rather than only those
+      # at this head, and that is deliberate: it is the **read-budget canary**,
+      # and the window it is warning about — `comments(last: 100)`, which every
+      # comment-derived fact is read out of — does not reset when the head
+      # moves. Climbing toward 50 means that window is closing. The head-scoped
+      # number beside it is `origin=first-nudge`.
       kv="$kv retries=$nudge_count age=$age bound=$REVIEW_RETRY_TIMEOUT origin=first-nudge answer=refused"
       # CodeRabbit's own words, verbatim, and **last on the line** — see the log
       # call at the bottom of this function for why it is held rather than
@@ -3696,28 +3733,32 @@ pr_phase_one() {
         # the answer was no. `refused` was not available — the merge owns it,
         # and re-using a kind across two subsystems is worse than a new word.
         state=nudge-declined
-        HANDOVER_REASONS=()
-        HANDOVER_REASONS+=("$(reason ok "CodeRabbit answered every command at this head" \
+        # Built as a local list and handed over in one call, like the gate's
+        # own variable-length rows: `want_handover` is the only writer of the
+        # handover globals in this file, and a second one is how the two come to
+        # disagree about what a pending handover is.
+        declined_rows=()
+        declined_rows+=("$(reason ok "CodeRabbit answered every command at this head" \
           "first-nudge=$nudge_first_at retries=$nudge_count route=$route head=$head_date")")
         # **The description is pasted verbatim**, and that is safe *precisely
         # because* `signalAt > nudgeAt` is what got the pass here: it is
         # guaranteed to be an answer to the loop's own command rather than a
         # stale slot. This is the diagnosis half of the rule the allowlist above
         # states the control half of — verbatim, and nothing in between.
-        HANDOVER_REASONS+=("$(reason no "CodeRabbit refused every one and never ran a review — its newest answer was \"$signal_desc\"" \
-          "age=${age}s bound=${REVIEW_RETRY_TIMEOUT}s signal=$signal_at route=$route")")
+        declined_rows+=("$(reason no "CodeRabbit refused every one and never ran a review — its newest answer was \"$signal_desc\"" \
+          "age=${age}s bound=${REVIEW_RETRY_TIMEOUT}s answered-at=$signal_at route=$route")")
         # The one route with **no remaining path to a verdict at all**, said out
         # loud because the operator cannot derive it from the other rows: autofix
         # is spent at a CodeRabbit-authored head and will not run again there,
         # and the review that head needs is the thing being refused. That is the
         # difference between *wait for the limit to lift* and *go and look now*.
         if [[ "$spent" == "spent:own-head" ]]; then
-          HANDOVER_REASONS+=("$(reason no "the loop has no remaining path to a verdict on this pull request — autofix will not run again at a CodeRabbit-authored head, and the review it needs is being refused" \
+          declined_rows+=("$(reason no "the loop has no remaining path to a verdict on this pull request — autofix will not run again at a CodeRabbit-authored head, and the review it needs is being refused" \
             "autofix=$spent route=$route")")
         fi
-        HANDOVER_REASONS+=("$(reason note "CodeRabbit's reply to the last nudge, verbatim and unparsed" \
+        declined_rows+=("$(reason note "CodeRabbit's reply to the last nudge, verbatim and unparsed" \
           "${reply:-none}")")
-        HANDOVER_KIND=declined
+        want_handover declined "${declined_rows[@]}"
       fi
     fi
     if $ask; then
