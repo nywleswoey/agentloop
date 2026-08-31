@@ -1173,8 +1173,26 @@ blocking_claims() {
       # A fenced block is quoted text rather than structure. A ticket that shows
       # the template in a code fence — this repository writes several — must not
       # be refused for showing it.
-      if ($0 ~ /^[ \t]*(```|~~~)/) { fence = !fence; next }
-      if (fence) next
+      fence_line = $0
+      sub(/^[ \t]*/, "", fence_line)
+      marker = substr(fence_line, 1, 1)
+      if (marker == "`" || marker == "~") {
+        run = 1
+        while (substr(fence_line, run + 1, 1) == marker) run++
+        if (run >= 3) {
+          if (!fence_marker) {
+            fence_marker = marker
+            fence_run = run
+            next
+          }
+          if (marker == fence_marker && run >= fence_run) {
+            fence_marker = ""
+            fence_run = 0
+            next
+          }
+        }
+      }
+      if (fence_marker) next
 
       # A heading needs whitespace or an end of line after its marks, so `#93`
       # at the start of a line is a referent rather than a first-level heading.

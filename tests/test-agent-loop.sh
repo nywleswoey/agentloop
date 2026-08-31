@@ -765,8 +765,9 @@ check_no_grep "#99" "$STUB_STATE/issue-body-89.txt"
 # so the boundary that has to hold is the one anything other than a blank line
 # draws.
 check_grep "dispatched nywleswoey/automation#95" "$OUT"
-# #96 shows the template inside a code fence rather than using it. A fenced
-# block anchors nothing, so a ticket is never refused for quoting the shape.
+# #96 shows the template inside a tilde fence rather than using it. The backtick
+# fence line inside is code, not the end of that tilde fence, so the claim text
+# after it remains quoted and anchors nothing.
 check_grep "dispatched nywleswoey/automation#96" "$OUT"
 # #97 has two blank lines between its claim and a list. One blank is markdown's
 # own separator; a second is a gap, and the list below it is not the claim's.

@@ -41,7 +41,7 @@
     "labels": { "nodes": [ { "name": "ready-for-agent" } ] } },
   { "number": 96, "title": "A fenced block shows the template rather than using it",
     "url": "https://github.com/nywleswoey/automation/issues/96",
-    "body": "The shape a body writes:\n\n```md\n## Blocked by\n\n- #61\n```\n\nNothing actually blocks this one.\n",
+    "body": "The shape a body writes:\n\n~~~md\n```sh\n## Blocked by\n\n- #61\n```\n~~~\n\nNothing actually blocks this one.\n",
     "labels": { "nodes": [ { "name": "ready-for-agent" } ] } },
   { "number": 97, "title": "A second blank line is a gap, and a gap ends the claim",
     "url": "https://github.com/nywleswoey/automation/issues/97",
