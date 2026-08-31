@@ -1,2 +1,3 @@
 { "number": 17, "state": "open", "labels": [ { "name": "agent-in-progress" }, { "name": "bug" } ],
+  "sub_issues_summary": { "total": 3, "completed": 0, "percent_completed": 0 },
   "body": "## Acceptance criteria\n\n- [ ] First\n  - [ ] Nested\n- [x] Second\n- [ ] Third\n\nThe phase turns `- [ ] ` into `- [x] ` and leaves everything else alone.\nnot boxes: -[ ] and - [X] stay.\n" }

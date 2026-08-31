@@ -1,2 +1,3 @@
 { "number": 11, "state": "open", "labels": [ { "name": "agent-in-progress" } ],
+  "sub_issues_summary": { "total": 4, "completed": 0, "percent_completed": 0 },
   "body": "- [ ] eleven\n" }

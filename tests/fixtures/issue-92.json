@@ -1,0 +1,4 @@
+{ "number": 92, "state": "open",
+  "labels": [ { "name": "agent-in-progress" }, { "name": "to-tickets" } ],
+  "sub_issues_summary": { "total": 5, "completed": 0, "percent_completed": 0 },
+  "body": "The spec, decomposed into five children.\n" }

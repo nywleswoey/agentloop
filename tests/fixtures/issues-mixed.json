@@ -1,11 +1,11 @@
 { "data": { "repository": { "issues": { "nodes": [
   { "number": 18, "title": "Agent loop: worktree inventory",
     "url": "https://github.com/nywleswoey/automation/issues/18",
-    "labels": { "nodes": [ { "name": "ready-for-agent" } ] } },
+    "labels": { "nodes": [ { "name": "implement" }, { "name": "ready-for-agent" } ] } },
   { "number": 17, "title": "Agent loop: issue phase",
     "url": "https://github.com/nywleswoey/automation/issues/17",
-    "labels": { "nodes": [ { "name": "ready-for-agent" } ] } },
+    "labels": { "nodes": [ { "name": "implement" }, { "name": "ready-for-agent" } ] } },
   { "number": 19, "title": "Agent loop: PR phase",
     "url": "https://github.com/nywleswoey/automation/issues/19",
-    "labels": { "nodes": [ { "name": "ready-for-agent" } ] } }
+    "labels": { "nodes": [ { "name": "implement" }, { "name": "ready-for-agent" } ] } }
 ] } } } }

@@ -85,7 +85,7 @@
 #                            it byte for byte
 #   issue close <number>     a close, recorded in $STUB_STATE/closed-<number> so
 #                            a later read of the same issue reports it closed
-#   label create --name ...  the loop's own four labels
+#   label create --name ...  the loop's own labels
 #
 # $STUB_WORLD names a directory under fixtures/worlds (default: "none") holding
 # **one whole-world snapshot**: `open-prs.json` for the enumeration, or
@@ -107,8 +107,9 @@
 #
 # $STUB_GH_FAIL names a command that must fail: "issues", "claim", "prs",
 # "pr-state", "merged", "issue", "body", "close", "blockers", "labels",
-# "pr-comment", "pr-edit", "comment-edit", "issue-comment" or "merge". $STUB_GH_ERROR names which
-# rendering it fails with, from fixtures/gh-error-<name>.txt. $STUB_GH_STDERR makes that
+# "pr-comment", "pr-edit", "comment-edit", "issue-comment" or "merge".
+# $STUB_GH_ERROR names which rendering it fails with, from
+# fixtures/gh-error-<name>.txt. $STUB_GH_STDERR makes that
 # failure gh-axi's own rather than GitHub's — reported on stderr, with stdout
 # left empty.
 
@@ -168,6 +169,48 @@ emit() {
 }
 
 emit_file() { emit "$(cat "$1")"; }
+
+# A label-query answer, with every label edit the loop has since made replayed
+# over it — the same replay the single-issue read does, for the same reason. A
+# label query is *how the loop finds work*, so a stub that answered with the
+# untouched fixture would hand a refused issue back to the ready phase and a
+# flagged spec back to close-out on the very next pass, and the terminality both
+# of them rest on would be untestable.
+#
+# The node is dropped outright once the queried label is gone from it, because
+# that is what GitHub does: the query asks for issues wearing that label.
+emit_issues() {
+  local fixture="$1" label="$2" deltas="" number
+  # A fixture that is not a well-formed answer — a GraphQL error body, say — is
+  # emitted untouched: the replay must not manufacture the path it would rewrite
+  # and turn an error into an empty backlog.
+  if ! jq -e '.data.repository.issues.nodes | type == "array"' "$fixture" >/dev/null 2>&1; then
+    emit_file "$fixture"
+    return 0
+  fi
+  # One argument carrying every issue's delta log, keyed by number, because the
+  # deltas live one file per issue and jq reads none of them.
+  for number in $(jq -r '.data.repository.issues.nodes[]?.number' "$fixture"); do
+    deltas="$deltas$(printf '%s\t%s\n' "$number" \
+      "$(cat "$STUB_STATE/labels-$number" 2>/dev/null | tr '\n' ' ')")"$'\n'
+  done
+  # `$label` would be a jq keyword, so the label being asked for rides in as
+  # `$want` — the same trap close-out's claim guard already names.
+  emit "$(jq -c --arg want "$label" --arg deltas "$deltas" '
+    ($deltas | split("\n") | map(select(. != "") | split("\t"))
+      | map({ key: .[0], value: (.[1] // "" | split(" ") | map(select(. != ""))) })
+      | from_entries) as $log
+    | .data.repository.issues.nodes = [
+        .data.repository.issues.nodes[]?
+        | ([.labels.nodes[]?.name] as $names
+           | reduce ($log[(.number | tostring)] // [])[] as $d
+               ($names;
+                if ($d | startswith("+")) then (. + [$d[1:]] | unique)
+                else . - [$d[1:]] end)) as $final
+        | select($final | index($want))
+        | .labels.nodes = ($final | map({name: .}))
+      ]' "$fixture")"
+}
 
 # The labels a repo already carries, from repos.txt's second field.
 repo_labels() {
@@ -392,11 +435,12 @@ if [[ "$path" == "graphql" || "$path" == "/graphql" ]]; then
       ;;
     *'labels: ["agent-in-progress"]'*)
       fail_if issues
-      emit_file "$STUB_FIXTURES/claimed-${STUB_CLAIMED:-none}.json"
+      emit_issues "$STUB_FIXTURES/claimed-${STUB_CLAIMED:-none}.json" agent-in-progress
       ;;
     *'issues(labels:'*)
       fail_if issues
-      emit_file "$STUB_FIXTURES/issues-${STUB_ISSUES:-none}.json"
+      emit_issues "$STUB_FIXTURES/issues-${STUB_ISSUES:-none}.json" \
+        "$(sed -n 's/.*issues(labels: \["\([^"]*\)"\].*/\1/p' <<< "$query")"
       ;;
     *)
       echo "stub gh-axi: unhandled graphql query: $query" >&2

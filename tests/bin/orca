@@ -8,6 +8,10 @@
 # $STUB_ORCA_PS picks the worktree inventory (default: idle).
 # $STUB_ORCA_FAIL makes one call fail: create, rm, ps, terminal-create or
 # terminal-send.
+#
+# `worktree create` copies its --prompt whole to
+# $STUB_STATE/prompt-<requested-name>.txt, so a test can compare a multi-line
+# prompt byte for byte rather than grepping the flattened argv.
 
 set -uo pipefail
 
@@ -56,6 +60,25 @@ case "$cmd" in
           echo "error: worktree create failed" >&2
           exit 1
         fi
+        # The prompt is copied whole to $STUB_STATE/prompt-<name>.txt so a
+        # test can compare it byte for byte. The argv line above still carries
+        # it, and for a one-line prompt that is enough — but a prompt carrying
+        # newlines is exactly what a flattened argv line cannot hold, and the
+        # decomposition verb's is four clauses long. Same trick, and the same
+        # reason, as the gh-axi stub's body-file arms.
+        _name="" _prompt="" _want=""
+        for _arg in "$@"; do
+          case "$_want" in
+            name)   _name="$_arg" ;;
+            prompt) _prompt="$_arg" ;;
+          esac
+          _want=""
+          case "$_arg" in
+            --name)   _want=name ;;
+            --prompt) _want=prompt ;;
+          esac
+        done
+        [[ -z "$_name" ]] || printf '%s' "$_prompt" > "$STUB_STATE/prompt-$_name.txt"
         # The requested name is slugified and a collision yields <name>-2, so
         # the issue fixture deliberately answers with a name the caller did not
         # ask for.

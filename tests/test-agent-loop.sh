@@ -238,31 +238,42 @@ cat > "$CONFIG" <<JSON
 JSON
 run_once
 check_status 0 "$STATUS"
+# The two verbs and the decomposition marker join the flags. For the verbs the
+# argument is not the one ensure_labels was written for — the loop never *writes*
+# a verb label — but the fail-closed gate's: the marker has to be appliable
+# everywhere before the rule that demands it arrives, or shipping the gate
+# refuses every issue in a repository that has no `to-tickets` label.
 for _repo in nywleswoey/automation nywleswoey/other; do
-  for _label in agent-escalated agent-refused; do
+  for _label in agent-escalated agent-refused implement to-tickets agent-decomposed; do
     check_grep "gh-axi label create --name $_label --color ededed --description agent-loop --repo $_repo" "$STUB_CALLS"
     check_grep "created label $_label in $_repo" "$OUT"
   done
 done
 # Anything already there is left exactly as it is, colour included — asserted on
-# the label this ticket adds rather than only on the two in the config, which
+# the labels this map adds rather than only on the two in the config, which
 # were already there before it and would pass this on their own.
-check_no_grep "gh-axi label create --name agent-refused --color ededed --description agent-loop --repo nywleswoey/merge-only" "$STUB_CALLS"
-check_no_grep "created label agent-refused in nywleswoey/merge-only" "$OUT"
-# The same repository, same pass, for the label it does not carry: the skip
+for _label in agent-refused to-tickets; do
+  check_no_grep "gh-axi label create --name $_label --color ededed --description agent-loop --repo nywleswoey/merge-only" "$STUB_CALLS"
+  check_no_grep "created label $_label in nywleswoey/merge-only" "$OUT"
+done
+# The same repository, same pass, for the labels it does not carry: the skip
 # above is about the label being present and not about the repository.
 check_grep "created label agent-escalated in nywleswoey/merge-only" "$OUT"
-check "the four labels are the only ones ever written" \
+check_grep "created label implement in nywleswoey/merge-only" "$OUT"
+check "the two config labels are the only ones never written" \
   test "$(grep -cE 'label create --name (ready-for-agent|agent-in-progress)' "$STUB_CALLS")" -eq 0
 
-# The name itself is written down once, as the constant. Everything that applies,
-# removes or reads the flag goes through it, so the one query that finds every
-# refused issue across every repository cannot be made impossible by a second
-# spelling. Asserted on the source, because a second spelling that happened to
-# agree with the first has no behaviour to observe.
-setup "the refusal label's name is written down exactly once"
-check "the name itself is written down once, as the constant" \
-  test "$(grep -cF "'agent-refused'" "$SCRIPT")" -eq 1
+# Every loop-owned label name is written down once, as its constant. Everything
+# that applies, removes or reads one goes through it, so the one query that
+# finds every refused issue — or every decomposed spec — across every repository
+# cannot be made impossible by a second spelling. Asserted on the source,
+# because a second spelling that happened to agree with the first has no
+# behaviour to observe.
+setup "every loop-owned label name is written down exactly once"
+for _name in agent-refused agent-decomposed implement to-tickets; do
+  check "$_name is written down once, as the constant" \
+    test "$(grep -cF "'$_name'" "$SCRIPT")" -eq 1
+done
 
 # --- runtime not reachable ---------------------------------------------------
 
@@ -596,6 +607,212 @@ check_grep "$CREATE_CALL" "$STUB_CALLS"
 check_grep "dispatched nywleswoey/automation#17" "$OUT"
 check_grep "pass end dispatches=1 skips=0 sweeps=1" "$OUT"
 
+# --- issue phase: the loop dispatches by the verb the issue declares -----------
+
+# The verb rides the labels the change type already comes back on, so a
+# fail-closed gate on every dispatch buys no extra request. `issues-workable`
+# carries `implement` beside `Type::Feat`: the branch below is the type's and
+# the prompt is the verb's, out of one GraphQL response.
+
+setup "an issue declaring implement dispatches exactly as it did before the verb"
+export STUB_ISSUES=workable
+run_once
+check_status 0 "$STATUS"
+check_grep "$CLAIM_CALL" "$STUB_CALLS"
+check_grep "$CREATE_CALL" "$STUB_CALLS"
+check_grep "dispatched nywleswoey/automation#17" "$OUT"
+check_no_grep "#17 refused" "$OUT"
+check_no_grep "issue comment" "$STUB_CALLS"
+check_grep "pass end dispatches=1 skips=0 sweeps=1 refusals=0" "$OUT"
+# The verb costs no read of its own: one call per repository and label, as
+# before.
+check "the ready-issue query is still one call" \
+  test "$(grep -cF 'issues(labels: ["ready-for-agent"]' "$STUB_CALLS")" -eq 1
+
+setup "an issue declaring to-tickets dispatches the decomposition verb"
+export STUB_ISSUES=to-tickets
+run_once
+check_status 0 "$STATUS"
+check_grep "gh-axi issue edit 92 --repo nywleswoey/automation --add-label agent-in-progress --remove-label ready-for-agent" "$STUB_CALLS"
+# The branch name is deliberately unchanged: `to-tickets` is not a change type,
+# so it falls through to the `feat` default — and the title still becomes the
+# readable half, which is the assertion a shifted verb column would fail.
+check_grep "--name agent-loop-feat-92-a-native-dependency-edge-is-the-only-blo " "$STUB_CALLS"
+check_grep "dispatched nywleswoey/automation#92" "$OUT"
+check_grep "pass end dispatches=1 skips=0 sweeps=1 refusals=0" "$OUT"
+# The prompt, byte for byte: the verb, the issue URL, and the four clauses that
+# travel to every configured repository as code because they ride in this row.
+cat > "$WORK/expected-prompt.txt" <<'PROMPT'
+/to-tickets https://github.com/nywleswoey/automation/issues/92
+
+Four things about this run:
+
+- Link every child issue to this issue by GitHub's native sub-issue relationship (`gh-axi issue subissue add <this issue> <child>`), not by a prose `## Parent` section. A prose link is invisible to the loop, and this edge is the only evidence that this decomposition finished.
+- Do not apply the `ready-for-agent` label to any child issue.
+- Apply the `implement` label to every child issue.
+- No user is at the keyboard yet, and one will come to this session. Present the breakdown, then wait for their approval before publishing anything. Do not approve it yourself.
+PROMPT
+# The prompt is built through a command substitution, which strips its trailing
+# newline, so the expected copy loses its own the same way.
+printf '%s' "$(cat "$WORK/expected-prompt.txt")" > "$WORK/expected-prompt-final.txt"
+check "the decomposition prompt carries the verb and all four clauses" \
+  diff -q "$WORK/expected-prompt-final.txt" "$STUB_STATE/prompt-agent-loop-feat-92-a-native-dependency-edge-is-the-only-blo.txt"
+
+# --- issue phase: an issue declaring no verb, or two, is refused ---------------
+
+setup "an issue declaring no verb is refused rather than dispatched"
+export STUB_ISSUES=verbless
+run_once
+check_status 0 "$STATUS"
+# The raw column names what was found, so *you wrote no verb* stays
+# distinguishable from *you wrote both* — which need opposite fixes.
+check_grep "issue nywleswoey/automation#17 refused verb=- edges=ok" "$OUT"
+check_grep "gh-axi issue comment 17 --repo nywleswoey/automation --body-file" "$STUB_CALLS"
+check_grep "gh-axi issue edit 17 --repo nywleswoey/automation --add-label agent-refused --remove-label ready-for-agent" "$STUB_CALLS"
+# Neither claimed nor dispatched: the refusal is terminal, and it happens before
+# either write.
+check_no_grep "$CLAIM_CALL" "$STUB_CALLS"
+check_no_grep "worktree create" "$STUB_CALLS"
+check_grep "pass end dispatches=0 skips=0 sweeps=1 refusals=1" "$OUT"
+# The record, byte for byte. **Both rows, the passing one included** — the verb
+# is what stopped this dispatch, and the `ok` beside it is what tells the
+# operator not to go looking at the edges. Only the failing row contributes a
+# way back in.
+cat > "$WORK/expected-refusal.txt" <<'RECORD'
+**Refused — this issue was not dispatched.**
+
+`ready-for-agent` is off and `agent-refused` is on. The loop re-derives this every pass it can see the issue, and clears the flag on its own once every row below reads `ok`.
+
+| Verdict | What | Raw values |
+|---|---|---|
+| no | this issue declares exactly one verb | `verbs=-` |
+| ok | every blocking claim in the body is carried by the graph | `missing=-` |
+
+`ok` passed · `no` stopped the dispatch.
+
+**Ways back in** — then re-apply `ready-for-agent`.
+
+- **Declare exactly one verb** — `implement` or `to-tickets`, not both.
+RECORD
+check "the refusal record carries both rows, the raw values and the way back in" \
+  diff -q "$WORK/expected-refusal.txt" "$STUB_STATE/issue-body-17.txt"
+# Label first, the same order and for the same reason the blocking-claim refusal
+# uses it: the swap is the terminal act, so a refusal whose swap lands is
+# terminal whatever becomes of the record.
+check "the label swap precedes the record" \
+  test "$(call_line 'gh-axi issue edit 17 --repo nywleswoey/automation --add-label agent-refused')" -lt "$(call_line 'gh-axi issue comment 17')"
+
+setup "an issue declaring two verbs is refused as well, and the raw column says which two"
+export STUB_ISSUES=two-verbs
+run_once
+check_status 0 "$STATUS"
+# The fixture wears `to-tickets` first. The column is emitted in constant order
+# whatever GraphQL's label order was, so a fixture is deterministic.
+check_grep "issue nywleswoey/automation#17 refused verb=implement,to-tickets edges=ok" "$OUT"
+check_grep "verbs=implement,to-tickets" "$STUB_STATE/issue-body-17.txt"
+check_no_grep "worktree create" "$STUB_CALLS"
+check_grep "pass end dispatches=0 skips=0 sweeps=1 refusals=1" "$OUT"
+
+setup "a refused issue is gone from the ready queue on the following pass"
+# The refusal takes the ready label off, and that is what makes it terminal:
+# the loop cannot see the issue again until a human puts the label back, so the
+# second pass says nothing and writes nothing.
+export STUB_ISSUES=verbless
+run_once
+cp "$OUT" "$WORK/pass-1.log"
+check_grep "issue nywleswoey/automation#17 refused verb=-" "$WORK/pass-1.log"
+run_once
+check_status 0 "$STATUS"
+check_no_grep "#17 refused" "$OUT"
+check "the record was posted exactly once" \
+  test "$(grep -cF 'gh-axi issue comment 17' "$STUB_CALLS")" -eq 1
+check_grep "pass end dispatches=0 skips=0 sweeps=1 refusals=0" "$OUT"
+
+setup "a full worker budget does not suppress a verb refusal"
+# A full budget defers a *dispatch*, and a refusal has no dispatch to defer.
+export STUB_ISSUES=verbless STUB_ORCA_PS=busy
+run_once
+check_status 0 "$STATUS"
+check_grep "issue nywleswoey/automation#17 refused verb=- edges=ok" "$OUT"
+check_no_grep "deferred" "$OUT"
+check_grep "pass end dispatches=0 skips=0 sweeps=0 refusals=1" "$OUT"
+
+setup "a verbless issue whose pull request is already open is not refused"
+# The named gap, asserted so it stays deliberate: the open-pull-request check
+# stays first and unmoved. An issue with an open pull request was already
+# dispatched, and a dispatch requires a verb.
+export STUB_ISSUES=verbless STUB_WORLD=open-issue-branch STUB_NOW=2026-08-27T12:00:00Z
+run_once
+check_status 0 "$STATUS"
+check_grep "issue nywleswoey/automation#17 skipped: pull request #401 already delivers it" "$OUT"
+check_no_grep "#17 refused" "$OUT"
+check_no_grep "gh-axi issue comment" "$STUB_CALLS"
+
+setup "a verbless issue that is also blocked is refused rather than skipped"
+# The gate sits before the open-blocker verdict, and a refusal is terminal where
+# a skip is a wait. `issues-verbs` #18 is both.
+export STUB_ISSUES=verbs STUB_ORCA_PS=idle
+write_config "nywleswoey/automation" "repo-aaa" 300 9
+run_once
+check_status 0 "$STATUS"
+check_grep "issue nywleswoey/automation#18 refused verb=- edges=ok" "$OUT"
+check_no_grep "issue nywleswoey/automation#18 skipped" "$OUT"
+# One pass, four candidates, four dispositions — the per-issue line is what
+# tells them apart.
+check_grep "dispatched nywleswoey/automation#17" "$OUT"
+check_grep "issue nywleswoey/automation#19 refused verb=implement,to-tickets edges=ok" "$OUT"
+check_grep "dispatched nywleswoey/automation#92" "$OUT"
+check_grep "pass end dispatches=2 skips=0 sweeps=1 refusals=2" "$OUT"
+# The blocker read is still paid for the refused candidate: a verb-first refusal
+# would stop checking claims for exactly the issues most likely to be badly
+# authored.
+check_grep "gh-axi api /repos/nywleswoey/automation/issues/18/dependencies/blocked_by --paginate" "$STUB_CALLS"
+
+setup "a passing issue wearing the refusal flag has it cleared and dispatches on the same pass"
+# The two-directional chase, on the issue side: a refused issue only comes back
+# when a human re-applies the ready label, and it is still wearing the flag when
+# it does.
+export STUB_ISSUES=refused-flag
+run_once
+check_status 0 "$STATUS"
+check_grep "issue nywleswoey/automation#17 refusal cleared" "$OUT"
+check_grep "gh-axi issue edit 17 --repo nywleswoey/automation --remove-label agent-refused" "$STUB_CALLS"
+check_grep "dispatched nywleswoey/automation#17" "$OUT"
+# A clear is not a refusal and not a skip: it increments nothing.
+check_grep "pass end dispatches=1 skips=0 sweeps=1 refusals=0" "$OUT"
+check "the clear precedes the claim" \
+  test "$(call_line 'gh-axi issue edit 17 --repo nywleswoey/automation --remove-label agent-refused')" -lt "$(call_line "$CLAIM_CALL")"
+# And it is a one-shot: the flag is off on the next pass, so nothing is said.
+run_once
+check_no_grep "refusal cleared" "$OUT"
+
+setup "a verb refusal whose record never lands is still terminal, and says so"
+# The same shape the blocking-claim refusal already has, asserted on the verb
+# predicate: the swap is what takes the issue out of the ready queue, so a
+# refusal whose swap landed is terminal whatever became of the comment — and it
+# counts, because the queue agrees with the counter.
+export STUB_ISSUES=verbless STUB_GH_FAIL=issue-comment
+run_once
+check_status 0 "$STATUS"
+check_grep "issue nywleswoey/automation#17 refused verb=- edges=ok" "$OUT"
+check_grep "gh-axi issue edit 17 --repo nywleswoey/automation --add-label agent-refused --remove-label ready-for-agent" "$STUB_CALLS"
+check_grep "refusal comment failed for nywleswoey/automation#17, the flag is on and the record did not land" "$OUT"
+check_no_grep "worktree create" "$STUB_CALLS"
+check_grep "pass end dispatches=0 skips=0 sweeps=1 refusals=1" "$OUT"
+
+setup "a verb refusal whose label swap will not land leaves the issue ready and silent"
+# The one nothing-happened outcome: the issue is still ready, the next pass
+# derives the same verdict and refuses again from scratch, so it is accounted
+# the way a lost claim is — as a skip.
+export STUB_ISSUES=verbless STUB_GH_FAIL=claim
+run_once
+check_status 0 "$STATUS"
+check_grep "issue nywleswoey/automation#17 refused verb=- edges=ok" "$OUT"
+check_grep "refusal label swap failed for nywleswoey/automation#17, leaving it ready" "$OUT"
+check_no_grep "gh-axi issue comment 17" "$STUB_CALLS"
+check_no_grep "worktree create" "$STUB_CALLS"
+check_grep "pass end dispatches=0 skips=1 sweeps=1 refusals=0" "$OUT"
+
 # --- issue phase: a blocked issue is left alone --------------------------------
 
 setup "a blocked issue is neither claimed nor dispatched"
@@ -635,9 +852,9 @@ write_config "nywleswoey/automation" "repo-aaa" 300 9
 run_once
 check_status 0 "$STATUS"
 # #60 claims two referents against an empty edge set: both are named.
-check_grep "issue nywleswoey/automation#60 refused edges=missing:nywleswoey/automation#61,nywleswoey/automation#62" "$OUT"
+check_grep "issue nywleswoey/automation#60 refused verb=implement edges=missing:nywleswoey/automation#61,nywleswoey/automation#62" "$OUT"
 # #61 claims two and the graph carries one: only the missing half is named.
-check_grep "issue nywleswoey/automation#61 refused edges=missing:nywleswoey/automation#71" "$OUT"
+check_grep "issue nywleswoey/automation#61 refused verb=implement edges=missing:nywleswoey/automation#71" "$OUT"
 # #62's one claim is carried by a *closed* edge, and #63's by a superset. No
 # referent's state is resolved, so a closed edge verifies without blocking.
 check_grep "dispatched nywleswoey/automation#62" "$OUT"
@@ -675,7 +892,7 @@ check_grep '| Verdict | What | Raw values |' "$BODY_60"
 check_grep '| no | every blocking claim in the body is carried by the graph | `missing=nywleswoey/automation#61,nywleswoey/automation#62` |' "$BODY_60"
 check_grep '`ok` passed · `no` stopped the dispatch.' "$BODY_60"
 check_grep '**Ways back in**' "$BODY_60"
-check_grep '- **Add the native dependency edge** for every referent named above, then re-apply `ready-for-agent`.' "$BODY_60"
+check_grep '- **Add the native dependency edge** for every referent named above.' "$BODY_60"
 # No kind word: the rows already say which predicate failed.
 check_no_grep 'Escalated' "$BODY_60"
 # No `Read at` line: this posts a new comment every time and never edits one, so
@@ -707,12 +924,12 @@ check_grep "dispatched nywleswoey/automation#66" "$OUT"
 # #67 claims the same referent and the graph carries #5 in *this* repository. An
 # edge with no repository of its own is attributed to the issue's, which is the
 # only repository a same-repository edge could mean — so the pair does not match.
-check_grep "issue nywleswoey/automation#67 refused edges=missing:nywleswoey/other#5" "$OUT"
+check_grep "issue nywleswoey/automation#67 refused verb=implement edges=missing:nywleswoey/other#5" "$OUT"
 # The accepted false positive, asserted deliberately: #6 is a closed issue in
 # this world, and no edge records it. The refusal stands, because resolving the
 # referent would have the graph defer to prose in the acquitting direction and
 # would cost a REST call per unmatched referent.
-check_grep "issue nywleswoey/automation#68 refused edges=missing:nywleswoey/automation#6" "$OUT"
+check_grep "issue nywleswoey/automation#68 refused verb=implement edges=missing:nywleswoey/automation#6" "$OUT"
 check "no referent is resolved" \
   test "$(grep -cE '^gh-axi api /repos/nywleswoey/automation/issues/[0-9]+$' "$STUB_CALLS")" -eq 0
 check_grep "pass end dispatches=1 skips=0 sweeps=1 refusals=2" "$OUT"
@@ -744,20 +961,20 @@ check_grep "dispatched nywleswoey/automation#83" "$OUT"
 check_grep "dispatched nywleswoey/automation#84" "$OUT"
 # Must fire. #85 is the live shape both authoring skills emit: a heading with
 # list items, the referent carried by the markdown link text and by its URL.
-check_grep "issue nywleswoey/automation#85 refused edges=missing:nywleswoey/automation#61,nywleswoey/automation#62" "$OUT"
+check_grep "issue nywleswoey/automation#85 refused verb=implement edges=missing:nywleswoey/automation#61,nywleswoey/automation#62" "$OUT"
 # #86 is an inline claim with no heading, scoping to the rest of its line plus
 # the list items immediately under it — and stopping at the prose after them.
-check_grep "issue nywleswoey/automation#86 refused edges=missing:nywleswoey/automation#61,nywleswoey/automation#62,nywleswoey/automation#63" "$OUT"
+check_grep "issue nywleswoey/automation#86 refused verb=implement edges=missing:nywleswoey/automation#61,nywleswoey/automation#62,nywleswoey/automation#63" "$OUT"
 check_no_grep "#99" "$STUB_STATE/issue-body-86.txt"
 # #87 is `**Blocked by:**` with the list under it, the shape a body writes when
 # the claim is not a section of its own.
-check_grep "issue nywleswoey/automation#87 refused edges=missing:nywleswoey/automation#61,nywleswoey/automation#62" "$OUT"
+check_grep "issue nywleswoey/automation#87 refused verb=implement edges=missing:nywleswoey/automation#61,nywleswoey/automation#62" "$OUT"
 # #88 stacks a list marker, emphasis, upper case and the `on` variant on one line.
-check_grep "issue nywleswoey/automation#88 refused edges=missing:nywleswoey/automation#61" "$OUT"
+check_grep "issue nywleswoey/automation#88 refused verb=implement edges=missing:nywleswoey/automation#61" "$OUT"
 # #89 splits its claim across two sections. Claims union over the whole body, so
 # splitting one does not let half of it through — and the prose between them
 # still anchors nothing.
-check_grep "issue nywleswoey/automation#89 refused edges=missing:nywleswoey/automation#61,nywleswoey/automation#62" "$OUT"
+check_grep "issue nywleswoey/automation#89 refused verb=implement edges=missing:nywleswoey/automation#61,nywleswoey/automation#62" "$OUT"
 check_no_grep "#99" "$STUB_STATE/issue-body-89.txt"
 # #95 anchors and names nothing, and the blank line after it does not carry the
 # scope past the prose to the list below. A blank line keeping a list scope open
@@ -774,7 +991,7 @@ check_grep "dispatched nywleswoey/automation#96" "$OUT"
 check_grep "dispatched nywleswoey/automation#98" "$OUT"
 # #97 has two blank lines between its claim and a list. One blank is markdown's
 # own separator; a second is a gap, and the list below it is not the claim's.
-check_grep "issue nywleswoey/automation#97 refused edges=missing:nywleswoey/automation#61" "$OUT"
+check_grep "issue nywleswoey/automation#97 refused verb=implement edges=missing:nywleswoey/automation#61" "$OUT"
 check_no_grep "#99" "$STUB_STATE/issue-body-97.txt"
 check_grep "pass end dispatches=8 skips=0 sweeps=1 refusals=6" "$OUT"
 
@@ -794,14 +1011,14 @@ check_grep "dispatched nywleswoey/automation#91" "$OUT"
 # #92 names three things: one the graph carries, one it does not, and one that is
 # not an issue at all. The comment tells the author the remaining work rather
 # than the whole list again.
-check_grep "issue nywleswoey/automation#92 refused edges=missing:nywleswoey/automation#71" "$OUT"
+check_grep "issue nywleswoey/automation#92 refused verb=implement edges=missing:nywleswoey/automation#71" "$OUT"
 check_grep '`missing=nywleswoey/automation#71`' "$STUB_STATE/issue-body-92.txt"
 check_no_grep "#70" "$STUB_STATE/issue-body-92.txt"
 # #93 names `owner/repo#N` and a full issue URL. Both normalize to
 # `(repository, number)`, and the comparison is by the pair — so the edge to
 # *this* repository's #5 does not satisfy `nywleswoey/other#5`, while the third
 # repository's #9 is satisfied by an edge that carries its own repository.
-check_grep "issue nywleswoey/automation#93 refused edges=missing:nywleswoey/other#5" "$OUT"
+check_grep "issue nywleswoey/automation#93 refused verb=implement edges=missing:nywleswoey/other#5" "$OUT"
 check_no_grep "nywleswoey/third#9" "$STUB_STATE/issue-body-93.txt"
 check "no referent is resolved" \
   test "$(grep -cE '^gh-axi api /repos/nywleswoey/automation/issues/[0-9]+$' "$STUB_CALLS")" -eq 0
@@ -814,7 +1031,7 @@ setup "an issue that is both blocked and unverified is refused, not skipped"
 export STUB_ISSUES=claim-blocked
 run_once
 check_status 0 "$STATUS"
-check_grep "issue nywleswoey/automation#69 refused edges=missing:nywleswoey/automation#71" "$OUT"
+check_grep "issue nywleswoey/automation#69 refused verb=implement edges=missing:nywleswoey/automation#71" "$OUT"
 check_no_grep "issue nywleswoey/automation#69 skipped: blocked by" "$OUT"
 check_no_grep "--add-label agent-in-progress" "$STUB_CALLS"
 check_no_grep "worktree create" "$STUB_CALLS"
@@ -825,7 +1042,7 @@ setup "a full worker budget does not suppress a refusal"
 export STUB_ISSUES=claim-blocked STUB_ORCA_PS=busy
 run_once
 check_status 0 "$STATUS"
-check_grep "issue nywleswoey/automation#69 refused edges=missing:nywleswoey/automation#71" "$OUT"
+check_grep "issue nywleswoey/automation#69 refused verb=implement edges=missing:nywleswoey/automation#71" "$OUT"
 check_no_grep "deferred: worker budget full" "$OUT"
 check_grep "pass end dispatches=0 skips=0 sweeps=0 refusals=1" "$OUT"
 
@@ -867,7 +1084,7 @@ check "an unflagged passing issue is written nothing" \
 # #75 was re-armed by hand and is still unverified, so it refuses again and
 # comments again. That is correct: nothing but a human re-adds `ready-for-agent`,
 # so the second comment lands in front of the person who just acted.
-check_grep "issue nywleswoey/automation#75 refused edges=missing:nywleswoey/automation#71" "$OUT"
+check_grep "issue nywleswoey/automation#75 refused verb=implement edges=missing:nywleswoey/automation#71" "$OUT"
 check_grep "gh-axi issue edit 75 --repo nywleswoey/automation --add-label agent-refused --remove-label ready-for-agent" "$STUB_CALLS"
 check_grep '`missing=nywleswoey/automation#71`' "$STUB_STATE/issue-body-75.txt"
 # A clear increments no counter, so the pass counts one dispatch, the two open
@@ -883,7 +1100,7 @@ setup "a refusal whose label swap will not land leaves the issue ready and silen
 export STUB_ISSUES=claim-blocked STUB_GH_FAIL=claim
 run_once
 check_status 0 "$STATUS"
-check_grep "issue nywleswoey/automation#69 refused edges=missing:nywleswoey/automation#71" "$OUT"
+check_grep "issue nywleswoey/automation#69 refused verb=implement edges=missing:nywleswoey/automation#71" "$OUT"
 check_grep "refusal label swap failed for nywleswoey/automation#69, leaving it ready" "$OUT"
 check_no_grep "issue comment 69" "$STUB_CALLS"
 # The counter counts issues that left the ready queue. This one did not, so it is
@@ -896,7 +1113,7 @@ setup "a refusal whose comment will not land says so on its own line"
 export STUB_ISSUES=claim-blocked STUB_GH_FAIL=issue-comment
 run_once
 check_status 0 "$STATUS"
-check_grep "issue nywleswoey/automation#69 refused edges=missing:nywleswoey/automation#71" "$OUT"
+check_grep "issue nywleswoey/automation#69 refused verb=implement edges=missing:nywleswoey/automation#71" "$OUT"
 check_grep "gh-axi issue edit 69 --repo nywleswoey/automation --add-label agent-refused --remove-label ready-for-agent" "$STUB_CALLS"
 check_grep "refusal comment failed for nywleswoey/automation#69, the flag is on and the record did not land" "$OUT"
 # The swap landed, so the issue left the queue and the refusal is terminal
@@ -3754,6 +3971,118 @@ check_status 0 "$STATUS"
 # the only pull-request-to-issue link there is, and the resolver behind it
 # already drops a branch naming no issue.
 check_grep 'query={ search(query: "is:pr is:merged author:nywleswoey sort:updated-desc"' "$STUB_CALLS"
+
+# --- close-out's second entry path: a spec exits on its native edges ------------
+
+# A ticket's exit evidence is a merged pull request; a decomposition produces
+# issues and never a pull request, so its evidence is the native sub-issue edges
+# it created. Close-out grows a second entry path rather than a new phase — the
+# invariant `query_claimed_issues` rests on is that close-out is the *only*
+# path that clears a claim label.
+
+setup "a decomposed spec is unclaimed, flagged and left open"
+# One fixture, three claims, three dispositions: #92 is a spec with children and
+# nobody on it, #93 is a spec whose worker published nothing, and #17 is an
+# ordinary claimed ticket that happens to have children.
+export STUB_CLAIMED=specs STUB_ORCA_PS=idle
+run_once
+check_status 0 "$STATUS"
+check_grep "decomposed nywleswoey/automation#92: 5 sub-issues, unclaimed and flagged agent-decomposed, left open" "$OUT"
+check_grep "gh-axi issue edit 92 --repo nywleswoey/automation --add-label agent-decomposed --remove-label agent-in-progress" "$STUB_CALLS"
+# Left **open**: the children land inert pending a human, and closing the spec
+# would hide the one artifact that most needs one.
+check_no_grep "gh-axi issue close 92" "$STUB_CALLS"
+# And no record comment: the whole evidence is the sub-issue panel GitHub
+# already renders, so a comment saying *I found 5 children* beneath a list of
+# five children would be a conclusion on its own.
+check_no_grep "gh-axi issue comment 92" "$STUB_CALLS"
+
+# #93 — a spec with no children is not finished. Read, and left exactly as it is.
+check_grep "gh-axi api /repos/nywleswoey/automation/issues/93" "$STUB_CALLS"
+check_no_grep "issue edit 93" "$STUB_CALLS"
+check_no_grep "decomposed nywleswoey/automation#93" "$OUT"
+
+# #17 — the verb scope. An `implement` claim is not a decomposition however many
+# children it has, and the filter is ahead of the read, so it costs nothing to
+# find that out.
+check_no_grep "gh-axi api /repos/nywleswoey/automation/issues/17 " "$STUB_CALLS"
+check_no_grep "decomposed nywleswoey/automation#17" "$STUB_CALLS"
+
+# The reclaim, on the same pass. A claimed `to-tickets` issue is never handed
+# back — a worker that linked its children by prose alone leaves the count at
+# zero, and the child-count form of this exemption would hand #93 back and
+# decompose it a second time.
+check_grep "left claimed nywleswoey/automation#93: a to-tickets issue is never reclaimed" "$OUT"
+check_no_grep "reclaimed nywleswoey/automation#93" "$OUT"
+# An `implement` claim in the same state still is, exactly as before.
+check_grep "reclaimed nywleswoey/automation#17: no live worker, returned to ready-for-agent" "$OUT"
+
+# A flagged spec is in no loop query at all on the pass that follows — the claim
+# label is off, the ready label was taken at claim and never restored. So the
+# line is said once, by the close-out that found it, and the pass's own
+# close-out never sees it.
+check "the spec is decomposed exactly once" \
+  test "$(grep -cF 'decomposed nywleswoey/automation#92' "$OUT")" -eq 1
+
+setup "a decomposition still in flight is left claimed"
+# `/to-tickets` publishes its children one at a time, so the child count goes
+# above zero on the first one. Without the liveness guard a pass landing in that
+# window unclaims a spec whose worker is still running — and #11's fixture has
+# four children, so the count is not what stops it here.
+export STUB_CLAIMED=spec-live STUB_ORCA_PS=busy
+run_once
+check_status 0 "$STATUS"
+check_no_grep "decomposed nywleswoey/automation#11" "$OUT"
+check_no_grep "issue edit 11" "$STUB_CALLS"
+# The guard sits ahead of the read, so a live worker costs no request either.
+check_no_grep "gh-axi api /repos/nywleswoey/automation/issues/11 " "$STUB_CALLS"
+# Orca holds a `waiting` agent as live, so a worker parked for a human's
+# approval is held by every existing liveness question with no new machinery.
+check_grep "left claimed nywleswoey/automation#11: a to-tickets issue is never reclaimed" "$OUT"
+
+setup "a child count that will not answer leaves the spec claimed"
+# Fails closed. A stranded spec costs a human glance; a duplicate costs a
+# rebuilt ticket set.
+export STUB_CLAIMED=specs STUB_ORCA_PS=idle STUB_GH_FAIL=issue
+run_once
+check_status 0 "$STATUS"
+check_grep "close-out query failed: nywleswoey/automation#92" "$OUT"
+check_no_grep "--add-label agent-decomposed" "$STUB_CALLS"
+check_no_grep "decomposed nywleswoey/automation#92" "$OUT"
+
+setup "a failed decomposition close-out is logged and the spec stays claimed"
+export STUB_CLAIMED=specs STUB_ORCA_PS=idle STUB_GH_FAIL=claim
+run_once
+check_status 0 "$STATUS"
+check_grep "decomposition close-out failed for nywleswoey/automation#92, leaving it claimed" "$OUT"
+check_no_grep "decomposed nywleswoey/automation#92: 5" "$OUT"
+
+setup "a merged-pr query that fails does not silence the second entry path"
+# Two entry paths, two enumerations, and neither gates the other. A hiccup in
+# the global merged-pull-request search must not leave every decomposed spec
+# claimed for the pass with no line naming it.
+export STUB_CLAIMED=specs STUB_ORCA_PS=idle STUB_MERGED=set STUB_GH_FAIL=merged
+run_once
+check_status 0 "$STATUS"
+check_grep "merged-pr query failed" "$OUT"
+check_grep "decomposed nywleswoey/automation#92: 5 sub-issues, unclaimed and flagged agent-decomposed, left open" "$OUT"
+
+setup "a claimed-issue query close-out cannot make is logged and the pass continues"
+export STUB_CLAIMED=specs STUB_GH_FAIL=issues
+run_once
+check_status 0 "$STATUS"
+check_grep "claimed-issue query failed: nywleswoey/automation" "$OUT"
+check_grep "pass end" "$OUT"
+
+setup "an unreadable inventory leaves a claimed spec alone rather than unclaiming it blindly"
+# Reading an unloadable inventory as *nobody is on it* would unclaim a
+# decomposition in flight, so the second entry path fails closed the way every
+# other liveness question does.
+export STUB_CLAIMED=specs STUB_ORCA_FAIL=ps
+run_once
+check_status 0 "$STATUS"
+check_grep "worker inventory unreadable, leaving nywleswoey/automation#92 claimed" "$OUT"
+check_no_grep "--add-label agent-decomposed" "$STUB_CALLS"
 
 # --- the deleted machinery ------------------------------------------------------
 

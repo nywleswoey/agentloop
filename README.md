@@ -10,8 +10,8 @@ Started by hand, runs until Ctrl-C. Every decision it makes is one log line, so 
 
 Each pass, in order:
 
-1. **Close-out** — an issue whose pull request has merged gets its checklist ticked, its description updated, its claim label removed, and the issue closed. What decides whether an issue is close-out's is the **claim label, not the state**: a pull request body carrying `Closes #N` has GitHub close the issue itself at merge, a pass before close-out reads it, and such an issue still needs its tick and its unclaim. So a closed issue still wearing the claim gets both, and no second close.
-2. **Issues** — queries each project for open issues labelled `ready-for-agent`, skips ones an open pull request already delivers, **refuses** ones whose written blocking claim the dependency graph does not carry, skips ones with an open blocker, swaps the label to `agent-in-progress`, and dispatches an Orca worker into a fresh worktree.
+1. **Close-out** — **the phase that enumerates the loop's holds and releases the ones with evidence behind them.** Two entry paths. An issue whose pull request has merged gets its checklist ticked, its description updated, its claim label removed, and the issue closed; what decides whether such an issue is close-out's is the **claim label, not the state**, because a pull request body carrying `Closes #N` has GitHub close the issue itself at merge, a pass before close-out reads it, and such an issue still needs its tick and its unclaim. So a closed issue still wearing the claim gets both, and no second close. The second path is a **decomposed spec** — see [the verb](#the-verb-the-issue-declares).
+2. **Issues** — queries each project for open issues labelled `ready-for-agent`, skips ones an open pull request already delivers, **refuses** ones that do not declare exactly one verb and ones whose written blocking claim the dependency graph does not carry, skips ones with an open blocker, swaps the label to `agent-in-progress`, and dispatches an Orca worker into a fresh worktree — running `/implement` at a ticket and `/to-tickets` at a spec.
 3. **Pull requests** — enumerates every open pull request in each project except drafts and fork heads, derives its state from GitHub alone, logs one line per pull request, comments `@coderabbitai review` at the ones CodeRabbit never reviewed and `@coderabbitai autofix` at the ones carrying unresolved findings, runs the risk gate over the ones that are ready to judge, merges at most one of them per repository, and hands over the ones it will not act on. It spends no worker and no worktree, and it keeps no local state: every pass re-derives from a fresh read.
 4. **Sweep** — removes the loop's own finished worktrees.
 
@@ -22,7 +22,7 @@ Between passes it sleeps for `pollIntervalSeconds`.
 - **Worker budget** — never more than `maxWorkers` live workers. Checked before *every* issue dispatch, not once per pass, so a candidate arriving at a full budget waits for a later pass rather than being dropped. It governs **issue dispatch only**: the PR phase spends no worktree, no checkout and no agent, so a long-running issue does not stall the pull requests behind it.
 - **Fail closed** — if the worktree inventory can't be read, the budget is treated as full and the sweep is skipped. A budget that failed open would dispatch a fresh `maxWorkers` on top of the workers it couldn't see.
 - **PID lock** — one loop per machine.
-- **Startup reclaim** — an issue left claimed with no live worker (crash, failed dispatch) is handed back to `ready-for-agent` when the loop next starts. Liveness is not the whole question, though: a worker that **finished** leaves no process behind either, and reading that as "nobody has worked on it" is what once had two workers rebuild the same feature into two branches. So an issue whose branch already carries an **open** pull request stays claimed, and the issue phase asks the same question a second time — a ready label applied by hand never passes through the reclaim at all. **Merged** pull requests deliberately do not count: those are close-out's, and close-out runs first in both orderings. **Closed-unmerged** ones deliberately do not count either — abandoning a pull request should return its issue to the loop. Both callers fail closed: a read that will not answer skips the reclaim, or the issue phase, rather than risking a duplicate.
+- **Startup reclaim** — an issue left claimed with no live worker (crash, failed dispatch) is handed back to `ready-for-agent` when the loop next starts, **unless it declares the `to-tickets` verb, which is never reclaimed** — a decomposition produces issues rather than a pull request, so neither of the two questions below can be asked of it, and handing one back means decomposing it a second time. Close-out is therefore the only path that clears a spec's claim. Liveness is not the whole question for the rest, though: a worker that **finished** leaves no process behind either, and reading that as "nobody has worked on it" is what once had two workers rebuild the same feature into two branches. So an issue whose branch already carries an **open** pull request stays claimed, and the issue phase asks the same question a second time — a ready label applied by hand never passes through the reclaim at all. **Merged** pull requests deliberately do not count: those are close-out's, and close-out runs first in both orderings. **Closed-unmerged** ones deliberately do not count either — abandoning a pull request should return its issue to the loop. Both callers fail closed: a read that will not answer skips the reclaim, or the issue phase, rather than risking a duplicate.
 - **Log rotation** — one generation, capped at 5 MiB. A loop left running for weeks must not fill the disk.
 
 These are the daemon's own rails. What bounds the **unattended merge** is the next section.
@@ -34,6 +34,67 @@ These are the daemon's own rails. What bounds the **unattended merge** is the ne
 **A stated limit: a block written only in the reverse `Blocks #N` form is invisible to the loop.** That form is a claim about the *other* issue, and refusing the ticket whose body was honest while the one actually at risk sails through is the wrong target. Landing it correctly would need a body-wide cross-index, which the loop does not have and which one issue read cannot answer — so the direction of the gap is kept the safe one. **Under-refusing is safe, over-refusing is not**: a shape the predicate misses is a claim that goes unchecked, where a shape it wrongly matched is a dispatch that is wrongly stopped.
 
 The two invariants below are **scoped to the pull-request phase**, so neither gains a row for this; it is checked against both anyway and passes. Its bounded exit is the operator's re-label — `external`, the same disposition [`rate-limited`](#the-bounded-exit-invariant) already carries and which that table records as correct rather than a hole. Its cycle — refuse, out of the queue, operator acts, back in, pass — can only turn a second time on a human choosing, and that rests on a standing condition worth writing down: **no dispatch of the loop's causes any issue to enter the ready queue.** It holds trivially today, a dispatched worker implementing against an issue that already exists. It is phrased around *what enters the queue* rather than around *what the loop dispatches* on purpose, because the loop is about to dispatch `/to-tickets`, an authoring skill that publishes child issues: under that map the condition still holds, but for a new reason — the children land **without** `ready-for-agent`, and the decomposed spec exits via close-out flagged rather than re-armed. **The residual, recorded with it:** that inertness then rests on a worker instruction rather than on this script, and the loop cannot enforce what a worker labels.
+
+---
+
+## The verb the issue declares
+
+**The loop dispatches by a verb the issue declares in its labels, and an issue that declares no verb is refused rather than dispatched under a default.**
+
+Two labels, on top of `ready-for-agent`:
+
+| Verb | What the worker runs | For |
+|---|---|---|
+| `implement` | `/implement <issue url>` | a ticket — one change, one pull request |
+| `to-tickets` | `/to-tickets <issue url>` plus four clauses | a spec — a document describing a fortnight of work |
+
+They are **constants, not config keys**, because a verb name is welded to a prompt string: it names a slash command that has to exist in the worker's skill set, so an operator-supplied name behind a hardcoded prompt either breaks the dispatch or changes nothing. The prompt itself comes from a **closed table with the prompt written out per row**, so *the loop does not know this verb* and *the loop will not build a prompt for it* are the same line of code and cannot drift apart.
+
+**The verb is applied by hand, per issue, and by nothing else.** No wrapper skill, no issue template, no Action. Coverage of any such artifact is inherently partial — an issue written in the GitHub UI is touched by no skill, and an issue-form `labels:` block fires for the web form and not for the `gh issue create` every authoring skill uses — so the hand has to work regardless, and once the residue must work anyway a partial cover buys convenience rather than safety. The tracker option is ruled out on stronger ground: **an Action that fills in a missing verb *is* a default verb by another name.**
+
+**There is no default verb, and enforcement fails closed.** An issue declaring zero verbs, or two, is refused: the comment below goes up, `agent-refused` goes on, `ready-for-agent` comes off, and the issue leaves the queue until a human puts the label back. A forgotten label costs a stalled issue you can see; a default would cost a wrong build you find out about later. Enforcement lives here rather than in the authoring skills because those are vendored and hash-locked — a local edit is clobbered on the next update — and because a fail-closed gate in the loop catches every authoring path, including the ones nobody has written yet.
+
+**The accepted limit, named rather than left as a surprise: fail-closed catches an *absent* verb, never a *wrong* one.** `implement` is the muscle-memory label. A spec wearing it is built raw by one worker, and no predicate the loop is allowed to use — it does not parse prose — separates a mis-declaration from a declaration. The same limit applies to the worker: one that publishes children believing it linked them natively is indistinguishable from one that did.
+
+### The refusal
+
+The verb check is the issue phase's handover, and it shares a gate with the blocking-claim check: **one disposition with a predicate per row**, not one disposition per predicate. Nothing short-circuits — every predicate evaluates, and an issue failing more than one is refused once, naming all of them, with the **passing rows carried too** so the record tells you where *not* to look. That is the same rule the PR phase's four vetoes already follow, and it costs a free predicate being evaluated after a paid read it does not need, deliberately: the refusal evaluates as a unit because it reports as a unit.
+
+One label, `agent-refused`, with the reason in the comment rather than in the name — the loop's label family names *what the loop did*, not what you must do, and the accepted cost is that the flag says *go look*, not *look at this*. The raw column carries the verbs actually found, so *you wrote no verb* (`verbs=-`) and *you wrote both* (`verbs=implement,to-tickets`), which need opposite fixes, stay distinguishable. The per-pass log line carries a verdict for every predicate, so a refusal is fully diagnosable without opening the issue:
+
+```
+issue nywleswoey/agentloop#93 refused verb=implement,to-tickets edges=ok
+issue nywleswoey/agentloop#93 refused verb=- edges=missing:nywleswoey/agentloop#92
+```
+
+A refused issue that comes back passing has the flag taken off on the pass that finds it, and goes on to dispatch on that same pass.
+
+### The decomposition path
+
+A spec is claimed and dispatched like anything else, into a worktree of its own — `/to-tickets` wants the codebase, for the glossary and the ADRs, so the checkout is what makes the decomposition good rather than overhead on it. Its prompt carries four clauses, and they live in `agent-loop.sh` rather than in a skill because an invariant whose residual is *a worker instruction* has to be auditable by reading the loop:
+
+1. **Link every child to this issue by GitHub's native sub-issue relationship**, not by a prose `## Parent` section. This clause *is* the spec's exit evidence; without it the spec has no exit at all.
+2. **Do not apply `ready-for-agent` to any child.**
+3. **Apply `implement` to every child.**
+4. **A human will come to this session** — present the breakdown and wait for their approval; do not approve it yourself.
+
+Clause 4 is phrased as the *situation* rather than as "step 4", so a reworded or renumbered upstream skill cannot strand it. It makes the run **HITL in-session**: the worker waits for a human to settle granularity in conversation, which is cheaper than revising eight already-published issues. Orca holds a `waiting` agent as `live`, so the claim, the worktree, the budget and close-out all behave unchanged with no new machinery.
+
+The children land **inert** — `implement` on, `ready-for-agent` off — because the two gestures answer different questions. In-session approval settles *granularity*: are these the right eight tickets. The label settles *dispatch*: should eight workers start now, against a budget of three. You can be certain of the first and not want the second yet.
+
+**A spec exits on the same shape of evidence a ticket does, with one artifact swapped.** A ticket's is a merged pull request; a spec's is `sub_issues_summary.total > 0` — the **native** sub-issue edges, read off a payload close-out already fetches. Close-out's predicate has three conjuncts: *the verb is `to-tickets`*, *no live worker holds it*, and *the count is above zero*. On all three it **unclaims the spec, applies `agent-decomposed`, and leaves it open**. The open, flagged spec is the arrival signal for the inert batch — one query finds everything waiting on you. The evidence is the native edge and not a label the worker writes because every signal the loop acts on is third-party; a `decomposed` label written by the worker would be the first time the loop believed a worker about its own completion. It inherits the open-pull-request predicate's imprecision knowingly: a worker that publishes three of eight tickets and dies reads as finished, exactly as a draft pull request with half a feature in it reads as delivered.
+
+`agent-decomposed` **latches**. It records a one-shot historical fact, and no pass re-derives *this spec was decomposed* from live signals to hold it up — so it cannot live under `agent-escalated`, whose whole contract is that it is withdrawn the moment its cause stops being true. The status a converted spec ends in is `agent-decomposed` on, both loop labels off, issue **open**, which puts it in no loop query at all. Your move from there: review the children, apply `ready-for-agent`, close the spec. Recorded rather than waved past: this adds a **terminal-but-open** state to a tracker where terminal has meant closed, and if specs ever exit for a second reason the flag alone has nowhere to put the distinction.
+
+### What this costs the invariants
+
+**The causal-closure condition — *no dispatch of the loop's causes any issue to enter the ready queue* — is re-verified rather than rewritten.** [It was phrased around *what enters the queue*](#a-refusal-is-not-a-skip) precisely so this map would re-verify it instead of rewriting it, and this is where that is discharged: it holds at both exits of the decomposition path, the children being published without `ready-for-agent` and the spec exiting flagged rather than re-armed.
+
+**The residual, in plain words: that inertness now rests on a worker instruction rather than on the loop's code.** The loop dispatches an authoring skill and cannot enforce what that skill labels. It is a weaker guarantee than the original, which was a fact about `agent-loop.sh`. A structural guard — close-out stripping `ready-for-agent` from every child of a spec it just decomposed — would restore a code-level guarantee and was rejected: it costs a child listing per close-out and gives the loop the power to write labels on issues it never read, which is a larger new power than the hole is a risk.
+
+Neither written invariant below gains a row. The bounded-exit table and the register of cycles are scoped to the PR phase, and `agent-decomposed` is terminal, latching, recordless and issue-side — a different kind of thing on every axis those tables reason about.
+
+**Three failures now stall permanently instead of retrying:** a crash between the claim write and the dispatch, a worker that published nothing, and a worker that published prose-only children. All three land in one visible state — `agent-in-progress` with no `agent-decomposed` — and all three need a hand to unclaim. That is this design's trade everywhere: *a stalled issue you can see, never a wrong build.* And a decomposition worker that waits forever holds one of `maxWorkers` with nothing to reap it — audible only as `worker budget full`, which says *the loop stalled* rather than *which spec is waiting for you*.
 
 ---
 
@@ -230,15 +291,25 @@ both scripts source it rather than carrying their own copy. Labels are written
 as deltas (`issue edit --add-label/--remove-label`) rather than as a whole set,
 which is what keeps the claim a single atomic call.
 
-The loop creates its four labels — the two in the config, and the constants
-`agent-escalated` and `agent-refused` — in each configured repository at startup
-if they are not already there. Both flags are constants rather than config keys
-so that one query finds every flagged pull request, and a different one every
-refused issue, across every repository. Both are asserted at startup because an
-`--add-label` naming a label that does not exist is refused: without the
-assertion a handover would post its comment and then fail to flag the pull
-request, and a refusal — which writes its label first — would never get past the
-swap and would leave the issue ready and silent on every pass.
+The loop creates its seven labels — the two in the config, plus the constants
+`agent-escalated`, `agent-refused`, `agent-decomposed`, `implement` and
+`to-tickets` — in each configured repository at startup if they are not already
+there. Anything already present is left exactly as it is, colour included. The
+flags are constants rather than config keys so that one query finds every
+flagged pull request, a second every refused issue and a third every decomposed
+spec, across every repository; the two verbs are constants because each is
+welded to a hardcoded prompt string.
+
+Two different arguments sit behind the assertion. For the three flags it is that
+an `--add-label` naming a label that does not exist is refused: without it a
+handover would post its comment and then fail to flag the pull request, and a
+refusal — which writes its label first — would never get past the swap and would
+leave the issue ready and silent on every pass. The loop never *writes* a verb
+label, only reads one, so for the verbs the argument is the fail-closed gate's
+instead: **the marker has to be appliable everywhere before the rule that
+demands it arrives**, or shipping the gate refuses every issue in a repository
+that has no `to-tickets` label, with no fix that does not start with creating
+one.
 
 ---
 
@@ -395,7 +466,7 @@ For the five reversible verbs a failed write and a bad argument share exit `1` d
 
 The first two run the real scripts against stub CLIs in `tests/bin` (`git`, `gh-axi`, `orca`, `date`) and assert on the log lines emitted and the argv handed to those stubs. No function inside either script is reached into directly.
 
-Time is one of those stubs. `date` is a CLI, so `$STUB_NOW` freezes what "now" is for a case without the scripts gaining a single line of test-only surface — they keep calling `date` as they always have. The binding that buys: **time comes from `date(1)`, never from a shell built-in.** `printf '%(%s)T'`, `$SECONDS` and `$EPOCHSECONDS` bypass `PATH` silently, and a timeout test that quietly runs against wall time is green for the wrong reason forever. The suite pins that rule with a check over the scripts' own source. That is one of exactly **three** places it reads code rather than behaviour, and all three are there because behaviour cannot reveal what they assert: a clock read that dodged the stub would look identical to one that never happened, a **deletion** is a claim no run can make — code that is never reached and code that is not there behave the same — and a name spelled twice behaves exactly like a name spelled once. The second is the removal check, a set of identifiers from the deleted PR worker that must not appear in `agent-loop.sh` at all. The third is `agent-refused`, which must appear exactly once, as the constant: a second literal spelling would pass every run and would quietly make the one query that finds every refused issue impossible to write down.
+Time is one of those stubs. `date` is a CLI, so `$STUB_NOW` freezes what "now" is for a case without the scripts gaining a single line of test-only surface — they keep calling `date` as they always have. The binding that buys: **time comes from `date(1)`, never from a shell built-in.** `printf '%(%s)T'`, `$SECONDS` and `$EPOCHSECONDS` bypass `PATH` silently, and a timeout test that quietly runs against wall time is green for the wrong reason forever. The suite pins that rule with a check over the scripts' own source. That is one of exactly **three** places it reads code rather than behaviour, and all three are there because behaviour cannot reveal what they assert: a clock read that dodged the stub would look identical to one that never happened, a **deletion** is a claim no run can make — code that is never reached and code that is not there behave the same — and a name spelled twice works perfectly right up until one of the two spellings is changed. The second is the removal check, a set of identifiers from the deleted PR worker that must not appear in `agent-loop.sh` at all. The third is the label check: every loop-owned label name — `agent-refused`, `agent-decomposed` and the two verbs — must appear exactly once, as its constant. A second literal spelling would pass every run and would quietly make the one query that finds every refused issue, or every decomposed spec, impossible to write down.
 
 Everything else reads only files the suite or the project ships. The example config, for instance, is compared against the config `write_config` writes — which every passing case here starts the loop on — so the shape it is held to is one the loop is *known* to accept rather than a second written-down copy of the rules.
 
