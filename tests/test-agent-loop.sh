@@ -207,6 +207,62 @@ run_once
 check_status nonzero "$STATUS"
 check_grep "config is missing pollIntervalSeconds" "$OUT"
 
+# --- startup: the loop's own labels exist -------------------------------------
+
+# `--add-label` naming a label that does not exist is refused, so a write that
+# flags an issue or a pull request would land its comment and then fail to flag
+# it forever, on a chase that can never land. The loop makes its two constants
+# exist for the same reason it makes the two in the config exist — and in
+# **every** configured repository, because the one whose turn came second is
+# exactly where a per-first-repository assertion would be wrong.
+setup "the loop's own labels are created at startup in every configured repository"
+# Three repositories, and `merge-only` is here for what it already carries:
+# `agent-refused` is on it in fixtures/repos.txt, so the same pass that creates
+# the label twice leaves it alone once.
+cat > "$CONFIG" <<JSON
+{
+  "pollIntervalSeconds": 300,
+  "maxWorkers": 3,
+  "autofixTimeoutSeconds": 5400,
+  "mergeGateTimeoutSeconds": 3600,
+  "logPath": "$LOG",
+  "labels": { "ready": "ready-for-agent", "claimed": "agent-in-progress" },
+  "projects": [
+    { "github": "nywleswoey/automation", "orcaRepoId": "repo-aaa", "mergeMethod": "squash" },
+    { "github": "nywleswoey/other", "orcaRepoId": "repo-bbb", "mergeMethod": "squash" },
+    { "github": "nywleswoey/merge-only", "orcaRepoId": "repo-aaa", "mergeMethod": "merge" }
+  ]
+}
+JSON
+run_once
+check_status 0 "$STATUS"
+for _repo in nywleswoey/automation nywleswoey/other; do
+  for _label in agent-escalated agent-refused; do
+    check_grep "gh-axi label create --name $_label --color ededed --description agent-loop --repo $_repo" "$STUB_CALLS"
+    check_grep "created label $_label in $_repo" "$OUT"
+  done
+done
+# Anything already there is left exactly as it is, colour included — asserted on
+# the label this ticket adds rather than only on the two in the config, which
+# were already there before it and would pass this on their own.
+check_no_grep "gh-axi label create --name agent-refused --color ededed --description agent-loop --repo nywleswoey/merge-only" "$STUB_CALLS"
+check_no_grep "created label agent-refused in nywleswoey/merge-only" "$OUT"
+# The same repository, same pass, for the label it does not carry: the skip
+# above is about the label being present and not about the repository.
+check_grep "created label agent-escalated in nywleswoey/merge-only" "$OUT"
+check "the four labels are the only ones ever written" \
+  test "$(grep -cE 'label create --name (ready-for-agent|agent-in-progress)' "$STUB_CALLS")" -eq 0
+
+# Nothing applies or removes the refusal label yet: it exists so that the write
+# which will apply it cannot fail. Asserted on the source, because that is an
+# absence and an absence has no behaviour to observe — a call log from a pass
+# that refuses nothing would be empty whether or not the applying code existed.
+setup "no code path applies or removes the refusal label yet"
+check "the constant is used at its definition and in the startup assertion, and nowhere else" \
+  test "$(grep -cF 'LABEL_REFUSED' "$SCRIPT")" -eq 2
+check "and the name itself is written down once, as the constant" \
+  test "$(grep -cF "'agent-refused'" "$SCRIPT")" -eq 1
+
 # --- runtime not reachable ---------------------------------------------------
 
 setup "a down runtime is started and waited for"
@@ -1789,18 +1845,6 @@ check "the refusal body was captured" test -f "$REFUSED"
 check "the first line names the kind" \
   test "$(head -1 "$REFUSED")" = '**Escalated — `refused`:** the gate said merge and GitHub said no.'
 check_grep "<!-- agent-loop-escalated: 401a401a401a401a401a401a401a401a401a401a refused -->" "$REFUSED"
-
-# --- pr phase: the escalation label exists -------------------------------------------
-
-# `--add-label` naming a label that does not exist is refused, so a handover
-# would post its record and then fail to flag it forever, on a self-heal that
-# can never land. The loop makes it exist for the same reason it makes its other
-# two exist.
-setup "the escalation label is created at startup alongside the loop's own two"
-run_once
-check_status 0 "$STATUS"
-check_grep "gh-axi label create --name agent-escalated" "$STUB_CALLS"
-check_grep "created label agent-escalated in nywleswoey/automation" "$OUT"
 
 # --- pr phase: once per head, proven across three replayed passes --------------------
 

@@ -208,9 +208,14 @@ both scripts source it rather than carrying their own copy. Labels are written
 as deltas (`issue edit --add-label/--remove-label`) rather than as a whole set,
 which is what keeps the claim a single atomic call.
 
-The loop creates its three labels — the two in the config, and the constant
-`agent-escalated` — in each configured repository at startup if they are not
-already there.
+The loop creates its four labels — the two in the config, and the constants
+`agent-escalated` and `agent-refused` — in each configured repository at startup
+if they are not already there. Both flags are constants rather than config keys
+so that one query finds every flagged pull request, and a different one every
+refused issue, across every repository. `agent-refused` is asserted ahead of any
+code that applies it: an `--add-label` naming a label that does not exist is
+refused, so a refusal would post its comment and then fail to flag the issue,
+forever.
 
 ---
 

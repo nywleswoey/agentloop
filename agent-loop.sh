@@ -198,6 +198,17 @@ CODERABBIT_LOGIN='coderabbitai'
 ESCALATION_MARKER_PREFIX='<!-- agent-loop-escalated: '
 ESCALATION_MARKER_SUFFIX=' -->'
 LABEL_ESCALATED='agent-escalated'
+# The flag on an issue the loop refuses to dispatch: one refusal, one label, and
+# the reason in the comment rather than in the name. A constant for the same
+# reason the escalation label is one — a per-operator name makes the single
+# query that finds every refused issue impossible to write down — and separate from
+# `agent-escalated` because the two have opposite lifecycles and that one's
+# query is over pull requests: one query answers which issues the loop refused,
+# and a different one which pull requests need a human.
+#
+# Nothing applies or removes it yet. It exists so that the write which will
+# apply it cannot fail.
+LABEL_REFUSED='agent-refused'
 # Reset at the top of every pass. Initialised here only because the close-out
 # that runs before the first pass bumps it too, and `set -u` would kill it
 # otherwise — what it counts before the first pass is discarded, which is why
@@ -442,19 +453,19 @@ repo_path() {
 
 # GitHub resolves an issue's labels by name, and a name that does not exist yet
 # is not created for you — unlike GitLab, where first use was enough. So the
-# loop's own three labels are made to exist once, at startup, in every repo it
+# loop's own four labels are made to exist once, at startup, in every repo it
 # polls. Anything already there is left exactly as it is, colour included.
 #
-# The escalation label is here for the same reason the other two are, and the
-# cost of leaving it out is worse: an `--add-label` naming a label that does not
-# exist is refused, so every handover would post its comment and then fail to
-# flag it, forever, on a chase that can never land.
+# The two constants are here for the same reason the two in the config are, and
+# the cost of leaving either out is worse: an `--add-label` naming a label that
+# does not exist is refused, so every handover and every refusal would post its
+# comment and then fail to flag it, forever, on a chase that can never land.
 ensure_labels() {
   local repo="$1" existing label response
   response=$(gh_json "/repos/$repo/labels" --paginate) \
     || { log "could not list labels in $repo, assuming they exist"; return 0; }
   existing=$(jq -r '.[].name' <<< "$response")
-  for label in "$LABEL_READY" "$LABEL_CLAIMED" "$LABEL_ESCALATED"; do
+  for label in "$LABEL_READY" "$LABEL_CLAIMED" "$LABEL_ESCALATED" "$LABEL_REFUSED"; do
     grep -qxF "$label" <<< "$existing" && continue
     if gh-axi label create --name "$label" --color ededed \
          --description "agent-loop" --repo "$repo" >/dev/null 2>&1; then
