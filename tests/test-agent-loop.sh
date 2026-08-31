@@ -518,7 +518,10 @@ export STUB_ISSUES=body-multiline
 run_once
 check_status 0 "$STATUS"
 check_grep "$CLAIM_CALL" "$STUB_CALLS"
-check_grep "orca worktree create --repo id:repo-aaa --name agent-loop-fix-17-agent-loop-issue-phase --no-parent --agent claude --prompt /implement https://github.com/nywleswoey/automation/issues/17 --json" "$STUB_CALLS"
+# The `bug` label rather than the `feat` default, so a change type read out of
+# the wrong column fails here instead of landing on the default and passing.
+check_grep "--name agent-loop-fix-17-agent-loop-issue-phase " "$STUB_CALLS"
+check_grep "--prompt /implement https://github.com/nywleswoey/automation/issues/17 --json" "$STUB_CALLS"
 check_grep "dispatched nywleswoey/automation#17" "$OUT"
 check_grep "pass end dispatches=1 skips=0 sweeps=1" "$OUT"
 

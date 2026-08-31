@@ -914,9 +914,12 @@ reclaim_stale_claims() {
 #
 # `body` is in the selection set because the ready-issue reader needs it and a
 # selected field costs no extra request — it rides back in the response that
-# already produced the candidate. The claimed-issue reader takes only the
-# number and ignores it, which is the price of one query shape rather than two;
-# that read happens once per startup, not once per pass.
+# already produced the candidate. It is not free of *payload*: up to a hundred
+# whole issue bodies now come back on every ready read, and the claimed-issue
+# reader takes only the number and discards its copy entirely. That is the price
+# of one query shape rather than two, and it is bounded — `gh_json` passes
+# `--full`, so a bigger response cannot start being truncated, and the claimed
+# read happens once per startup rather than once per pass.
 query_issues_by_label() {
   local github="$1" label="$2" owner="${1%%/*}" name="${1##*/}" response
   response=$(gh_graphql "{ repository(owner: \"$owner\", name: \"$name\") { issues(labels: [\"$label\"], states: OPEN, first: 100) { nodes { number title url body labels(first: 20) { nodes { name } } } } } }") || return 1
@@ -935,11 +938,15 @@ query_issues_by_label() {
 # The title comes last: it is the only field that can carry whitespace, so the
 # reader can take it as the remainder of the line.
 #
-# The body would be a second such field, and a worse one — it carries newlines,
-# which no tab-separated line survives. So it travels base64-encoded, which
-# leaves it in an alphabet with no tab and no newline in it, and sits *before*
-# the title so the title stays the readable remainder. It is the same trick the
-# GitHub seam uses to put a whole JSON response over a line-based boundary.
+# The body would be a second such field, and a worse one: it carries newlines and
+# tabs, which are the separators themselves. `@tsv` does not put those on the
+# line raw — it escapes them to a literal `\n` and `\t` — so what a raw body
+# would break is not the line but the *body*, which would arrive escaped with
+# nothing on the read side to put it back. So it travels base64-encoded, which
+# leaves it in an alphabet holding neither separator and hands it back byte for
+# byte, and sits *before* the title so the title stays the readable remainder.
+# It is the same trick the GitHub seam uses to put a whole JSON response over a
+# line-based boundary.
 #
 # A null or absent body is an ordinary answer — GraphQL types `body` as a
 # nullable string — and it must not encode to an *empty* field. A tab is IFS
