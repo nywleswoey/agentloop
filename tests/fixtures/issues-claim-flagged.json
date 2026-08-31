@@ -1,0 +1,31 @@
+{ "data": { "repository": { "issues": { "nodes": [
+  { "number": 72, "title": "Flagged, passing, and blocked",
+    "url": "https://github.com/nywleswoey/automation/issues/72",
+    "body": "No claim at all, just prose about #99.\n",
+    "labels": { "nodes": [
+      { "name": "ready-for-agent" },
+      { "name": "ordinary-label-01" }, { "name": "ordinary-label-02" },
+      { "name": "ordinary-label-03" }, { "name": "ordinary-label-04" },
+      { "name": "ordinary-label-05" }, { "name": "ordinary-label-06" },
+      { "name": "ordinary-label-07" }, { "name": "ordinary-label-08" },
+      { "name": "ordinary-label-09" }, { "name": "ordinary-label-10" },
+      { "name": "ordinary-label-11" }, { "name": "ordinary-label-12" },
+      { "name": "ordinary-label-13" }, { "name": "ordinary-label-14" },
+      { "name": "ordinary-label-15" }, { "name": "ordinary-label-16" },
+      { "name": "ordinary-label-17" }, { "name": "ordinary-label-18" },
+      { "name": "ordinary-label-19" }, { "name": "ordinary-label-20" },
+      { "name": "agent-refused" }
+    ] } },
+  { "number": 73, "title": "Flagged, passing, and workable",
+    "url": "https://github.com/nywleswoey/automation/issues/73",
+    "body": "## Blocked by\n\n- #70\n",
+    "labels": { "nodes": [ { "name": "ready-for-agent" }, { "name": "agent-refused" } ] } },
+  { "number": 74, "title": "Unflagged, passing, and blocked",
+    "url": "https://github.com/nywleswoey/automation/issues/74",
+    "body": "No claim here either.\n",
+    "labels": { "nodes": [ { "name": "ready-for-agent" } ] } },
+  { "number": 75, "title": "Re-armed and still unverified",
+    "url": "https://github.com/nywleswoey/automation/issues/75",
+    "body": "## Blocked by\n\n- #71\n",
+    "labels": { "nodes": [ { "name": "ready-for-agent" }, { "name": "agent-refused" } ] } }
+] } } } }

@@ -70,6 +70,11 @@
 #                            a label add or a label removal, recorded by its
 #                            argv. Both flags are accepted, together as well as
 #                            apart, because `gh pr edit` accepts both
+#   issue comment <number> --body-file <path>
+#                            an issue comment carrying free text — the refusal's
+#                            record; the file is copied whole to
+#                            $STUB_STATE/issue-body-<number>.txt so a test can
+#                            compare it byte for byte
 #   issue edit <number> --add-label / --remove-label
 #                            a label swap, recorded by its argv and as an
 #                            ordered delta in $STUB_STATE/labels-<number>, which
@@ -102,7 +107,7 @@
 #
 # $STUB_GH_FAIL names a command that must fail: "issues", "claim", "prs",
 # "pr-state", "merged", "issue", "body", "close", "blockers", "labels",
-# "pr-comment", "pr-edit", "comment-edit" or "merge". $STUB_GH_ERROR names which
+# "pr-comment", "pr-edit", "comment-edit", "issue-comment" or "merge". $STUB_GH_ERROR names which
 # rendering it fails with, from fixtures/gh-error-<name>.txt. $STUB_GH_STDERR makes that
 # failure gh-axi's own rather than GitHub's — reported on stderr, with stdout
 # left empty.
@@ -236,6 +241,31 @@ fi
 if [[ "${1:-}" == "issue" ]]; then
   number="${3:-}"
   case "${2:-}" in
+    comment)
+      # The refusal's record. Same rule as `pr comment`: exactly one of --body
+      # and --body-file, because that is the far end's own, and a seam that sent
+      # neither, or both, would be well-formed argv and wrong at GitHub.
+      body=$(flag_value --body "$@")
+      file=$(flag_value --body-file "$@")
+      if [[ -n "$body" && -n "$file" ]]; then
+        echo "stub gh-axi: issue comment takes --body or --body-file, not both" >&2
+        exit 1
+      fi
+      if [[ -z "$body" && -z "$file" ]]; then
+        echo "stub gh-axi: issue comment needs --body or --body-file" >&2
+        exit 1
+      fi
+      fail_if issue-comment 404
+      if [[ -n "$file" ]]; then
+        # Copied whole so a test can compare it byte for byte rather than
+        # grepping the flattened argv — a markdown table is exactly the thing
+        # the argv line cannot carry faithfully.
+        [[ -f "$file" ]] || { echo "stub gh-axi: no such --body-file: $file" >&2; exit 1; }
+        cp "$file" "$STUB_STATE/issue-body-$number.txt"
+      fi
+      printf 'comment:\n  issue: %s\n  created: true\n' "$number"
+      exit 0
+      ;;
     close)
       fail_if close
       # Recorded, so a later read of the same issue sees it closed rather than

@@ -1,0 +1,6 @@
+{ "data": { "repository": { "issues": { "nodes": [
+  { "number": 69, "title": "Blocked and unverified at once",
+    "url": "https://github.com/nywleswoey/automation/issues/69",
+    "body": "## Blocked by\n\n- #70 — open, and carried\n- #71 — not carried at all\n",
+    "labels": { "nodes": [ { "name": "ready-for-agent" } ] } }
+] } } } }
