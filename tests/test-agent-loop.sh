@@ -717,6 +717,96 @@ check "no referent is resolved" \
   test "$(grep -cE '^gh-axi api /repos/nywleswoey/automation/issues/[0-9]+$' "$STUB_CALLS")" -eq 0
 check_grep "pass end dispatches=1 skips=0 sweeps=1 refusals=2" "$OUT"
 
+# --- issue phase: the shapes that anchor a claim, and the ones that never do ----
+
+setup "the claim surface: every authored shape anchors, and nothing else does"
+# The two authoring skills that emit these shapes are vendored and hash-locked,
+# so the predicate has to cover what they write rather than the other way round.
+# Both arms in one pass: the must-not-fire candidates dispatch, the must-fire
+# ones refuse, and each assertion names its own issue.
+export STUB_ISSUES=claim-shapes
+write_config "nywleswoey/automation" "repo-aaa" 300 20
+run_once
+check_status 0 "$STATUS"
+# Must not fire. #80 has no anchor at all.
+check_grep "dispatched nywleswoey/automation#80" "$OUT"
+# #81 is a routine cross-reference in prose — ruling it in would refuse most of
+# the backlog.
+check_grep "dispatched nywleswoey/automation#81" "$OUT"
+# #82's `## Parent` is a containment relation, not a precedence one. A spec stays
+# open until its tickets land, so ruling it in would refuse every child forever.
+check_grep "dispatched nywleswoey/automation#82" "$OUT"
+# #83 writes the reverse `Blocks #N` form, which is a claim about the *other*
+# issue. Landing it correctly would need a body-wide cross-index; it ships as a
+# stated limit instead.
+check_grep "dispatched nywleswoey/automation#83" "$OUT"
+# #84 has "blocked on" mid-sentence. Ordinary narrative prose is not structure.
+check_grep "dispatched nywleswoey/automation#84" "$OUT"
+# Must fire. #85 is the live shape both authoring skills emit: a heading with
+# list items, the referent carried by the markdown link text and by its URL.
+check_grep "issue nywleswoey/automation#85 refused edges=missing:nywleswoey/automation#61,nywleswoey/automation#62" "$OUT"
+# #86 is an inline claim with no heading, scoping to the rest of its line plus
+# the list items immediately under it — and stopping at the prose after them.
+check_grep "issue nywleswoey/automation#86 refused edges=missing:nywleswoey/automation#61,nywleswoey/automation#62,nywleswoey/automation#63" "$OUT"
+check_no_grep "#99" "$STUB_STATE/issue-body-86.txt"
+# #87 is `**Blocked by:**` with the list under it, the shape a body writes when
+# the claim is not a section of its own.
+check_grep "issue nywleswoey/automation#87 refused edges=missing:nywleswoey/automation#61,nywleswoey/automation#62" "$OUT"
+# #88 stacks a list marker, emphasis, upper case and the `on` variant on one line.
+check_grep "issue nywleswoey/automation#88 refused edges=missing:nywleswoey/automation#61" "$OUT"
+# #89 splits its claim across two sections. Claims union over the whole body, so
+# splitting one does not let half of it through — and the prose between them
+# still anchors nothing.
+check_grep "issue nywleswoey/automation#89 refused edges=missing:nywleswoey/automation#61,nywleswoey/automation#62" "$OUT"
+check_no_grep "#99" "$STUB_STATE/issue-body-89.txt"
+# #95 anchors and names nothing, and the blank line after it does not carry the
+# scope past the prose to the list below. A blank line keeping a list scope open
+# is deliberate — it is what `**Blocked by:**` with its list a line below needs —
+# so the boundary that has to hold is the one anything other than a blank line
+# draws.
+check_grep "dispatched nywleswoey/automation#95" "$OUT"
+# #96 shows the template inside a tilde fence rather than using it. The backtick
+# fence line inside is code, not the end of that tilde fence, so the claim text
+# after it remains quoted and anchors nothing.
+check_grep "dispatched nywleswoey/automation#96" "$OUT"
+# #98 keeps a matching fence run with a non-whitespace suffix inside the block,
+# so the template below it remains quoted rather than becoming a live claim.
+check_grep "dispatched nywleswoey/automation#98" "$OUT"
+# #97 has two blank lines between its claim and a list. One blank is markdown's
+# own separator; a second is a gap, and the list below it is not the claim's.
+check_grep "issue nywleswoey/automation#97 refused edges=missing:nywleswoey/automation#61" "$OUT"
+check_no_grep "#99" "$STUB_STATE/issue-body-97.txt"
+check_grep "pass end dispatches=8 skips=0 sweeps=1 refusals=6" "$OUT"
+
+setup "referents inside a claim, and the prose beside them"
+export STUB_ISSUES=claim-referents
+write_config "nywleswoey/automation" "repo-aaa" 300 20
+run_once
+check_status 0 "$STATUS"
+# #90 is the template's own empty form. It yields no referents, so a template
+# never strands a ticket behind a label.
+check_grep "dispatched nywleswoey/automation#90" "$OUT"
+# #94 writes the same empty form inline rather than under a heading.
+check_grep "dispatched nywleswoey/automation#94" "$OUT"
+# #91 names a dependency GitHub has no id for. It yields no referents either, so
+# it produces no refusal that no edge could ever clear.
+check_grep "dispatched nywleswoey/automation#91" "$OUT"
+# #92 names three things: one the graph carries, one it does not, and one that is
+# not an issue at all. The comment tells the author the remaining work rather
+# than the whole list again.
+check_grep "issue nywleswoey/automation#92 refused edges=missing:nywleswoey/automation#71" "$OUT"
+check_grep '`missing=nywleswoey/automation#71`' "$STUB_STATE/issue-body-92.txt"
+check_no_grep "#70" "$STUB_STATE/issue-body-92.txt"
+# #93 names `owner/repo#N` and a full issue URL. Both normalize to
+# `(repository, number)`, and the comparison is by the pair — so the edge to
+# *this* repository's #5 does not satisfy `nywleswoey/other#5`, while the third
+# repository's #9 is satisfied by an edge that carries its own repository.
+check_grep "issue nywleswoey/automation#93 refused edges=missing:nywleswoey/other#5" "$OUT"
+check_no_grep "nywleswoey/third#9" "$STUB_STATE/issue-body-93.txt"
+check "no referent is resolved" \
+  test "$(grep -cE '^gh-axi api /repos/nywleswoey/automation/issues/[0-9]+$' "$STUB_CALLS")" -eq 0
+check_grep "pass end dispatches=3 skips=0 sweeps=1 refusals=2" "$OUT"
+
 setup "an issue that is both blocked and unverified is refused, not skipped"
 # The refusal precedes the open-blocker skip because a skip is a retry and a
 # refusal is terminal: ordering the skip first would give this issue exactly the

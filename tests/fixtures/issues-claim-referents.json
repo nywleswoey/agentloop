@@ -1,0 +1,22 @@
+{ "data": { "repository": { "issues": { "nodes": [
+  { "number": 90, "title": "The template's own empty form",
+    "url": "https://github.com/nywleswoey/automation/issues/90",
+    "body": "## Blocked by\n\nNone — can start immediately\n",
+    "labels": { "nodes": [ { "name": "ready-for-agent" } ] } },
+  { "number": 94, "title": "The empty form written inline",
+    "url": "https://github.com/nywleswoey/automation/issues/94",
+    "body": "Blocked by: None — can start immediately\n",
+    "labels": { "nodes": [ { "name": "ready-for-agent" } ] } },
+  { "number": 91, "title": "A dependency GitHub has no id for",
+    "url": "https://github.com/nywleswoey/automation/issues/91",
+    "body": "Blocked by: the design review\n",
+    "labels": { "nodes": [ { "name": "ready-for-agent" } ] } },
+  { "number": 92, "title": "A mixed claim refuses only on what is missing",
+    "url": "https://github.com/nywleswoey/automation/issues/92",
+    "body": "## Blocked by\n\n- #70 — carried by the graph\n- #71 — not carried\n- the design review — no id at all\n",
+    "labels": { "nodes": [ { "name": "ready-for-agent" } ] } },
+  { "number": 93, "title": "Both long referent forms, compared by repository",
+    "url": "https://github.com/nywleswoey/automation/issues/93",
+    "body": "## Blocked by\n\n- nywleswoey/other#5\n- https://github.com/nywleswoey/third/issues/9\n",
+    "labels": { "nodes": [ { "name": "ready-for-agent" } ] } }
+] } } } }
