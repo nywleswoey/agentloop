@@ -793,7 +793,9 @@ check_status 0 "$STATUS"
 check_grep "issue nywleswoey/automation#69 refused edges=missing:nywleswoey/automation#71" "$OUT"
 check_grep "refusal label swap failed for nywleswoey/automation#69, leaving it ready" "$OUT"
 check_no_grep "issue comment 69" "$STUB_CALLS"
-check_grep "pass end dispatches=0 skips=0 sweeps=1 refusals=1" "$OUT"
+# The counter counts issues that left the ready queue. This one did not, so it is
+# accounted the way a lost claim is — as a skip the next pass looks at again.
+check_grep "pass end dispatches=0 skips=1 sweeps=1 refusals=0" "$OUT"
 
 setup "a refusal whose comment will not land says so on its own line"
 # The other half, and the one an operator cannot read on their own: a flagged
@@ -804,6 +806,8 @@ check_status 0 "$STATUS"
 check_grep "issue nywleswoey/automation#69 refused edges=missing:nywleswoey/automation#71" "$OUT"
 check_grep "gh-axi issue edit 69 --repo nywleswoey/automation --add-label agent-refused --remove-label ready-for-agent" "$STUB_CALLS"
 check_grep "refusal comment failed for nywleswoey/automation#69, the flag is on and the record did not land" "$OUT"
+# The swap landed, so the issue left the queue and the refusal is terminal
+# whatever became of the record.
 check_grep "pass end dispatches=0 skips=0 sweeps=1 refusals=1" "$OUT"
 
 setup "a flag that will not come off does not stop the issue reaching the gates"

@@ -976,8 +976,8 @@ query_issues_by_label() {
 #
 # The refusal flag rides the same line, and it costs no read at all: the
 # selection set already asks for the labels, because the change type is read off
-# them. It travels as a **word** rather than as the label set, for the reason the
-# body travels encoded — a label name may carry a tab or a comma, and either
+# them. It travels as a **word** — `flagged` or `unflagged` — rather than as the
+# label set, for the reason the body travels encoded — a label name may carry a tab or a comma, and either
 # would break the line or the field. Two words rather than one and an empty
 # string, because an empty field in the middle of a tab-separated line vanishes
 # under `read` and shifts every field after it up.
@@ -991,10 +991,10 @@ query_ready_issues() {
             else . end)
       | map(select(IN("feat","fix","chore","docs","refactor","test","perf","build","ci")))
       | first // "feat";
-    def refused_flag:
+    def refusal_flag:
       if ([.labels.nodes[]?.name] | index($refused)) then "flagged" else "unflagged" end;
     .data.repository.issues.nodes[]?
-    | [.number, .url, change_type, refused_flag, ((.body // "") + "\n" | @base64), (.title // "")]
+    | [.number, .url, change_type, refusal_flag, ((.body // "") + "\n" | @base64), (.title // "")]
     | @tsv'
 }
 
@@ -1164,19 +1164,11 @@ release_issue() { swap_labels "$1" "$2" "$LABEL_READY" "$LABEL_CLAIMED"; }
 # departure from the loop's other comments: a one-way label with no stated way
 # back is a trap.
 refusal_body() {
-  local r verdict what raw mark
-
   printf '**Refused — this issue was not dispatched.**\n\n'
   printf '`%s` is off and `%s` is on. The loop re-derives this every pass it can see the issue, and clears the flag on its own once every row below reads `ok`.\n\n' \
     "$LABEL_READY" "$LABEL_REFUSED"
 
-  printf '| Verdict | What | Raw values |\n|---|---|---|\n'
-  for r in "$@"; do
-    # The fourth field is `reason`'s permanence mark, read so that it cannot
-    # leak into the raw column and rendered nowhere: nothing here has a clock.
-    IFS=$'\t' read -r verdict what raw mark <<< "$r"
-    printf '| %s | %s | `%s` |\n' "$(md_cell "$verdict")" "$(md_cell "$what")" "$(md_cell "$raw")"
-  done
+  reason_table "$@"
 
   printf '\n`ok` passed · `no` stopped the dispatch.\n'
 
@@ -1196,11 +1188,17 @@ refusal_body() {
 # pass convention governs dispatch actions, not writes, and a crash between
 # passes leaves an issue labelled and silent.
 #
-#   0  both landed
-#   1  the label swap did not land, so the issue is still ready and still
-#      silent; the next pass derives the same verdict and refuses again
-#   2  the flag is on and the record is not — said on its own line, because a
-#      flagged issue with no comment is the one state an operator cannot read
+# **The status answers one question: did the issue leave the ready queue.** The
+# swap is the terminal act, so a refusal whose swap lands is terminal whatever
+# becomes of the record — that is what the caller's counter counts. A lost swap
+# is the only nothing-happened outcome, and the next pass derives the same
+# verdict and refuses again from scratch.
+#
+# Which write was lost is said on its own log line rather than in the status: no
+# caller branches on it, and both failures are read by an operator rather than by
+# the loop. Every way the record can be lost ends on the same line, because a
+# flagged issue with no record is the one state an operator cannot read off the
+# issue and a silent return would leave exactly that.
 refuse_issue() {
   local github="$1" number="$2" file status=0
   shift 2
@@ -1214,17 +1212,18 @@ refuse_issue() {
 
   # Free text travels to gh-axi as a file: a --body that happened to look like
   # JSON would be reinterpreted, and this body is a markdown table.
-  file=$(mktemp "${TMPDIR:-/tmp}/agent-loop-refusal.XXXXXX") || return 2
-  if ! refusal_body "$@" > "$file"; then
+  if file=$(mktemp "${TMPDIR:-/tmp}/agent-loop-refusal.XXXXXX"); then
+    refusal_body "$@" > "$file" || status=1
+    if (( status == 0 )); then
+      gh-axi issue comment "$number" --repo "$github" --body-file "$file" \
+        >/dev/null 2>&1 || status=$?
+    fi
     rm -f "$file"
-    return 2
+  else
+    status=1
   fi
-  gh-axi issue comment "$number" --repo "$github" --body-file "$file" >/dev/null 2>&1 || status=$?
-  rm -f "$file"
-  if (( status != 0 )); then
-    log "refusal comment failed for $github#$number, the flag is on and the record did not land"
-    return 2
-  fi
+  (( status == 0 )) \
+    || log "refusal comment failed for $github#$number, the flag is on and the record did not land"
   return 0
 }
 
@@ -1287,7 +1286,7 @@ issue_phase() {
 # respects the worker budget, claims issues and dispatches workers at them.
 issue_phase_project() {
   local github="$1" orca_id="$2" issues number weburl type title edges blockers worktree_id
-  local prnumber body64 body flagged missing
+  local prnumber body64 body refusal missing
 
   # ponytail: the CLI's own error text goes to stderr, so it reaches the
   # terminal but not the log file. Capture it into the log line if reading the
@@ -1317,7 +1316,7 @@ issue_phase_project() {
   #
   # `body64` sits between the flag and the title, so the title is still the
   # remainder of the line.
-  while IFS=$'\t' read -r number weburl type flagged body64 title; do
+  while IFS=$'\t' read -r number weburl type refusal body64 title; do
     [[ -n "$number" ]] || continue
 
     # First, and before the blocker read: an issue something already delivers is
@@ -1329,11 +1328,10 @@ issue_phase_project() {
     fi
 
     # Decoded here rather than in the query, so an issue something already
-    # delivers does not pay even this. Nothing reads $body yet; what this line
-    # holds is the decision about *where* the decode goes, which is the half of
-    # it that is expensive to rediscover. An undecodable field is left empty
-    # rather than fatal: the body is not what a dispatch turns on, and `set -e`
-    # would otherwise take the whole pass down over one candidate.
+    # delivers does not pay even this. The blocking-claim check below is what
+    # reads it. An undecodable field is left empty rather than fatal: the body
+    # is not what a dispatch turns on, an empty body passes the check, and
+    # `set -e` would otherwise take the whole pass down over one candidate.
     body=$(base64 -d <<< "$body64" 2>/dev/null) || body=""
 
     # One condition over both halves of the split, so the count stays under the
@@ -1372,10 +1370,17 @@ issue_phase_project() {
       # *derived* and that is true whether or not the writes land. A write that
       # fails says so on its own line, underneath.
       log "issue $github#$number refused edges=missing:$missing"
-      REFUSALS=$((REFUSALS + 1))
-      refuse_issue "$github" "$number" \
-        "$(reason no "every blocking claim in the body is carried by the graph" "missing=$missing")" \
-        < /dev/null || :
+      # The counter counts issues that actually left the ready queue, which is
+      # what makes a refusal terminal. A lost label swap is the one outcome that
+      # is not: the issue is still ready and the next pass refuses it again, so
+      # it is accounted the way a lost claim is — as a skip.
+      if refuse_issue "$github" "$number" \
+           "$(reason no "every blocking claim in the body is carried by the graph" "missing=$missing")" \
+           < /dev/null; then
+        REFUSALS=$((REFUSALS + 1))
+      else
+        SKIPS=$((SKIPS + 1))
+      fi
       continue
     fi
 
@@ -1384,7 +1389,7 @@ issue_phase_project() {
     # else is written, no counter moves, and the issue goes on through the
     # remaining gates on this same pass, where a dispatch is already counted as
     # a dispatch. A counter here would count one issue twice.
-    if [[ "$flagged" == "flagged" ]]; then
+    if [[ "$refusal" == "flagged" ]]; then
       if clear_refusal "$github" "$number" < /dev/null; then
         log "issue $github#$number refusal cleared"
       else
@@ -2114,6 +2119,22 @@ md_cell() {
   printf '%s' "${cell//$'\n'/ }"
 }
 
+# The rows, rendered. Spelled once because two records now write it — the
+# handover's and the refusal's — and a copy per record is how the two end up
+# disagreeing about how a raw value is escaped.
+#
+# The fourth field is `reason`'s permanence mark, read so that it cannot leak
+# into the raw column and rendered nowhere: what it changes is the merge clock's
+# own row and the log line's tail.
+reason_table() {
+  local r verdict what raw mark
+  printf '| Verdict | What | Raw values |\n|---|---|---|\n'
+  for r in "$@"; do
+    IFS=$'\t' read -r verdict what raw mark <<< "$r"
+    printf '| %s | %s | `%s` |\n' "$(md_cell "$verdict")" "$(md_cell "$what")" "$(md_cell "$raw")"
+  done
+}
+
 # The record itself. Everything head-scoped the loop knows lives here, because
 # with no local state a comment on the pull request is the only place a
 # head-scoped record can live at all.
@@ -2125,7 +2146,7 @@ md_cell() {
 # risk gate and from the review clock, `escalate` from the gate's vetoes, and
 # `refused` from the merge.
 escalation_body() {
-  local kind="$1" head="$2" read_at="$3" meaning r verdict what raw mark
+  local kind="$1" head="$2" read_at="$3" meaning
   shift 3
 
   case "$kind" in
@@ -2162,14 +2183,7 @@ escalation_body() {
   # would say the opposite of what this record now means.
   printf 'Read at %s.\n\n' "$read_at"
 
-  printf '| Verdict | What | Raw values |\n|---|---|---|\n'
-  for r in "$@"; do
-    # The fourth field is the permanence mark, read so that it cannot leak into
-    # the raw column, and rendered nowhere: what it changes is the clock's own
-    # row and the log line's tail.
-    IFS=$'\t' read -r verdict what raw mark <<< "$r"
-    printf '| %s | %s | `%s` |\n' "$(md_cell "$verdict")" "$(md_cell "$what")" "$(md_cell "$raw")"
-  done
+  reason_table "$@"
 
   # The legend, and it earns its line by keeping a `defer` row beside a `no` row
   # from being read as a second finding: one of them blocked the merge and the
