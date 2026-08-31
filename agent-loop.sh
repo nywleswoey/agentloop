@@ -978,7 +978,7 @@ read_blocker_edges() {
   response=$(gh_json "/repos/$1/issues/$2/dependencies/blocked_by" --paginate) || return 1
   jq -e 'type == "array"' <<< "$response" >/dev/null 2>&1 || return 1
   jq -r --arg repo "$1" \
-    '.[] | [(.repository.full_name // $repo), .number, .state] | @tsv' <<< "$response"
+    '.[] | [(.repository.full_name // (.repository_url | strings | sub("^https://api.github.com/repos/"; "")) // $repo), .number, .state] | @tsv' <<< "$response"
 }
 
 # How many of those edges are still open, over the lines `read_blocker_edges`
