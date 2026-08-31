@@ -1091,10 +1091,14 @@ count_open_blockers() {
 # **Scope depends on which kind of line anchored.** A heading scopes from the
 # heading itself — so `## Blocked by #7` is a claim — to the next heading of any
 # level or the end of the body. A non-heading anchor scopes to the remainder of
-# its own line plus the list items immediately under it; blank lines between
-# them are markdown's own separators and do not close it, but any other line
-# does. Claims **union** over the whole body, so splitting one across two
-# sections does not let half of it through.
+# its own line plus the list items immediately under it. A single blank line
+# between them does not close it — that widening is what `**Blocked by:**` with
+# its list a line below needs, which is the shape a body writes most often — but
+# a second one does, and so does any line that is not a list item. **A fenced
+# code block anchors nothing at all**: a ticket that shows the template rather
+# than uses it must not be refused for showing it. Claims **union** over the
+# whole body, so splitting one across two sections does not let half of it
+# through.
 #
 # **What never anchors**, each ruled out for its own reason. A bare `#N` in
 # ordinary prose is a routine cross-reference, and ruling it in would refuse most
@@ -1116,6 +1120,11 @@ count_open_blockers() {
 # same referent and the deduplication leaves one.
 blocking_claims() {
   awk -v repo="$2" '
+    # One spelling of a list item, shared by the marker a claim may be written
+    # behind and the marker a list item under a claim is recognised by. Two
+    # spellings would mean `1. Blocked by: #7` anchoring nothing while `1. #7`
+    # continued a claim, which is a distinction nothing wants.
+    BEGIN { BULLET = "^[ \t]*([-+*]|[0-9]+[.)])[ \t]+" }
     # `owner/repo#N` and the full issue URL both normalize to the pair; a bare
     # `#N` binds to the repository the candidate is in.
     function normalize(tok,   num) {
@@ -1138,37 +1147,52 @@ blocking_claims() {
         s = substr(s, RSTART + RLENGTH)
       }
     }
-    # 1 when the line anchors, with REST set to what follows the anchor phrase.
+    # 1 when the line anchors, with CLAIM_TAIL set to what follows the phrase.
     #
     # A list marker needs whitespace after it, which is what tells `* Blocked by`
-    # apart from the emphasis in `**Blocked by:**`. The phrase needs a boundary
-    # after it too — whitespace, a colon, an emphasis mark or the end of the line
-    # — so `Blocked ontology` is prose rather than a `Blocked on` claim.
-    function anchors(line,   s) {
+    # apart from the emphasis in `**Blocked by:**`. The phrase is located once,
+    # on the lowercased copy, and measured off it — a second spelling of the
+    # same words is how two spellings end up disagreeing about where they end.
+    function anchors(line,   s, low, n) {
       s = line
       sub(/^[ \t]+/, "", s)
       if (s ~ /^#+([ \t]|$)/) sub(/^#+[ \t]*/, "", s)
-      else if (s ~ /^[-+*][ \t]+/) sub(/^[-+*][ \t]+/, "", s)
+      else if (s ~ BULLET) sub(BULLET, "", s)
       sub(/^[*_]+[ \t]*/, "", s)
-      if (tolower(s) !~ /^blocked[ \t]+(by|on)([ \t:*_]|$)/) return 0
-      sub(/^[Bb][Ll][Oo][Cc][Kk][Ee][Dd][ \t]+([Bb][Yy]|[Oo][Nn])[ \t]*:?/, "", s)
-      REST = s
+      low = tolower(s)
+      if (!match(low, /^blocked[ \t]+(by|on)/)) return 0
+      n = RLENGTH
+      # The phrase has to end at a boundary — whitespace, a colon, an emphasis
+      # mark or the end of the line — or `Blocked ontology` reads as a claim.
+      if (substr(low, n + 1) !~ /^([ \t:*_]|$)/) return 0
+      if (match(substr(low, n + 1), /^[ \t]*:/)) n += RLENGTH
+      CLAIM_TAIL = substr(s, n + 1)
       return 1
     }
     {
+      # A fenced block is quoted text rather than structure. A ticket that shows
+      # the template in a code fence — this repository writes several — must not
+      # be refused for showing it.
+      if ($0 ~ /^[ \t]*(```|~~~)/) { fence = !fence; next }
+      if (fence) next
+
       # A heading needs whitespace or an end of line after its marks, so `#93`
       # at the start of a line is a referent rather than a first-level heading.
       # Any heading closes a running list scope and re-decides the section one.
       if ($0 ~ /^[ \t]*#+([ \t]|$)/) {
         list = 0
         section = anchors($0)
-        if (section) referents(REST)
+        if (section) referents(CLAIM_TAIL)
         next
       }
-      if (anchors($0)) { list = 1; referents(REST); next }
+      if (anchors($0)) { list = 1; blanks = 0; referents(CLAIM_TAIL); next }
       if (list) {
-        if ($0 ~ /^[ \t]*$/) next
-        if ($0 ~ /^[ \t]*([-+*]|[0-9]+[.)])[ \t]+/) { referents($0); next }
+        # One blank line is the separator markdown puts between a label and its
+        # list, and between the items of a loose one. A second is a gap, and a
+        # gap ends the claim.
+        if ($0 ~ /^[ \t]*$/) { if (++blanks > 1) list = 0; next }
+        blanks = 0
+        if ($0 ~ BULLET) { referents($0); next }
         list = 0
       }
       if (section) referents($0)

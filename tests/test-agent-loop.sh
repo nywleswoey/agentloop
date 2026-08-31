@@ -759,7 +759,20 @@ check_grep "issue nywleswoey/automation#88 refused edges=missing:nywleswoey/auto
 # still anchors nothing.
 check_grep "issue nywleswoey/automation#89 refused edges=missing:nywleswoey/automation#61,nywleswoey/automation#62" "$OUT"
 check_no_grep "#99" "$STUB_STATE/issue-body-89.txt"
-check_grep "pass end dispatches=5 skips=0 sweeps=1 refusals=5" "$OUT"
+# #95 anchors and names nothing, and the blank line after it does not carry the
+# scope past the prose to the list below. A blank line keeping a list scope open
+# is deliberate — it is what `**Blocked by:**` with its list a line below needs —
+# so the boundary that has to hold is the one anything other than a blank line
+# draws.
+check_grep "dispatched nywleswoey/automation#95" "$OUT"
+# #96 shows the template inside a code fence rather than using it. A fenced
+# block anchors nothing, so a ticket is never refused for quoting the shape.
+check_grep "dispatched nywleswoey/automation#96" "$OUT"
+# #97 has two blank lines between its claim and a list. One blank is markdown's
+# own separator; a second is a gap, and the list below it is not the claim's.
+check_grep "issue nywleswoey/automation#97 refused edges=missing:nywleswoey/automation#61" "$OUT"
+check_no_grep "#99" "$STUB_STATE/issue-body-97.txt"
+check_grep "pass end dispatches=7 skips=0 sweeps=1 refusals=6" "$OUT"
 
 setup "referents inside a claim, and the prose beside them"
 export STUB_ISSUES=claim-referents
@@ -769,6 +782,8 @@ check_status 0 "$STATUS"
 # #90 is the template's own empty form. It yields no referents, so a template
 # never strands a ticket behind a label.
 check_grep "dispatched nywleswoey/automation#90" "$OUT"
+# #94 writes the same empty form inline rather than under a heading.
+check_grep "dispatched nywleswoey/automation#94" "$OUT"
 # #91 names a dependency GitHub has no id for. It yields no referents either, so
 # it produces no refusal that no edge could ever clear.
 check_grep "dispatched nywleswoey/automation#91" "$OUT"
@@ -786,7 +801,7 @@ check_grep "issue nywleswoey/automation#93 refused edges=missing:nywleswoey/othe
 check_no_grep "nywleswoey/third#9" "$STUB_STATE/issue-body-93.txt"
 check "no referent is resolved" \
   test "$(grep -cE '^gh-axi api /repos/nywleswoey/automation/issues/[0-9]+$' "$STUB_CALLS")" -eq 0
-check_grep "pass end dispatches=2 skips=0 sweeps=1 refusals=2" "$OUT"
+check_grep "pass end dispatches=3 skips=0 sweeps=1 refusals=2" "$OUT"
 
 setup "an issue that is both blocked and unverified is refused, not skipped"
 # The refusal precedes the open-blocker skip because a skip is a retry and a
