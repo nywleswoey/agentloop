@@ -1,5 +1,5 @@
 { "data": { "repository": { "issues": { "nodes": [
   { "number": 18, "title": "Agent loop: worktree inventory",
     "url": "https://github.com/nywleswoey/automation/issues/18",
-    "labels": { "nodes": [ { "name": "ready-for-agent" } ] } }
+    "labels": { "nodes": [ { "name": "implement" }, { "name": "ready-for-agent" } ] } }
 ] } } } }

@@ -2,5 +2,5 @@
   { "number": 17, "title": "Agent loop: issue phase",
     "url": "https://github.com/nywleswoey/automation/issues/17",
     "body": "## Blocked by\n\n- #6 — the partition\n\nRun `agent-loop.sh --once`:\n\n\tindented\twith\ttabs\n\nA trailing line.\n",
-    "labels": { "nodes": [ { "name": "ready-for-agent" }, { "name": "bug" } ] } }
+    "labels": { "nodes": [ { "name": "implement" }, { "name": "ready-for-agent" }, { "name": "bug" } ] } }
 ] } } } }

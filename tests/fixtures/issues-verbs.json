@@ -1,0 +1,14 @@
+{ "data": { "repository": { "issues": { "nodes": [
+  { "number": 17, "title": "A ticket declaring one verb",
+    "url": "https://github.com/nywleswoey/automation/issues/17",
+    "labels": { "nodes": [ { "name": "ready-for-agent" }, { "name": "implement" } ] } },
+  { "number": 18, "title": "A candidate declaring no verb, and blocked as well",
+    "url": "https://github.com/nywleswoey/automation/issues/18",
+    "labels": { "nodes": [ { "name": "ready-for-agent" } ] } },
+  { "number": 19, "title": "A candidate declaring both verbs",
+    "url": "https://github.com/nywleswoey/automation/issues/19",
+    "labels": { "nodes": [ { "name": "to-tickets" }, { "name": "ready-for-agent" }, { "name": "implement" } ] } },
+  { "number": 92, "title": "A spec declaring the decomposition verb",
+    "url": "https://github.com/nywleswoey/automation/issues/92",
+    "labels": { "nodes": [ { "name": "ready-for-agent" }, { "name": "to-tickets" } ] } }
+] } } } }

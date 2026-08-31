@@ -1,0 +1,4 @@
+{ "number": 93, "state": "open",
+  "labels": [ { "name": "agent-in-progress" }, { "name": "to-tickets" } ],
+  "sub_issues_summary": { "total": 0, "completed": 0, "percent_completed": 0 },
+  "body": "A spec whose worker published nothing.\n" }

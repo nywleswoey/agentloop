@@ -1,0 +1,11 @@
+{ "data": { "repository": { "issues": { "nodes": [
+  { "number": 92, "title": "A decomposed spec, nobody on it",
+    "url": "https://github.com/nywleswoey/automation/issues/92",
+    "labels": { "nodes": [ { "name": "agent-in-progress" }, { "name": "to-tickets" } ] } },
+  { "number": 93, "title": "A spec whose worker published nothing",
+    "url": "https://github.com/nywleswoey/automation/issues/93",
+    "labels": { "nodes": [ { "name": "to-tickets" }, { "name": "agent-in-progress" } ] } },
+  { "number": 17, "title": "A claimed ticket that happens to have children",
+    "url": "https://github.com/nywleswoey/automation/issues/17",
+    "labels": { "nodes": [ { "name": "agent-in-progress" }, { "name": "implement" } ] } }
+] } } } }

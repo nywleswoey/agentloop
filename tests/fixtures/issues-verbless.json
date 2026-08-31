@@ -1,6 +1,5 @@
 { "data": { "repository": { "issues": { "nodes": [
   { "number": 17, "title": "Agent loop: issue phase",
     "url": "https://github.com/nywleswoey/automation/issues/17",
-    "body": null,
-    "labels": { "nodes": [ { "name": "implement" }, { "name": "ready-for-agent" } ] } }
+    "labels": { "nodes": [ { "name": "ready-for-agent" }, { "name": "Type::Feat" } ] } }
 ] } } } }

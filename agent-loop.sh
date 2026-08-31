@@ -219,17 +219,81 @@ LABEL_ESCALATED='agent-escalated'
 # query is over pull requests: one query answers which issues the loop refused,
 # and a different one which pull requests need a human.
 #
-# **It is a live flag, not a latch.** The issue phase re-derives the predicate
+# **It is a live flag, not a latch.** The issue phase re-derives the predicates
 # behind it on every pass it can see the issue, adds it with the swap that takes
-# `ready-for-agent` off, and takes it back off on its own the first pass the
-# predicate passes. The comment it goes on with is the opposite: a record of an
-# event, never withdrawn.
+# `ready-for-agent` off, and takes it back off on its own the first pass they all
+# pass. The comment it goes on with is the opposite: a record of an event, never
+# withdrawn.
 LABEL_REFUSED='agent-refused'
+
+# The verbs. An issue declares what the loop should *do* with it in its labels,
+# on top of the ready label, and the loop dispatches by that declaration: a
+# ticket is implemented, a spec is decomposed into tickets. There is no default
+# — an issue declaring none, or both, is refused rather than dispatched under a
+# guess — because a forgotten label costs a stalled issue you can see and a
+# default costs a wrong build you find out about later.
+#
+# **Constants rather than config keys**, and for a different reason than the two
+# flags above: a verb name is *welded to a prompt string*. `labels.ready` and
+# `labels.claimed` are config because the loop only ever compares them to
+# themselves — rename them and nothing downstream cares. A verb names a slash
+# command that has to exist in the worker's skill set, so an operator-supplied
+# name behind a hardcoded prompt is incoherent: renaming it either breaks the
+# dispatch or changes nothing.
+#
+# Bare words with no namespace prefix. The `::` the change-type reader parses is
+# code-only — no label in any configured repository uses it — and the ones that
+# do carry a namespace use a single colon, so following the code's convention
+# would put a third punctuation style in one label list.
+VERB_IMPLEMENT='implement'
+VERB_TO_TICKETS='to-tickets'
+
+# The marker on a spec the loop decomposed. Terminal, latching, and **not** a
+# reuse of `agent-escalated`: that one means *the loop refused to act* and this
+# means the opposite, its writes go through the pull-request seam rather than
+# through an issue edit, and — decisively — a handover is deliberately
+# un-latching, re-derived every pass and withdrawn when it stops being true.
+# This records a one-shot historical fact that no pass re-derives, so under a
+# label whose whole contract is not-latching the first thing to touch it would
+# take it down.
+LABEL_DECOMPOSED='agent-decomposed'
+
+# The one definition of *which of the loop's own labels an issue is wearing*,
+# shared by both readers of the label queries. It is a jq fragment rather than
+# two copies because the two streams have to agree on it exactly: the verb the
+# gate refuses on and the verb close-out scopes on are the same fact, read off
+# two different payload shapes, and a second copy is a second chance for them to
+# disagree.
+#
+# Three properties, all load-bearing:
+#
+#   - **Evidence, not a conclusion.** `reason`'s contract is the raw values that
+#     produced the judgement. *You wrote no verb* and *you wrote both verbs*
+#     need opposite fixes from the operator reading the refusal, so the column
+#     names what was found rather than the verdict it produced.
+#   - **Never empty.** A tab is IFS whitespace, so `read` collapses a run of
+#     them and an empty field anywhere but the end of the line disappears,
+#     shifting every field after it up. A verbless issue would then reach the
+#     gate declaring its own *title* as its verb. `-` is the placeholder that
+#     stops that.
+#   - **Whitespace-free by construction**, because it is an intersection with a
+#     closed set of constants — so it can never pick up an operator label
+#     containing a space, which is the property that keeps the title last.
+#
+# The order is the *set's* order and not GraphQL's, so a fixture is
+# deterministic and an issue wearing its labels the other way round produces the
+# same line.
+OWN_LABELS_JQ='
+  def own(set):
+    [.labels.nodes[]?.name] as $names
+    | [set[] | select(. as $l | $names | index($l))]
+    | if length == 0 then "-" else join(",") end;'
 # Reset at the top of every pass. Initialised here only because the close-out
-# that runs before the first pass bumps it too, and `set -u` would kill it
-# otherwise — what it counts before the first pass is discarded, which is why
+# that runs before the first pass bumps them too, and `set -u` would kill them
+# otherwise — what they count before the first pass is discarded, which is why
 # that close-out reports one line per issue rather than a total.
 SKIPS=0
+REFUSALS=0
 
 # Print usage information to stdout showing command syntax, options, environment
 # variables, and required tools. Called when --help is passed or on argument errors.
@@ -479,21 +543,35 @@ repo_path() {
 
 # GitHub resolves an issue's labels by name, and a name that does not exist yet
 # is not created for you — unlike GitLab, where first use was enough. So the
-# loop's own four labels are made to exist once, at startup, in every repo it
-# polls. Anything already there is left exactly as it is, colour included.
+# loop's own labels are made to exist once, at startup, in every repo it polls.
+# Anything already there is left exactly as it is, colour included.
 #
-# The two constants are here for the same reason the two in the config are, and
-# the cost of leaving either out is worse: an `--add-label` naming a label that
-# does not exist is refused, so a handover would post its comment and then fail
-# to flag it, forever, on a chase that can never land — and a refusal, which
-# writes its label first, would never get past the swap and would leave the issue
-# ready and silent on every pass.
+# The three flag constants are here for the same reason the two in the config
+# are, and the cost of leaving any of them out is worse: an `--add-label` naming
+# a label that does not exist is refused, so a handover would post its comment
+# and then fail to flag it, forever, on a chase that can never land — and a
+# refusal, which writes its label first, would never get past the swap and would
+# leave the issue ready and silent on every pass.
+#
+# **The two verbs are here for a different argument, and it is the stronger
+# one.** The loop never writes a verb label — it only ever reads one — so the
+# refused-`--add-label` reasoning does not reach them. What does is that the
+# verb gate fails closed: *the marker has to be appliable everywhere before the
+# rule that demands it arrives.* Without this, shipping the gate refuses every
+# issue in a repository that has no `to-tickets` label, with no fix that does
+# not start with creating one.
+#
+# Cosmetic divergence, recorded so it is not rediscovered as a bug: the verb
+# labels created by hand ahead of this are `aaaaaa` where this creates at
+# `ededed`, and the skip is by name, so they will never be recoloured. Fixable
+# only at the constant below, and not worth fixing.
 ensure_labels() {
   local repo="$1" existing label response
   response=$(gh_json "/repos/$repo/labels" --paginate) \
     || { log "could not list labels in $repo, assuming they exist"; return 0; }
   existing=$(jq -r '.[].name' <<< "$response")
-  for label in "$LABEL_READY" "$LABEL_CLAIMED" "$LABEL_ESCALATED" "$LABEL_REFUSED"; do
+  for label in "$LABEL_READY" "$LABEL_CLAIMED" "$LABEL_ESCALATED" "$LABEL_REFUSED" \
+               "$VERB_IMPLEMENT" "$VERB_TO_TICKETS" "$LABEL_DECOMPOSED"; do
     grep -qxF "$label" <<< "$existing" && continue
     if gh-axi label create --name "$label" --color ededed \
          --description "agent-loop" --repo "$repo" >/dev/null 2>&1; then
@@ -609,11 +687,28 @@ ensure_runtime() {
 # reclaim and the branch check all ask their question of the same snapshot. A
 # failed read leaves the last good snapshot alone and returns non-zero, because
 # "I could not look" and "nothing is running" must never read the same.
+#
+# `ORCA_PS_LOADED` says whether `$ORCA_PS` holds a snapshot; `ORCA_PS_ATTEMPTED`
+# says whether anything has tried to take one since the last try.
+#
+# Close-out's second entry path asks a liveness question, and close-out runs
+# once at startup before any pass has loaded a snapshot — so it loads its own
+# when nobody has, and reuses the pass's when there is one. Reading a stale or
+# unset inventory would answer *nobody is on it* about a worker that is, which
+# is the one answer that path must never get wrong. The attempt flag is what
+# keeps a runtime that will not answer from being asked once per claimed spec:
+# the first failure is the answer for all of them.
+ORCA_PS=''
+ORCA_PS_LOADED=false
+ORCA_PS_ATTEMPTED=false
 load_worktree_inventory() {
   local response
+  ORCA_PS_LOADED=false
+  ORCA_PS_ATTEMPTED=true
   response=$(orca worktree ps --json 2>/dev/null) || return 1
   jq -e '.result.worktrees' <<< "$response" >/dev/null 2>&1 || return 1
   ORCA_PS="$response"
+  ORCA_PS_LOADED=true
 }
 
 # Every worktree Orca knows, one `<live|idle>\t<path>` line each. An agent that
@@ -905,6 +1000,22 @@ issue_has_live_worker() {
 # Two questions, not one. A claim is only stale when **nobody is on it and
 # nothing has come of it**: liveness answers the first, an open pull request the
 # second, and either one on its own hands back work that is already delivered.
+#
+# Ahead of both sits a third, cheaper answer: **a claimed `to-tickets` issue is
+# never reclaimed.** Neither of the two questions can be asked of a
+# decomposition — it produces issues rather than a pull request, so the second
+# is answered `no` by construction — and handing a spec back means decomposing
+# it a second time, into a duplicate set of child tickets a human may approve
+# without noticing it is the second batch.
+#
+# The exemption is on the **verb** and not on the child count. *A spec that
+# already has children stays claimed* leaves the hole open: a worker that links
+# its children by prose alone leaves the count at zero, the exemption does not
+# fire, and the duplication arrives by the other door. It is also strictly
+# cheaper — the verb is already on the claimed-issue row — and strictly wider,
+# since a correctly decomposed spec is unclaimed by close-out and never reaches
+# here at all. **Close-out is therefore the only path that clears a spec's
+# claim.**
 reclaim_stale_claims() {
   # A reclaim on an inventory we could not read would hand back issues that do
   # have workers, so an unreadable inventory skips the reclaim entirely.
@@ -913,7 +1024,7 @@ reclaim_stale_claims() {
     return 0
   fi
 
-  local i github numbers number prnumber
+  local i github numbers number verb prnumber
   for (( i = 0; i < PROJECT_COUNT; i++ )); do
     github=$(jq -r ".projects[$i].github" "$CONFIG_PATH")
     if ! numbers=$(query_claimed_issues "$github"); then
@@ -932,9 +1043,11 @@ reclaim_stale_claims() {
       continue
     fi
     # stdin is closed for the body: gh-axi must not swallow the issue list.
-    while IFS= read -r number; do
+    while IFS=$'\t' read -r number verb; do
       [[ -n "$number" ]] || continue
-      if issue_has_live_worker "$number"; then
+      if [[ "$verb" == "$VERB_TO_TICKETS" ]]; then
+        log "left claimed $github#$number: a $VERB_TO_TICKETS issue is never reclaimed"
+      elif issue_has_live_worker "$number"; then
         log "left claimed $github#$number: a live worker holds it"
       elif prnumber=$(open_pr_for_issue "$number"); then
         log "left claimed $github#$number: pull request #$prnumber already delivers it"
@@ -954,11 +1067,22 @@ reclaim_stale_claims() {
 # `body` is in the selection set because the ready-issue reader needs it and a
 # selected field costs no extra request — it rides back in the response that
 # already produced the candidate. It is not free of *payload*: up to a hundred
-# whole issue bodies now come back on every ready read, and the claimed-issue
-# reader takes only the number and discards its copy entirely. That is the price
-# of one query shape rather than two, and it is bounded — `gh_json` passes
-# `--full`, so a bigger response cannot start being truncated, and the claimed
-# read happens once per startup rather than once per pass.
+# whole issue bodies now come back on every read, and the claimed-issue reader
+# takes only the number and the verb and discards its copy of the body
+# entirely. That is the price of one query shape rather than two, and it is
+# bounded — `gh_json` passes `--full`, so a bigger response cannot start being
+# truncated.
+#
+# The claimed read used to happen once per startup. It is now once per
+# repository per pass as well, because close-out's second entry path enumerates
+# the loop's claims — which is the read that path is costed on.
+#
+# `labels(first: 100)` is what both readers derive the change type, the verb and
+# the refusal flag from. It **truncates**: an issue wearing more than one hundred
+# labels can have its verb fall off the end of the page and be refused for
+# declaring none. That fails closed — a stalled issue you can see — and no
+# repository is near the limit. Named here so it is not rediscovered as a
+# mystery.
 query_issues_by_label() {
   local github="$1" label="$2" owner="${1%%/*}" name="${1##*/}" response
   response=$(gh_graphql "{ repository(owner: \"$owner\", name: \"$name\") { issues(labels: [\"$label\"], states: OPEN, first: 100) { nodes { number title url body labels(first: 100) { nodes { name } } } } } }") || return 1
@@ -997,15 +1121,31 @@ query_issues_by_label() {
 # coming back: the decode is read through a command substitution, which strips
 # trailing newlines from a real body just the same.
 #
-# The refusal flag rides the same line, and it costs no read at all: the
-# selection set already asks for the labels, because the change type is read off
-# them. It travels as a **word** — `flagged` or `unflagged` — rather than as the
+# The refusal flag and the verb ride the same line, and both cost no read at
+# all: the selection set already asks for the labels, because the change type is
+# read off them. So a fail-closed gate on every dispatch, and the clear that
+# lifts it, buy nothing extra.
+#
+# The flag travels as a **word** — `flagged` or `unflagged` — rather than as the
 # label set, for the reason the body travels encoded — a label name may carry a tab or a comma, and either
 # would break the line or the field. Two words rather than one and an empty
 # string, because an empty field in the middle of a tab-separated line vanishes
 # under `read` and shifts every field after it up.
+#
+# The verb cannot be a word in that sense: *which* verbs were found is what the
+# refusal has to report, since *you wrote no verb* and *you wrote both* need
+# opposite fixes from the operator. So it travels as the intersection
+# `OWN_LABELS_JQ` builds — see the properties recorded there, the never-empty
+# one included, which are what let it sit on this line safely.
+#
+# **The refusal never happens here.** Dropping a verbless issue at query time
+# would make it vanish from the phase with no skip line, no comment and no
+# label. The row is emitted so the gate can refuse it audibly.
 query_ready_issues() {
-  query_issues_by_label "$1" "$LABEL_READY" | jq -r --arg refused "$LABEL_REFUSED" '
+  query_issues_by_label "$1" "$LABEL_READY" | jq -r \
+    --arg implement "$VERB_IMPLEMENT" \
+    --arg to_tickets "$VERB_TO_TICKETS" \
+    --arg refused "$LABEL_REFUSED" "$OWN_LABELS_JQ"'
     def change_type:
       [.labels.nodes[]?.name | ascii_downcase | sub("^.*::"; "")]
       | map(if . == "bug" then "fix"
@@ -1017,11 +1157,13 @@ query_ready_issues() {
     def refusal_flag:
       if ([.labels.nodes[]?.name] | index($refused)) then "flagged" else "unflagged" end;
     .data.repository.issues.nodes[]?
-    | [.number, .url, change_type, refusal_flag, ((.body // "") + "\n" | @base64), (.title // "")]
+    | [.number, .url, change_type, refusal_flag, own([$implement, $to_tickets]),
+       ((.body // "") + "\n" | @base64), (.title // "")]
     | @tsv'
 }
 
-# Query all claimed issues in a repository. Prints issue numbers, one per line.
+# Query all claimed issues in a repository. Prints `number`, `verb`,
+# tab-separated, one per line.
 #
 # Open ones only, because `query_issues_by_label` asks for `states: OPEN` — so a
 # claim label left on a *closed* issue is invisible here and can never be
@@ -1029,8 +1171,19 @@ query_ready_issues() {
 # is the only path that clears such a label, and it reaches a closed issue on
 # every pass for as long as the merged pull request is readable, so the reclaim
 # never has to see one.
+#
+# **The verb rides alongside the number for free.** The shared query already
+# fetches `labels(first: 20)` and this reader used to discard them whole. Both
+# readers of this stream need the verb — the reclaim to exempt a claimed spec,
+# close-out to tell a decomposition from an implementation after the claim swap
+# has taken the ready label off — and it is the same intersection, in the same
+# constant order, that the ready-issue stream carries.
 query_claimed_issues() {
-  query_issues_by_label "$1" "$LABEL_CLAIMED" | jq -r '.data.repository.issues.nodes[]?.number'
+  query_issues_by_label "$1" "$LABEL_CLAIMED" | jq -r \
+    --arg implement "$VERB_IMPLEMENT" \
+    --arg to_tickets "$VERB_TO_TICKETS" "$OWN_LABELS_JQ"'
+    .data.repository.issues.nodes[]?
+    | [.number, own([$implement, $to_tickets])] | @tsv'
 }
 
 # GitHub has no "these issues block this one" field on the issue itself, so the
@@ -1261,14 +1414,48 @@ release_issue() { swap_labels "$1" "$2" "$LABEL_READY" "$LABEL_CLAIMED"; }
 
 # --- the refusal -------------------------------------------------------------
 
+# The issue phase's handover. Where the PR phase's escalation hands a pull
+# request back, this hands an *issue* back: the loop read it, would not dispatch
+# at it, and says why on the issue itself.
+#
+# **One disposition with a predicate per row, not one disposition per
+# predicate.** There are two predicates now — the blocking claim the graph does
+# not carry, and the issue that declares no verb or two — and **nothing
+# short-circuits**: both always evaluate, and an issue failing both is refused
+# *once*, naming both. That is the rule the PR phase already writes down — *all
+# four vetoes evaluate, so one handover carries every reason, the ones that
+# passed included* — and it transfers unchanged, for the reason given there: the
+# passing rows tell the operator where **not** to look.
+#
+# The opposing argument was put on the record and rejected. The verb is free —
+# already in hand on the ready-issue row — where the blocker read is a paid REST
+# call per candidate, so refusing on the verb first would save the paid read. It
+# loses on the count above; on the currencies being asymmetric, a saved request
+# against a human round trip (fix the verb, re-label, wait a pass, get refused
+# again for something knowable the first time); on the saving being nearly zero
+# anyway, since a refusal is terminal and the issue leaves the queue, so the
+# read is paid once per refused issue ever rather than once per pass; and
+# because a verb-first refusal would stop comparing the body's claims against
+# the graph for exactly the issues most likely to be badly authored. Stated as a
+# choice rather than left as an oversight: **a free predicate is deliberately
+# deferred past a paid read it does not need, because the refusal evaluates as a
+# unit since it reports as a unit.**
+#
+# **One label for both**, and the reason in the comment rather than in the name.
+# A second `needs-verb` label would be two representations of one fact;
+# `agent-escalated` already serves four kinds the same way; and the loop's label
+# family names *what the loop did*, not what the human must do. The accepted
+# cost, named: the flag says *go look*, not *look at this*.
+
 # The refusal's comment, and it is **the gate's record rather than prose** — the
 # same shape `escalation_body` writes, from the same `reason` rows and the same
-# `md_cell`, so the second predicate arrives as a second row rather than as a
-# rewrite. There is one predicate today, so there is one row.
+# `md_cell`, so the second predicate arrived as a second row rather than as a
+# rewrite.
 #
 # Rows that passed are carried too, for the reason the handover carries them:
-# they tell the operator where *not* to look. That is vacuous with one predicate
-# and stops being vacuous the moment the second lands.
+# they tell the operator where *not* to look. With two predicates that has
+# stopped being vacuous — an issue whose verb is wrong and whose edges are fine
+# says so in one comment.
 #
 # Two things `escalation_body` has are deliberately absent. **No kind word** —
 # the rows already say which predicate failed, and a kind would be a second
@@ -1281,14 +1468,19 @@ release_issue() { swap_labels "$1" "$2" "$LABEL_READY" "$LABEL_CLAIMED"; }
 # **The legend carries two verdicts, not four.** The refusal has no clock and
 # judges everything it reads, so `defer` and `note` are unreachable.
 #
-# **It never says the issue is blocked.** The predicate resolves no referent
-# state, so a closed edge verifies a claim without blocking. The honest sentence
-# is *this claim could not be verified*.
+# **It never says the issue is blocked.** The blocking-claim predicate resolves
+# no referent state, so a closed edge verifies a claim without blocking. The
+# honest sentence is *this claim could not be verified*.
 #
-# The way back in is instruction rather than record, and that is a deliberate
+# The ways back in are instruction rather than record, and that is a deliberate
 # departure from the loop's other comments: a one-way label with no stated way
-# back is a trap.
+# back is a trap. **They are per row**, off the row's fourth field: a partial fix
+# refuses again and the comment then names only what is still wrong, so progress
+# is legible in the record. `reason` sanitises four fields and renders three, and
+# what the fourth one *means* belongs to whoever reads it — the permanence mark
+# is the PR gate's reading of it, and this table's is the way back in.
 refusal_body() {
+  local r verdict what raw way
   printf '**Refused — this issue was not dispatched.**\n\n'
   printf '`%s` is off and `%s` is on. The loop re-derives this every pass it can see the issue, and clears the flag on its own once every row below reads `ok`.\n\n' \
     "$LABEL_READY" "$LABEL_REFUSED"
@@ -1297,9 +1489,12 @@ refusal_body() {
 
   printf '\n`ok` passed · `no` stopped the dispatch.\n'
 
-  printf '\n**Ways back in**\n\n'
-  printf -- '- **Add the native dependency edge** for every referent named above, then re-apply `%s`.\n' \
-    "$LABEL_READY"
+  printf '\n**Ways back in** — then re-apply `%s`.\n\n' "$LABEL_READY"
+  for r in "$@"; do
+    IFS=$'\t' read -r verdict what raw way <<< "$r"
+    [[ "$verdict" == "no" && -n "$way" ]] || continue
+    printf -- '- %s\n' "$way"
+  done
 }
 
 # The two writes, one pass, **label first**.
@@ -1353,11 +1548,12 @@ refuse_issue() {
 }
 
 # The flag coming off, on its own. **The comment is a record of an event** —
-# on this pass, this issue claimed a blocker the graph did not carry — which was
-# true then and stays true, so it is never withdrawn. **The label is a live flag**
-# over a fact the loop re-derives every pass it can see the issue, so it does
-# withdraw. A strictly one-way label was rejected: it leaves a fixed, re-labelled,
-# dispatched issue wearing a flag that is now false, forever.
+# on this pass, this issue claimed a blocker the graph did not carry, or
+# declared no verb — which was true then and stays true, so it is never
+# withdrawn. **The label is a live flag** over facts the loop re-derives every
+# pass it can see the issue, so it does withdraw. A strictly one-way label was
+# rejected: it leaves a fixed, re-labelled, dispatched issue wearing a flag that
+# is now false, forever.
 clear_refusal() {
   gh-axi issue edit "$2" --repo "$1" --remove-label "$LABEL_REFUSED" >/dev/null 2>&1
 }
@@ -1379,17 +1575,82 @@ issue_slug() {
   printf '%s' "${slug%-}"
 }
 
-# The prompt is the issue URL and nothing else — the issue stays the single
-# source of what to build.
+# The prompt table: **a closed table with the prompt written out per row**, and
+# a table miss is no prompt at all.
+#
+# Rejected: an allow-list plus pure substitution (`/$verb $weburl`). It looks
+# identical for the `implement` row and is not the same design. **The table is
+# the refusal** — membership and derivation are one artifact, so *the loop does
+# not know this verb* and *the loop will not build a prompt for it* are the same
+# line of code and cannot drift apart. And substitution has nowhere to put the
+# decomposition instruction below.
+#
+# The `*)` arm is defence in depth and not the gate: the refusal fires before
+# the dispatch, so an unrecognised verb never reaches here. It exists because
+# the table's own contract is that an unknown verb yields no prompt.
+#
+# The arms interpolate the verb constant into their own slash command rather
+# than spelling it a second time, and that is **not** the substitution rejected
+# above. What was rejected removes the table; this keeps every row written out
+# and only single-sources the weld the constant exists for — the label names a
+# slash command, so renaming the constant has to rename the command with it or
+# the dispatch is incoherent. Membership and derivation stay one artifact.
+#
+# **The four clauses ride in the prompt as code.** `dispatch_issue` is one
+# daemon over the whole `projects` array, so an instruction here travels to
+# every configured repository in the file whose invariant depends on it. A
+# user-scope skill was reachable — Orca worktrees share this `$HOME` — and was
+# rejected on a different ground: an invariant whose residual is *a worker
+# instruction* must be auditable by reading this file, not a directory no repo
+# tracks and no test sees.
+#
+# Clause 4 is load-bearing and is phrased as the **situation** rather than as
+# "step 4", so a reworded or renumbered upstream skill cannot strand it pointing
+# at nothing. Left unsaid, a dispatched agent with no immediate user very often
+# answers its own quiz — and a worker that self-approves badly is a permanent
+# stall rather than a retry, because a claimed `to-tickets` issue is never
+# reclaimed.
+issue_prompt() {
+  local verb="$1" weburl="$2"
+  case "$verb" in
+    "$VERB_IMPLEMENT")
+      printf '/%s %s' "$VERB_IMPLEMENT" "$weburl"
+      ;;
+    "$VERB_TO_TICKETS")
+      printf '/%s %s\n' "$VERB_TO_TICKETS" "$weburl"
+      printf '\n'
+      printf 'Four things about this run:\n\n'
+      printf -- '- Link every child issue to this issue by GitHub'"'"'s native sub-issue relationship (`gh-axi issue subissue add <this issue> <child>`), not by a prose `## Parent` section. A prose link is invisible to the loop, and this edge is the only evidence that this decomposition finished.\n'
+      printf -- '- Do not apply the `%s` label to any child issue.\n' "$LABEL_READY"
+      printf -- '- Apply the `%s` label to every child issue.\n' "$VERB_IMPLEMENT"
+      printf -- '- No user is at the keyboard yet, and one will come to this session. Present the breakdown, then wait for their approval before publishing anything. Do not approve it yourself.\n'
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+# The prompt is the issue URL and the verb the issue declared — the issue stays
+# the single source of what to build, and of which of the loop's two things to
+# do with it.
 dispatch_issue() {
-  local orca_id="$1" number="$2" weburl="$3" type="$4" title="$5" slug response
+  local orca_id="$1" number="$2" weburl="$3" type="$4" verb="$5" title="$6" slug prompt response
   slug=$(issue_slug "$title")
+  # The branch name is deliberately unchanged for a decomposition run:
+  # `change_type`'s whitelist is closed, so `to-tickets` falls through to the
+  # `feat` default. A harmless lie, and `feat` is in `ISSUE_BRANCH_TYPES` so the
+  # liveness check still finds the worker. Adding a `spec` type would widen one
+  # alphabet shared by *two* readers, and the second maps merged pull requests
+  # back to issues — it has no business ever matching a branch that cannot
+  # become one.
+  prompt=$(issue_prompt "$verb" "$weburl") || return 1
   response=$(orca worktree create \
     --repo "id:$orca_id" \
     --name "agent-loop-$type-$number${slug:+-$slug}" \
     --no-parent \
     --agent claude \
-    --prompt "/implement $weburl" \
+    --prompt "$prompt" \
     --json) || return 1
   # The requested name is slugified and a collision silently yields <name>-2, so
   # the handle is always read back from the response.
@@ -1411,7 +1672,7 @@ issue_phase() {
 # respects the worker budget, claims issues and dispatches workers at them.
 issue_phase_project() {
   local github="$1" orca_id="$2" issues number weburl type title edges blockers worktree_id
-  local prnumber body64 body refusal missing
+  local prnumber body64 body refusal missing verbs rows kv refused
 
   # ponytail: the CLI's own error text goes to stderr, so it reaches the
   # terminal but not the log file. Capture it into the log line if reading the
@@ -1439,9 +1700,9 @@ issue_phase_project() {
 
   # stdin is closed for the body: gh-axi must not swallow the issue list.
   #
-  # `body64` sits between the flag and the title, so the title is still the
-  # remainder of the line.
-  while IFS=$'\t' read -r number weburl type refusal body64 title; do
+  # The two label-derived words sit together after the type, and `body64` sits
+  # between them and the title, so the title is still the remainder of the line.
+  while IFS=$'\t' read -r number weburl type refusal verbs body64 title; do
     [[ -n "$number" ]] || continue
 
     # First, and before the blocker read: an issue something already delivers is
@@ -1470,38 +1731,87 @@ issue_phase_project() {
       continue
     fi
 
-    # **Before the open-blocker skip**, because a skip is a retry and a refusal
-    # is terminal. Ordering the skip first would give an issue that is both
-    # blocked and unverified exactly the repeated skip and repeated read the
-    # refusal exists to end — suppression whose duration is set by an unrelated
-    # event. It cannot precede the read above, though: `$edges` *is* the
-    # dependencies payload, so the placement is semantic rather than a cost
+    # **The gate, before the open-blocker skip**, because a skip is a retry and
+    # a refusal is terminal. Ordering the skip first would give an issue that is
+    # both blocked and unverified exactly the repeated skip and repeated read
+    # the refusal exists to end — suppression whose duration is set by an
+    # unrelated event. It cannot precede the read above, though: `$edges` *is*
+    # the dependencies payload, so the placement is semantic rather than a cost
     # argument.
     #
+    # Three arms over the predicates **as a set** — `refuse` when either fails,
+    # `pass-and-clear` when both pass and the flag is on, and `pass`. Nothing
+    # short-circuits: an issue failing both is refused once, naming both, and a
+    # partial fix refuses again with a new record naming only what is still
+    # wrong, so progress is legible in the issue's own comment history.
+    rows=()
+    kv=""
+    refused=false
+
+    # The verb first, because it is the row the operator most often has to fix
+    # and the record reads top-down. It costs nothing to evaluate — the column
+    # arrived on the candidate stream.
+    #
+    # **Exactly one**, asked of the column's cardinality rather than of its
+    # value: `-` is none and a comma is two, and everything else is one by
+    # construction, because the column is an intersection with the closed set.
+    # So an unrecognised verb refuses through this same door — it is simply
+    # absent from the intersection, and there is no separate emptiness check to
+    # be forgotten — and a third verb costs a constant, an `ensure_labels` entry
+    # and a `case` row, and not a line here.
+    kv="verb=$verbs"
+    if [[ "$verbs" != "-" && "$verbs" != *,* ]]; then
+      rows+=("$(reason ok "this issue declares exactly one verb" "verbs=$verbs")")
+    else
+      # One row for none and for both, because they are one refusal to the loop
+      # — but the raw column carries what was found, so *you wrote no verb* and
+      # *you wrote both verbs*, which need opposite fixes, stay distinguishable
+      # to the operator reading it.
+      rows+=("$(reason no "this issue declares exactly one verb" "verbs=$verbs" \
+        "**Declare exactly one verb** — \`$VERB_IMPLEMENT\` or \`$VERB_TO_TICKETS\`, not both.")")
+      refused=true
+    fi
+
     # A predicate that could not be evaluated at all reads as *pass*, not as
     # refuse. Under-refusing is safe and over-refusing is not, and there is no
     # input here that can fail to be read: the body arrived on the candidate
     # stream and the edges arrived above.
     missing=$(unverified_claims "$body" "$github" "$edges") || missing=""
-    if [[ -n "$missing" ]]; then
+    if [[ -z "$missing" ]]; then
+      kv="$kv edges=ok"
+      rows+=("$(reason ok "every blocking claim in the body is carried by the graph" "missing=-")")
+    else
       missing=$(tr '\n' ',' <<< "$missing")
       missing="${missing%,}"
+      kv="$kv edges=missing:$missing"
+      rows+=("$(reason no "every blocking claim in the body is carried by the graph" "missing=$missing" \
+        "**Add the native dependency edge** for every referent named above.")")
+      refused=true
+    fi
+
+    if $refused; then
       # **The verdict per predicate, derived once**, so the log line and the
       # record cannot tell different stories. Every predicate's key is on the
       # line, the passing ones included — the same *where not to look* property
-      # the record's rows have.
+      # the record's rows have, and what makes a refusal fully diagnosable
+      # without opening the issue.
       #
       # The line goes down before the writes, because it reports what the pass
       # *derived* and that is true whether or not the writes land. A write that
-      # fails says so on its own line, underneath.
-      log "issue $github#$number refused edges=missing:$missing"
+      # fails says so on its own line, underneath. The budget does not suppress
+      # it either — a full budget defers a *dispatch*, and there is no dispatch
+      # here to defer.
+      log "issue $github#$number refused $kv"
+      # `"${rows[@]}"` is unguarded because both predicates always append,
+      # whichever way they went. A predicate that ever refused without adding
+      # its row would expand an empty array under `set -u`, which older bash
+      # treats as unbound.
+      #
       # The counter counts issues that actually left the ready queue, which is
       # what makes a refusal terminal. A lost label swap is the one outcome that
       # is not: the issue is still ready and the next pass refuses it again, so
       # it is accounted the way a lost claim is — as a skip.
-      if refuse_issue "$github" "$number" \
-           "$(reason no "every blocking claim in the body is carried by the graph" "missing=$missing")" \
-           < /dev/null; then
+      if refuse_issue "$github" "$number" "${rows[@]}" < /dev/null; then
         REFUSALS=$((REFUSALS + 1))
       else
         SKIPS=$((SKIPS + 1))
@@ -1509,11 +1819,11 @@ issue_phase_project() {
       continue
     fi
 
-    # The flag is live, not permanent: the check passed, so a flag standing over
-    # it is now false and comes off. **Delivery rather than action** — nothing
-    # else is written, no counter moves, and the issue goes on through the
-    # remaining gates on this same pass, where a dispatch is already counted as
-    # a dispatch. A counter here would count one issue twice.
+    # The flag is live, not permanent: every predicate passed, so a flag
+    # standing over them is now false and comes off. **Delivery rather than
+    # action** — nothing else is written, no counter moves, and the issue goes
+    # on through the remaining gates on this same pass, where a dispatch is
+    # already counted as a dispatch. A counter here would count one issue twice.
     if [[ "$refusal" == "flagged" ]]; then
       if clear_refusal "$github" "$number" < /dev/null; then
         log "issue $github#$number refusal cleared"
@@ -1546,7 +1856,7 @@ issue_phase_project() {
 
     # The claim is already written, so a failed dispatch leaves the issue
     # claimed with no worker. Startup reclaim hands it back.
-    if ! worktree_id=$(dispatch_issue "$orca_id" "$number" "$weburl" "$type" "$title" < /dev/null); then
+    if ! worktree_id=$(dispatch_issue "$orca_id" "$number" "$weburl" "$type" "$verbs" "$title" < /dev/null); then
       log "dispatch failed for $github#$number, issue left claimed"
       SKIPS=$((SKIPS + 1))
       continue
@@ -4150,16 +4460,148 @@ tick_checklist() {
 # identify their corresponding issues, tick checklists, and close them.
 closeout_phase() {
   local prs github prnumber branch
-  if ! prs=$(query_merged_prs); then
+  # **The two entry paths are two enumerations, and neither gates the other.**
+  # They read different things — one a global merged-pull-request search, the
+  # other a per-repository claim query — and a hiccup in the first must not
+  # silently leave every decomposed spec claimed for the pass, with no line
+  # naming it.
+  if prs=$(query_merged_prs); then
+    # stdin is closed for the body: gh-axi must not swallow the PR list.
+    while IFS=$'\t' read -r github prnumber branch; do
+      [[ -n "$github" && -n "$branch" ]] || continue
+      closeout_one "$github" "$prnumber" "$branch" < /dev/null
+    done <<< "$prs"
+  else
     log "merged-pr query failed"
+    SKIPS=$((SKIPS + 1))
+  fi
+  closeout_claims
+}
+
+# Close-out's **second entry path**, and not a new phase. `query_claimed_issues`
+# rests its whole argument on an invariant — *close-out is the only path that
+# clears such a label, and it reaches a closed issue on every pass* — and a
+# second claim-clearing phase would falsify that sentence and the blindness it
+# justifies. What widens is close-out's *description*: it stops being **the
+# phase that reads merged pull requests** and becomes **the phase that
+# enumerates the loop's holds and releases the ones with evidence behind them.**
+#
+# A ticket's exit evidence is a merged pull request. A decomposition produces
+# issues and never a pull request, so its evidence is the **native sub-issue
+# edges** it created — the same *class* of thing: a structural artifact that
+# carries the work, rather than the worker's claim about itself. Every signal
+# the loop acts on today is third-party, and a `decomposed` label written by the
+# worker would be the first time the loop believed a worker about its own
+# completion.
+#
+# It inherits the open-pull-request predicate's imprecision **knowingly**: a
+# worker that publishes 3 of 8 tickets and dies reads as finished, exactly as a
+# draft pull request with half a feature in it reads as delivered. Same
+# imprecision, one level up, accepted rather than overlooked.
+#
+# One GraphQL per repository per pass — a query the loop already makes at
+# startup — plus one REST read per claimed **spec**, which is bounded by
+# `maxWorkers` because a spec drops out of the claimed set the moment it is
+# flagged.
+closeout_claims() {
+  local i github rows number verb
+  for (( i = 0; i < PROJECT_COUNT; i++ )); do
+    github=$(jq -r ".projects[$i].github" "$CONFIG_PATH")
+    if ! rows=$(query_claimed_issues "$github"); then
+      log "claimed-issue query failed: $github"
+      SKIPS=$((SKIPS + 1))
+      continue
+    fi
+    # Nothing claimed here: no second question to ask, and no read to spend
+    # asking it.
+    [[ -n "$rows" ]] || continue
+    # stdin is closed for the body: gh-axi must not swallow the issue list.
+    while IFS=$'\t' read -r number verb; do
+      [[ -n "$number" ]] || continue
+      # **Verb scope**, and it is load-bearing rather than tidy: without it this
+      # fires on any claimed issue that happens to have children — a wayfinder
+      # map wearing a ready label by accident, or any epic-shaped ticket.
+      #
+      # The verb is read here, off the claim query, rather than off the REST
+      # payload the child count comes from — which was the other candidate and
+      # would have put the same question to two payloads. Reading it here scopes
+      # **before** the read rather than after it, so an ordinary claimed ticket
+      # costs no request at all: one REST read per claimed *spec*, not per
+      # claimed issue. The reclaim needs this row's verb anyway, so the answer
+      # is already in hand.
+      [[ "$verb" == "$VERB_TO_TICKETS" ]] || continue
+      closeout_claim "$github" "$number" < /dev/null
+    done <<< "$rows"
+  done
+}
+
+# One claimed spec. The predicate has three conjuncts and each one is
+# load-bearing: **the verb is `to-tickets`** (the caller's), **no live worker
+# holds it**, and **`sub_issues_summary.total > 0`**. With the liveness guard,
+# the question is the exact mirror of the reclaim's own two-question shape —
+# *nobody is on it, and something has come of it.*
+#
+# The exit is **unclaim + flag + leave open**. Not closed: the children land
+# inert pending a human, and closing the spec hides the one artifact that most
+# needs one. Not unflagged either: a spec wearing neither ready nor claimed is
+# indistinguishable from one nobody has touched, and a human who re-applies the
+# ready label to it gets a second decomposition with no warning. The open,
+# flagged spec **is** the arrival signal — the trick `agent-escalated` already
+# plays, and the only one available, since the loop acts as the operator's own
+# account and GitHub never notifies you of your own actions.
+#
+# The cost, recorded rather than waved past: this adds a **terminal-but-open**
+# state to a tracker where terminal has meant closed.
+#
+# **No record comment — the flag alone.** The two-tier convention exists because
+# a refusal is a *judgement* the human cannot otherwise reconstruct. This is
+# not: its entire evidence is `sub_issues_summary`, which GitHub already renders
+# as a sub-issue list with a progress bar, and a comment saying *I found 8
+# children* beneath a panel listing 8 children is a conclusion on its own.
+closeout_claim() {
+  local github="$1" number="$2" issue total
+  # Close-out runs at startup before any pass has taken a snapshot, so it takes
+  # its own then — once, because a failed attempt is the answer for every spec
+  # after it. **Fails closed**: an inventory that will not answer leaves the
+  # spec claimed, because reading it as *nobody is on it* would unclaim a
+  # decomposition in flight. The line is per issue, because it is per issue that
+  # something was left undone.
+  if ! $ORCA_PS_LOADED; then
+    if $ORCA_PS_ATTEMPTED || ! load_worktree_inventory; then
+      log "worker inventory unreadable, leaving $github#$number claimed"
+      SKIPS=$((SKIPS + 1))
+      return 0
+    fi
+  fi
+
+  # `/to-tickets` publishes its issues one at a time in dependency order, so
+  # `total > 0` goes true on the **first** one. Without this guard a pass
+  # landing in that window unclaims a spec whose worker is still running and
+  # logs that it closed it out. Orca holds a `waiting` agent as live, so a
+  # worker parked for a human's approval is held here with no new machinery.
+  ! issue_has_live_worker "$number" || return 0
+
+  if ! issue=$(query_issue "$github" "$number"); then
+    log "close-out query failed: $github#$number"
     SKIPS=$((SKIPS + 1))
     return 0
   fi
-  # stdin is closed for the body: gh-axi must not swallow the PR list.
-  while IFS=$'\t' read -r github prnumber branch; do
-    [[ -n "$github" && -n "$branch" ]] || continue
-    closeout_one "$github" "$prnumber" "$branch" < /dev/null
-  done <<< "$prs"
+  # A payload with no such key reads as zero, which is what keeps every issue
+  # that is not a decomposition silent here.
+  total=$(jq -r '.sub_issues_summary.total // 0' <<< "$issue")
+  [[ "$total" =~ ^[0-9]+$ ]] || total=0
+  (( total > 0 )) || return 0
+
+  # One atomic swap, the same delta shape the claim uses: the marker on, the
+  # claim off. The verb label stays — it is a modifier and nothing removes it —
+  # and the ready label was taken off at claim and is never restored, so the
+  # spec is now in no loop query at all. Steady-state cost zero.
+  if swap_labels "$github" "$number" "$LABEL_DECOMPOSED" "$LABEL_CLAIMED"; then
+    log "decomposed $github#$number: $total sub-issues, unclaimed and flagged $LABEL_DECOMPOSED, left open"
+  else
+    log "decomposition close-out failed for $github#$number, leaving it claimed"
+    SKIPS=$((SKIPS + 1))
+  fi
 }
 
 # Close out a single merged pull request: tick the checklist in the linked
