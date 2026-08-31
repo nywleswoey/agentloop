@@ -911,9 +911,18 @@ reclaim_stale_claims() {
 # --- github issues -----------------------------------------------------------
 
 # One GraphQL call per repository and label.
+#
+# `body` is in the selection set because the ready-issue reader needs it and a
+# selected field costs no extra request — it rides back in the response that
+# already produced the candidate. It is not free of *payload*: up to a hundred
+# whole issue bodies now come back on every ready read, and the claimed-issue
+# reader takes only the number and discards its copy entirely. That is the price
+# of one query shape rather than two, and it is bounded — `gh_json` passes
+# `--full`, so a bigger response cannot start being truncated, and the claimed
+# read happens once per startup rather than once per pass.
 query_issues_by_label() {
   local github="$1" label="$2" owner="${1%%/*}" name="${1##*/}" response
-  response=$(gh_graphql "{ repository(owner: \"$owner\", name: \"$name\") { issues(labels: [\"$label\"], states: OPEN, first: 100) { nodes { number title url labels(first: 20) { nodes { name } } } } } }") || return 1
+  response=$(gh_graphql "{ repository(owner: \"$owner\", name: \"$name\") { issues(labels: [\"$label\"], states: OPEN, first: 100) { nodes { number title url body labels(first: 20) { nodes { name } } } } } }") || return 1
   # A GraphQL error can come back as a 200 with a null repository, which would
   # otherwise read as "this repository has no matching issues".
   jq -e '.data.repository != null' <<< "$response" >/dev/null || return 1
@@ -928,6 +937,26 @@ query_issues_by_label() {
 #
 # The title comes last: it is the only field that can carry whitespace, so the
 # reader can take it as the remainder of the line.
+#
+# The body would be a second such field, and a worse one: it carries newlines and
+# tabs, which are the separators themselves. `@tsv` does not put those on the
+# line raw — it escapes them to a literal `\n` and `\t` — so what a raw body
+# would break is not the line but the *body*, which would arrive escaped with
+# nothing on the read side to put it back. So it travels base64-encoded, which
+# leaves it in an alphabet holding neither separator and hands it back byte for
+# byte, and sits *before* the title so the title stays the readable remainder.
+# It is the same trick the GitHub seam uses to put a whole JSON response over a
+# line-based boundary.
+#
+# A null or absent body is an ordinary answer — GraphQL types `body` as a
+# nullable string — and it must not encode to an *empty* field. A tab is IFS
+# whitespace, so `read` collapses a run of them: an empty field anywhere but at
+# the end of the line simply disappears, and every field after it shifts up. An
+# issue with no body would silently hand its title to the reader as its body and
+# dispatch a worktree named after nothing. Hence the appended newline, which
+# makes the encoded field non-empty for every body there is. It costs nothing
+# coming back: the decode is read through a command substitution, which strips
+# trailing newlines from a real body just the same.
 query_ready_issues() {
   query_issues_by_label "$1" "$LABEL_READY" | jq -r '
     def change_type:
@@ -939,7 +968,7 @@ query_ready_issues() {
       | map(select(IN("feat","fix","chore","docs","refactor","test","perf","build","ci")))
       | first // "feat";
     .data.repository.issues.nodes[]?
-    | [.number, .url, change_type, (.title // "")] | @tsv'
+    | [.number, .url, change_type, ((.body // "") + "\n" | @base64), (.title // "")] | @tsv'
 }
 
 # Query all claimed issues in a repository. Prints issue numbers, one per line.
@@ -1059,7 +1088,7 @@ issue_phase() {
 # respects the worker budget, claims issues and dispatches workers at them.
 issue_phase_project() {
   local github="$1" orca_id="$2" issues number weburl type title edges blockers worktree_id
-  local prnumber
+  local prnumber body64 body
 
   # ponytail: the CLI's own error text goes to stderr, so it reaches the
   # terminal but not the log file. Capture it into the log line if reading the
@@ -1086,7 +1115,10 @@ issue_phase_project() {
   fi
 
   # stdin is closed for the body: gh-axi must not swallow the issue list.
-  while IFS=$'\t' read -r number weburl type title; do
+  #
+  # `body64` sits between the type and the title, so the title is still the
+  # remainder of the line.
+  while IFS=$'\t' read -r number weburl type body64 title; do
     [[ -n "$number" ]] || continue
 
     # First, and before the blocker read: an issue something already delivers is
@@ -1096,6 +1128,14 @@ issue_phase_project() {
       SKIPS=$((SKIPS + 1))
       continue
     fi
+
+    # Decoded here rather than in the query, so an issue something already
+    # delivers does not pay even this. Nothing reads $body yet; what this line
+    # holds is the decision about *where* the decode goes, which is the half of
+    # it that is expensive to rediscover. An undecodable field is left empty
+    # rather than fatal: the body is not what a dispatch turns on, and `set -e`
+    # would otherwise take the whole pass down over one candidate.
+    body=$(base64 -d <<< "$body64" 2>/dev/null) || body=""
 
     # One condition over both halves of the split, so the count stays under the
     # same handler the single function's failure was under: a bare assignment
