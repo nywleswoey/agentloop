@@ -1,1 +1,8 @@
-[ { "number": 5, "state": "open", "title": "The blocker" } ]
+[
+  {
+    "number": 5,
+    "state": "open",
+    "title": "The blocker",
+    "repository_url": "https://api.github.com/repos/nywleswoey/other"
+  }
+]

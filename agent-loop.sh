@@ -958,14 +958,39 @@ query_claimed_issues() {
 # blockers are a second read. It answers with the blocking issues themselves,
 # which is what makes "still open" answerable — a closed blocker does not block.
 #
-# Prints the number of open blockers, and fails if the question could not be put
-# at all. The caller treats that as a skip: dispatching at an issue that may be
-# blocked is worse than looking again next pass.
-count_open_blockers() {
+# Prints one edge per line as `full_name`, `number`, `state`, tab-separated —
+# every edge the endpoint carries, whatever its state. The closed ones are
+# printed too because the payload has more than one reader and they disagree
+# about what a closed edge means: the open-blocker gate below discards them,
+# while a check comparing a body's written blocking claim against the graph
+# takes one as perfectly good evidence that the dependency was recorded.
+#
+# Every edge carries its own repository in the same response, so the
+# `(repository, number)` pair a cross-repository comparison needs costs no extra
+# request. An edge that arrives without one is attributed to the issue's own
+# repository — the only repository a same-repository edge could mean.
+#
+# Fails if the question could not be put at all. The caller treats that as a
+# skip: dispatching at an issue that may be blocked is worse than looking again
+# next pass.
+read_blocker_edges() {
   local response
   response=$(gh_json "/repos/$1/issues/$2/dependencies/blocked_by" --paginate) || return 1
   jq -e 'type == "array"' <<< "$response" >/dev/null 2>&1 || return 1
-  jq -r '[.[] | select(.state == "open")] | length' <<< "$response"
+  jq -r --arg repo "$1" \
+    '.[] | [(.repository.full_name // (.repository_url | strings | sub("^https://api.github.com/repos/"; "")) // $repo), .number, .state] | @tsv' <<< "$response"
+}
+
+# How many of those edges are still open, over the lines `read_blocker_edges`
+# printed. Pure: it asks GitHub nothing of its own, so the gate and every other
+# reader of that payload cost one request between them rather than one each.
+#
+# `awk` rather than the `while IFS=$'\t' read` this file uses everywhere else it
+# consumes a tab-separated stream: the one caller is inside the loop over the
+# ready issues, where a `read` would need its own `< /dev/null` discipline to
+# keep off that stream. A here-string cannot touch it at all.
+count_open_blockers() {
+  awk -F'\t' '$3 == "open" { n++ } END { print n + 0 }' <<< "$1"
 }
 
 # gh-axi changes labels as a delta — an add and a remove in one call — which is
@@ -1033,7 +1058,7 @@ issue_phase() {
 # Run the issue phase for one project. Queries ready issues, checks blockers,
 # respects the worker budget, claims issues and dispatches workers at them.
 issue_phase_project() {
-  local github="$1" orca_id="$2" issues number weburl type title blockers worktree_id
+  local github="$1" orca_id="$2" issues number weburl type title edges blockers worktree_id
   local prnumber
 
   # ponytail: the CLI's own error text goes to stderr, so it reaches the
@@ -1072,7 +1097,12 @@ issue_phase_project() {
       continue
     fi
 
-    if ! blockers=$(count_open_blockers "$github" "$number" < /dev/null); then
+    # One condition over both halves of the split, so the count stays under the
+    # same handler the single function's failure was under: a bare assignment
+    # would put an unreadable count under `set -e` and take the daemon down
+    # where the phase means to skip one issue.
+    if ! edges=$(read_blocker_edges "$github" "$number" < /dev/null) \
+      || ! blockers=$(count_open_blockers "$edges"); then
       log "issue $github#$number skipped: could not read its blockers"
       SKIPS=$((SKIPS + 1))
       continue
