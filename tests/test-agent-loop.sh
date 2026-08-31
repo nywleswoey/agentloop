@@ -558,7 +558,7 @@ setup "the ready-issue query asks for the body in the call it already makes"
 export STUB_ISSUES=workable
 run_once
 check_status 0 "$STATUS"
-check_grep "nodes { number title url body labels(first: 20)" "$STUB_CALLS"
+check_grep "nodes { number title url body labels(first: 100)" "$STUB_CALLS"
 # One call per repository and label is what it was before the body joined the
 # selection set, and the body must not have bought a second one.
 check "the ready-issue query is still one call" \
@@ -752,12 +752,13 @@ check_no_grep "issue comment 17" "$STUB_CALLS"
 
 # --- issue phase: the refusal flag is live, not permanent -----------------------
 
-setup "a passing issue wearing the flag has it removed and nothing else written"
+setup "a passing issue clears a refusal flag after 20 other labels"
 export STUB_ISSUES=claim-flagged
 run_once
 check_status 0 "$STATUS"
-# #72 passes and is flagged. The flag comes off and nothing else is written for
-# it: the open blocker then skips it, as it would have without the flag.
+# #72 passes and has `agent-refused` after 20 other labels. The flag comes off
+# and nothing else is written for it: the open blocker then skips it, as it
+# would have without the flag.
 check_grep "issue nywleswoey/automation#72 refusal cleared" "$OUT"
 check_grep "gh-axi issue edit 72 --repo nywleswoey/automation --remove-label agent-refused" "$STUB_CALLS"
 check "the flag removal is the only write #72 gets" \

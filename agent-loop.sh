@@ -938,7 +938,7 @@ reclaim_stale_claims() {
 # read happens once per startup rather than once per pass.
 query_issues_by_label() {
   local github="$1" label="$2" owner="${1%%/*}" name="${1##*/}" response
-  response=$(gh_graphql "{ repository(owner: \"$owner\", name: \"$name\") { issues(labels: [\"$label\"], states: OPEN, first: 100) { nodes { number title url body labels(first: 20) { nodes { name } } } } } }") || return 1
+  response=$(gh_graphql "{ repository(owner: \"$owner\", name: \"$name\") { issues(labels: [\"$label\"], states: OPEN, first: 100) { nodes { number title url body labels(first: 100) { nodes { name } } } } } }") || return 1
   # A GraphQL error can come back as a 200 with a null repository, which would
   # otherwise read as "this repository has no matching issues".
   jq -e '.data.repository != null' <<< "$response" >/dev/null || return 1
