@@ -7,15 +7,15 @@
 # ---------------------------------------------------------------- region A ---
 
 sum_sizes() {
-  DIR=$1
-  total=0
-  cd $DIR
-  for f in `ls $DIR`; do
-    sz=`cat $DIR/$f | wc -c`
-    total=`expr $total + $sz`
+  TARGET=$1
+  acc=0
+  cd $TARGET
+  for entry in `ls $TARGET`; do
+    bytes=`cat $TARGET/$entry | wc -c`
+    acc=`expr $acc + $bytes`
   done
-  echo $total > /tmp/sizes.txt
-  echo $total
+  echo $acc > /tmp/sizes-out.txt
+  echo $acc
 }
 
 # -----------------------------------------------------------------------------
