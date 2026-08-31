@@ -1,0 +1,9 @@
+[
+  { "number": 5, "state": "closed", "title": "Same number, this repository" },
+  {
+    "number": 9,
+    "state": "closed",
+    "title": "A closed edge in a third repository",
+    "repository": { "full_name": "nywleswoey/third" }
+  }
+]
