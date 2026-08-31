@@ -2400,6 +2400,10 @@ check_grep "| no | a status check on this commit is not green | \`green=2 pendin
 # same underlying fact and says nothing about it, because it does not own it.
 check_grep "| defer | GitHub's merge state is not one this veto can conclude from | \`state=BLOCKED\` |" "$BODY"
 check_grep "<!-- agent-loop-escalated: 401a401a401a401a401a401a401a401a401a401a escalate -->" "$BODY"
+# The other direction of the same separation: a standing record carries nothing
+# a withdrawal test could match, so a record standing at a head never reads as a
+# refusal that was withdrawn there and never withholds a merge on its own token.
+check_no_grep "agent-loop-withdrawn" "$BODY"
 # The world the next pass replays carries the loop's own words rather than a
 # paraphrase of them, so a change to the body cannot quietly stop the marker
 # being found — or its kind being read.
@@ -2432,7 +2436,10 @@ check "the retraction body was captured" test -f "$WITHDRAWN"
 check "the first line withdraws the record" \
   test "$(head -1 "$WITHDRAWN")" = '**Withdrawn.** A handover stood on this pull request at `401a401a401a401a401a401a401a401a401a401a`; the loop re-derived, the picture had changed, and it took the record down. The previous version of this comment holds what the gate saw.'
 # **Removing the marker is the retraction.** Nothing else has to come down,
-# because the marker is the whole of what the derivation reads.
+# because the marker is the whole of what the derivation reads — and what goes
+# up in its place cannot be mistaken for it. The two existence tests are
+# `contains` on prefixes neither of which contains the other, which is what lets
+# a withdrawal live at a head without reading as a handover standing there.
 check_no_grep "agent-loop-escalated" "$WITHDRAWN"
 # **No live gate rows.** A notice saying the gate now says merge would be a
 # record written against a moving signal — the exact defect this path exists to
@@ -2440,8 +2447,19 @@ check_no_grep "agent-loop-escalated" "$WITHDRAWN"
 # verdict to GitHub's own edit history.
 check_no_grep "| Verdict |" "$WITHDRAWN"
 check_no_grep "mergeable=" "$WITHDRAWN"
+# **The one thing it does carry**, and it is not a row: the head and the kind
+# that came down. That is a fact about a write the loop already made, true of
+# that commit forever, and it is the only head-keyed thing that survives the
+# retraction.
+check_grep "<!-- agent-loop-withdrawn: 401a401a401a401a401a401a401a401a401a401a escalate -->" "$WITHDRAWN"
 
 # Pass three: no record, no flag, and the pull request derives like any other.
+#
+# The world it replays carries the withdrawal the last pass wrote, verbatim, so
+# a change to the notice cannot quietly stop its marker being found or its kind
+# being read.
+check "the world the next pass replays carries the withdrawal just written" \
+  test "$(jq -r '.data.repository.pullRequest.comments.nodes[] | select((.body | contains("agent-loop-withdrawn"))) | .body' "$FIXTURES/worlds/unlatch/pass3/pr-401.json")" = "$(cat "$WITHDRAWN")"
 replay unlatch/pass3 2026-08-27T11:45:00Z
 check_status 0 "$STATUS"
 check_grep "pr nywleswoey/automation#401 401a401a401a401a401a401a401a401a401a401a assessable review=terminal threads=0 autofix=unspent verdict=merge risk=ok checks=ok mergeability=ok blast=ok action=merged method=squash" "$PASS_LOG"
@@ -2545,6 +2563,14 @@ check "no autofix trigger is written behind a standing record" \
 check_grep "pr nywleswoey/automation#440 440a440a440a440a440a440a440a440a440a440a assessable review=terminal threads=0 autofix=unspent verdict=merge risk=ok checks=ok mergeability=ok blast=ok action=deferred bound=retraction handover=retracted label=removed" "$OUT"
 check "no merge write happens at a head carrying a refused record" \
   test "$(grep -cF 'pulls/440/merge' "$STUB_CALLS")" -eq 0
+# **And the spend does not go down with the record.** The withdrawal the loop
+# just wrote names this head and the kind it took down, so the pass after this
+# one reads `refused` at the same commit and withholds the merge instead of
+# re-running the refusal. The kind comes from the caller, not from a second
+# read: it is the one the derivation already had off the record being replaced.
+WITHDRAWN_440="$STUB_STATE/comment-body-5379000445.txt"
+check "the 440 withdrawal body was captured" test -f "$WITHDRAWN_440"
+check_grep "<!-- agent-loop-withdrawn: 440a440a440a440a440a440a440a440a440a440a refused -->" "$WITHDRAWN_440"
 
 # 450 — the control, and the reason the four negatives above mean anything: the
 # identical shape with no record on it merges on this very pass.
@@ -2557,27 +2583,96 @@ check_grep "gh-axi api PUT /repos/nywleswoey/automation/pulls/450/merge --field 
 check "not one comment was posted across the whole world" \
   test "$(grep -cE 'gh-axi pr comment [0-9]+ --repo nywleswoey/automation --body-file' "$STUB_CALLS")" -eq 0
 
-# The bill for un-latching a `refused` record, recorded on the row it falls on
-# rather than left for someone to find. **Retraction halves the oscillator; it
-# does not kill it.** The record naming the head is what suppresses the merge,
-# and the retraction that un-latches the pull request takes that fact down with
-# it — so the pass after a retraction merges again, and a refusal that is
-# permanent posts a fresh record, because the withdrawn comment no longer
-# carries a marker for the loop to write over.
+# --- pr phase: the merge spend that survives its own record ------------------
 #
-# `unlatch/pass3` is the world one pass after a retraction, so no new fixture is
-# needed: it is the same commit with the record already withdrawn.
+# **Un-latching used to take the merge spend down with the record.** The record
+# naming the head is what suppresses the merge, so the pass after a retraction
+# merged again, GitHub refused again, and a fresh comment went up — one merge
+# attempt and one new comment every two passes, on a pull request nobody had
+# touched. The withdrawal notice now carries a marker of its own naming the head
+# and the kind that came down, and a withdrawn `refused` at this head is the
+# fact that outlives the record.
 
-setup "a retraction re-arms the merge, and a refusal at that head posts a new record"
+setup "a withdrawn refusal withholds the merge at that head, silently and stably"
+PASS_N=0
+
+# 401 carries a withdrawal notice naming its own head with the kind `refused`:
+# the loop asked GitHub to merge this exact commit and GitHub said no. The gate
+# says `merge` again, as it would on every pass after, and nothing goes out.
+#
+# 402 is the same world one push later — the same notice, naming the commit the
+# head moved off. It is the control, and it is what says the withhold is keyed
+# to the commit rather than to the pull request.
+replay withdrawn-refused 2026-08-27T11:45:00Z
+check_status 0 "$STATUS"
+check_grep "pr nywleswoey/automation#401 401a401a401a401a401a401a401a401a401a401a assessable review=terminal threads=0 autofix=unspent verdict=merge risk=ok checks=ok mergeability=ok blast=ok action=deferred bound=external merge=spent:withdrawn-refusal" "$PASS_LOG"
+check "no merge is written at a head whose refusal was withdrawn" \
+  test "$(grep -cF 'pulls/401/merge' "$STUB_CALLS")" -eq 0
+# **Silent.** The whole point is the comment that is not posted: nothing is
+# written at this head at all, and the reason is on the pass line instead.
+check "and nothing is said about it" \
+  test "$(grep -cE 'pr comment 401 |issues/comments/5379000411' "$STUB_CALLS")" -eq 0
+check_no_grep "#401 401a401a401a401a401a401a401a401a401a401a assessable review=terminal threads=0 autofix=unspent verdict=merge risk=ok checks=ok mergeability=ok blast=ok action=deferred bound=external merge=spent:withdrawn-refusal handover=" "$PASS_LOG"
+
+# **The head moving re-arms the merge.** Same notice, same kind, one commit
+# further on — the marker names a commit that is no longer the head, so it
+# matches nothing and the merge goes out on this very pass.
+check_grep "pr nywleswoey/automation#402 402b402b402b402b402b402b402b402b402b402b assessable review=terminal threads=0 autofix=unspent verdict=merge risk=ok checks=ok mergeability=ok blast=ok action=merged method=squash" "$PASS_LOG"
+check_grep "gh-axi api PUT /repos/nywleswoey/automation/pulls/402/merge --field sha=402b402b402b402b402b402b402b402b402b402b" "$STUB_CALLS"
+# The withhold is not a merge, so it does not spend the one merge this
+# repository gets per pass — 402 merged behind it on the same pass.
+check_no_grep "#401 401a401a401a401a401a401a401a401a401a401a assessable review=terminal threads=0 autofix=unspent verdict=merge risk=ok checks=ok mergeability=ok blast=ok action=deferred bound=merge-per-repo" "$PASS_LOG"
+
+# **403 — a second withdrawal at the same head does not mask the first.** A
+# record posted at a head that already carries a withdrawal is a *new* comment,
+# because the withdrawn one has no record marker to write over; so the older
+# notice survives beside the newer one, and this head carries a `refused`
+# withdrawal and a `stuck` one written later. The spend is a fact about a write
+# the loop already made and nothing later makes it false, so the read is over
+# every notice at the head rather than the newest — read newest-first, the
+# `stuck` one would re-arm a merge GitHub durably refused and the oscillator
+# would come straight back.
+check_grep "pr nywleswoey/automation#403 403a403a403a403a403a403a403a403a403a403a assessable review=terminal threads=0 autofix=unspent verdict=merge risk=ok checks=ok mergeability=ok blast=ok action=deferred bound=external merge=spent:withdrawn-refusal" "$PASS_LOG"
+check "the newer withdrawal of another kind does not unmask the refusal" \
+  test "$(grep -cF 'pulls/403/merge' "$STUB_CALLS")" -eq 0
+
+# **404 — the spend is the merge's, never the handover's.** The same withdrawn
+# `refused` at the head, but a veto that says no, so the chain derives a
+# handover rather than a merge. The record goes up: the handover write is
+# deliberately not metered per head, or a retraction could never re-escalate.
+check_grep "pr nywleswoey/automation#404 404a404a404a404a404a404a404a404a404a404a assessable review=terminal threads=0 autofix=unspent verdict=escalate risk=ok checks=no mergeability=ok blast=ok action=escalated kind=escalate label=added handover=posted" "$PASS_LOG"
+check_grep "gh-axi pr comment 404 --repo nywleswoey/automation --body-file" "$STUB_CALLS"
+
+# **A second pass at the same head, to prove the withhold is stable rather than
+# one-shot.** Nothing was written on the first pass, so the world is unchanged
+# and this is exactly what the loop would see an interval later. The old cycle
+# alternated; this one does not turn at all.
+replay withdrawn-refused 2026-08-27T11:50:00Z
+check_status 0 "$STATUS"
+check_grep "pr nywleswoey/automation#401 401a401a401a401a401a401a401a401a401a401a assessable review=terminal threads=0 autofix=unspent verdict=merge risk=ok checks=ok mergeability=ok blast=ok action=deferred bound=external merge=spent:withdrawn-refusal" "$PASS_LOG"
+check "still no merge write at that head after two consecutive passes" \
+  test "$(grep -cF 'pulls/401/merge' "$STUB_CALLS")" -eq 0
+check "and still not one comment, on either pass" \
+  test "$(grep -cE 'pr comment 401 |issues/comments/5379000411' "$STUB_CALLS")" -eq 0
+check "the masked head is withheld on the second pass too" \
+  test "$(grep -cF 'pulls/403/merge' "$STUB_CALLS")" -eq 0
+
+# **Only `refused` withholds, and the handover write is still not metered per
+# head.** `unlatch/pass3` is the same shape with a withdrawn `escalate` on it —
+# a claim about signals that have since changed, not a record of a merge GitHub
+# refused — so the merge goes out. It is refused here, and the record that
+# follows is *posted*, because a retraction that could never re-escalate would
+# be worse than the cycle this whole marker exists to kill.
+setup "a withdrawal of another kind does not withhold, and a re-escalation still posts"
 export STUB_WORLD=unlatch/pass3 STUB_NOW=2026-08-27T11:45:00Z
 export STUB_GH_FAIL=merge STUB_GH_ERROR=405-conflict
 run_once
 check_status 0 "$STATUS"
 check_grep "#401 401a401a401a401a401a401a401a401a401a401a assessable review=terminal threads=0 autofix=unspent verdict=merge risk=ok checks=ok mergeability=ok blast=ok merge=refused rc=3 action=escalated kind=refused label=added handover=posted" "$OUT"
 # The withdrawn comment is not the one written to. A record the loop withdrew
-# carries no marker, so there is nothing at this head for the edit to name, and
-# the handover write is deliberately not metered per head — it has to stay
-# re-postable or a retraction could never re-escalate.
+# carries no record marker, so there is nothing at this head for the edit to
+# name, and the handover write is deliberately not metered per head — it has to
+# stay re-postable or a retraction could never re-escalate.
 check "the refusal posts a comment rather than editing the withdrawn one" \
   test "$(grep -cF 'pr comment 401 --repo nywleswoey/automation --body-file' "$STUB_CALLS")" -eq 1
 check "and the withdrawn comment is left alone" \

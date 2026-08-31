@@ -84,7 +84,7 @@
               "databaseId": 5379000411,
               "createdAt": "2026-08-27T11:35:00Z",
               "updatedAt": "2026-08-27T11:40:00Z",
-              "body": "**Withdrawn.** A handover stood on this pull request at `401a401a401a401a401a401a401a401a401a401a`; the loop re-derived, the picture had changed, and it took the record down. The previous version of this comment holds what the gate saw.\n\nThe loop is deriving this pull request normally again.\n\n<!-- agent-loop-withdrawn: 401a401a401a401a401a401a401a401a401a401a escalate -->\n",
+              "body": "**Withdrawn.** A handover stood on this pull request at `401a401a401a401a401a401a401a401a401a401a`; the loop re-derived, the picture had changed, and it took the record down. The previous version of this comment holds what the gate saw.\n\nThe loop is deriving this pull request normally again.\n\n<!-- agent-loop-withdrawn: 401a401a401a401a401a401a401a401a401a401a refused -->\n",
               "author": {
                 "login": "nywleswoey"
               }
