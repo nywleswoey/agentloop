@@ -11,7 +11,7 @@ Started by hand, runs until Ctrl-C. Every decision it makes is one log line, so 
 Each pass, in order:
 
 1. **Close-out** — an issue whose pull request has merged gets its checklist ticked, its description updated, its claim label removed, and the issue closed. What decides whether an issue is close-out's is the **claim label, not the state**: a pull request body carrying `Closes #N` has GitHub close the issue itself at merge, a pass before close-out reads it, and such an issue still needs its tick and its unclaim. So a closed issue still wearing the claim gets both, and no second close.
-2. **Issues** — queries each project for open issues labelled `ready-for-agent`, skips ones an open pull request already delivers, skips ones with an open blocker, swaps the label to `agent-in-progress`, and dispatches an Orca worker into a fresh worktree.
+2. **Issues** — queries each project for open issues labelled `ready-for-agent`, skips ones an open pull request already delivers, **refuses** ones whose written blocking claim the dependency graph does not carry, skips ones with an open blocker, swaps the label to `agent-in-progress`, and dispatches an Orca worker into a fresh worktree.
 3. **Pull requests** — enumerates every open pull request in each project except drafts and fork heads, derives its state from GitHub alone, logs one line per pull request, comments `@coderabbitai review` at the ones CodeRabbit never reviewed and `@coderabbitai autofix` at the ones carrying unresolved findings, runs the risk gate over the ones that are ready to judge, merges at most one of them per repository, and hands over the ones it will not act on. It spends no worker and no worktree, and it keeps no local state: every pass re-derives from a fresh read.
 4. **Sweep** — removes the loop's own finished worktrees.
 
@@ -26,6 +26,12 @@ Between passes it sleeps for `pollIntervalSeconds`.
 - **Log rotation** — one generation, capped at 5 MiB. A loop left running for weeks must not fill the disk.
 
 These are the daemon's own rails. What bounds the **unattended merge** is the next section.
+
+### A refusal is not a skip
+
+**A native GitHub dependency edge is the only "blocked" the loop trusts.** Before every dispatch the issue phase compares the issue body's blocking claim against the issue's native blocked-by edges — all of them, whatever state they are in, each normalised to `(repository, number)`. The claim is a `## Blocked by` (or `Blocked on`) heading, scoped to the next heading of any level or the end of the body, with the `#N` and `owner/repo#N` inside it as its referents; a bare `#N` outside a claim anchors nothing, and an empty or absent body passes. No referent's state is resolved — a closed edge verifies its claim without blocking, because resolving would have the graph defer to prose in the acquitting direction and cost a request per unmatched referent. A claim the graph does not carry **refuses**: the issue is not dispatched and not claimed, `agent-refused` goes on and `ready-for-agent` comes off in one atomic write, and one comment names exactly which referents could not be verified, what the loop did, and how to clear it. A skip is a retry and a refusal is terminal, so the refusal is checked **before** the open-blocker skip and before the budget — a full budget must not silence it — and the ticket leaves the ready queue, so there is no repeated skip and no daily re-comment. **Re-labelling ready is your acknowledgement.** The loop does not restore the label and does not write the missing edge itself; writing it would be the loop acting on a claim it could not verify, which is the thing the rule forbids. The flag is live rather than one-way: a pass that finds a flagged issue passing takes the flag off and writes nothing else, because a fixed, re-labelled, dispatched issue must not wear a flag that is now false. The comment is never withdrawn — it records an event that was true when it was written and stays true.
+
+The two invariants below are **scoped to the pull-request phase**, so neither gains a row for this; it is checked against both anyway and passes. Its bounded exit is the operator's re-label — `external`, the same disposition [`rate-limited`](#the-bounded-exit-invariant) already carries and which that table records as correct rather than a hole. Its cycle — refuse, out of the queue, operator acts, back in, pass — can only turn a second time on a human choosing, and that rests on a standing condition worth writing down: **no dispatch of the loop's causes any issue to enter the ready queue.** It holds trivially today, a dispatched worker implementing against an issue that already exists. It is phrased around *what enters the queue* rather than around *what the loop dispatches* on purpose, because the loop is about to dispatch `/to-tickets`, an authoring skill that publishes child issues: under that map the condition still holds, but for a new reason — the children land **without** `ready-for-agent`, and the decomposed spec exits via close-out flagged rather than re-armed. **The residual, recorded with it:** that inertness then rests on a worker instruction rather than on this script, and the loop cannot enforce what a worker labels.
 
 ---
 
@@ -212,10 +218,11 @@ The loop creates its four labels — the two in the config, and the constants
 `agent-escalated` and `agent-refused` — in each configured repository at startup
 if they are not already there. Both flags are constants rather than config keys
 so that one query finds every flagged pull request, and a different one every
-refused issue, across every repository. `agent-refused` is asserted ahead of any
-code that applies it: an `--add-label` naming a label that does not exist is
-refused, so a refusal would post its comment and then fail to flag the issue,
-forever.
+refused issue, across every repository. Both are asserted at startup because an
+`--add-label` naming a label that does not exist is refused: without the
+assertion a handover would post its comment and then fail to flag the pull
+request, and a refusal — which writes its label first — would never get past the
+swap and would leave the issue ready and silent on every pass.
 
 ---
 

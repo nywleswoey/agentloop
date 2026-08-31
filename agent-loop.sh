@@ -206,8 +206,11 @@ LABEL_ESCALATED='agent-escalated'
 # query is over pull requests: one query answers which issues the loop refused,
 # and a different one which pull requests need a human.
 #
-# Nothing applies or removes it yet. It exists so that the write which will
-# apply it cannot fail.
+# **It is a live flag, not a latch.** The issue phase re-derives the predicate
+# behind it on every pass it can see the issue, adds it with the swap that takes
+# `ready-for-agent` off, and takes it back off on its own the first pass the
+# predicate passes. The comment it goes on with is the opposite: a record of an
+# event, never withdrawn.
 LABEL_REFUSED='agent-refused'
 # Reset at the top of every pass. Initialised here only because the close-out
 # that runs before the first pass bumps it too, and `set -u` would kill it
@@ -458,8 +461,10 @@ repo_path() {
 #
 # The two constants are here for the same reason the two in the config are, and
 # the cost of leaving either out is worse: an `--add-label` naming a label that
-# does not exist is refused, so every handover and every refusal would post its
-# comment and then fail to flag it, forever, on a chase that can never land.
+# does not exist is refused, so a handover would post its comment and then fail
+# to flag it, forever, on a chase that can never land — and a refusal, which
+# writes its label first, would never get past the swap and would leave the issue
+# ready and silent on every pass.
 ensure_labels() {
   local repo="$1" existing label response
   response=$(gh_json "/repos/$repo/labels" --paginate) \
@@ -968,8 +973,16 @@ query_issues_by_label() {
 # makes the encoded field non-empty for every body there is. It costs nothing
 # coming back: the decode is read through a command substitution, which strips
 # trailing newlines from a real body just the same.
+#
+# The refusal flag rides the same line, and it costs no read at all: the
+# selection set already asks for the labels, because the change type is read off
+# them. It travels as a **word** rather than as the label set, for the reason the
+# body travels encoded — a label name may carry a tab or a comma, and either
+# would break the line or the field. Two words rather than one and an empty
+# string, because an empty field in the middle of a tab-separated line vanishes
+# under `read` and shifts every field after it up.
 query_ready_issues() {
-  query_issues_by_label "$1" "$LABEL_READY" | jq -r '
+  query_issues_by_label "$1" "$LABEL_READY" | jq -r --arg refused "$LABEL_REFUSED" '
     def change_type:
       [.labels.nodes[]?.name | ascii_downcase | sub("^.*::"; "")]
       | map(if . == "bug" then "fix"
@@ -978,8 +991,11 @@ query_ready_issues() {
             else . end)
       | map(select(IN("feat","fix","chore","docs","refactor","test","perf","build","ci")))
       | first // "feat";
+    def refused_flag:
+      if ([.labels.nodes[]?.name] | index($refused)) then "flagged" else "unflagged" end;
     .data.repository.issues.nodes[]?
-    | [.number, .url, change_type, ((.body // "") + "\n" | @base64), (.title // "")] | @tsv'
+    | [.number, .url, change_type, refused_flag, ((.body // "") + "\n" | @base64), (.title // "")]
+    | @tsv'
 }
 
 # Query all claimed issues in a repository. Prints issue numbers, one per line.
@@ -1033,6 +1049,74 @@ count_open_blockers() {
   awk -F'\t' '$3 == "open" { n++ } END { print n + 0 }' <<< "$1"
 }
 
+# --- the blocking claim ------------------------------------------------------
+
+# Every blocking claim a body makes, as `(repository, number)` pairs rendered
+# `owner/repo#N`, one per line, in the order the body names them and each named
+# once.
+#
+# **Only the canonical shape anchors a claim here**: a heading whose leading
+# token, after the `#` marks, is `Blocked by` or `Blocked on`, case-insensitively
+# and optionally followed by a colon. Its scope runs from the heading itself — so
+# `## Blocked by #7` is a claim — to the next heading of any level, or the end of
+# the body. The other shapes the authoring skills emit are a follow-on ticket,
+# and the direction of the gap is the safe one: a shape this misses is a claim
+# that is not checked, where a shape it wrongly matched would be a dispatch that
+# is wrongly stopped. **Under-refusing is safe, over-refusing is not.**
+#
+# A bare `#N` outside a claim anchors nothing, which is why the scope is computed
+# rather than the whole body scanned: issue bodies are full of `#N` in prose.
+# Inside a claim, everything that is not a referent is prose and is discarded —
+# the markdown link text in `- [#93](https://…/issues/93) — split the read` is
+# what carries the referent, and the URL beside it carries no `#` at all.
+blocking_claims() {
+  awk -v repo="$2" '
+    # Leftmost-longest, so `owner/repo#7` is one referent rather than a bare
+    # `#7` with a repository sitting unread in front of it.
+    function referents(s,   tok) {
+      while (match(s, /([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)?#[0-9]+/)) {
+        tok = substr(s, RSTART, RLENGTH)
+        s = substr(s, RSTART + RLENGTH)
+        if (index(tok, "/")) print tok; else print repo tok
+      }
+    }
+    {
+      # A heading needs whitespace or an end of line after its marks, so `#93`
+      # at the start of a line is a referent rather than a first-level heading.
+      if ($0 ~ /^[ \t]*#+([ \t]|$)/) {
+        rest = $0
+        sub(/^[ \t]*#+[ \t]*/, "", rest)
+        scope = (tolower(rest) ~ /^blocked[ \t]+(by|on)([ \t]*:)?([ \t]|$)/)
+      }
+      if (scope) referents($0)
+    }
+  ' <<< "$1" | awk '!seen[$0]++'
+}
+
+# The referents a body claims that the graph does not carry, one per line, in the
+# body's own order. Empty output is the verdict *pass*.
+#
+# **A pure set difference against the full edge set, closed edges included.** No
+# referent's state is resolved: doing so would have the graph defer to prose in
+# the acquitting direction — a second representation of blocked, by another name
+# — and would cost a REST call per unmatched referent, landing hardest exactly
+# where the queue is worst. So a closed edge verifies its claim without blocking.
+#
+# The edge lines are `read_blocker_edges`'s own, which is what makes this check
+# cost nothing: the payload it compares against was already read for the
+# open-blocker gate, and the body already rode in on the candidate stream.
+# The edge set travels into awk **comma-delimited rather than newline-delimited**,
+# and is tested with a substring lookup over the delimiters. `awk -v` runs escape
+# processing over its value and one-true-awk refuses a literal newline in it
+# outright, so the obvious `split(carried, e, "\n")` dies on macOS. A comma
+# cannot appear in either half of an `owner/repo#N` — GitHub's own alphabet for
+# both is `A-Za-z0-9_.-` — so the delimiter cannot collide with a value.
+unverified_claims() {
+  local body="$1" repo="$2" edges="$3" carried
+  carried=$(awk -F'\t' 'NF >= 2 { printf ",%s#%s", $1, $2 } END { print "," }' <<< "$edges")
+  blocking_claims "$body" "$repo" | awk -v carried="$carried" 'index(carried, "," $0 ",") == 0'
+}
+
 # gh-axi changes labels as a delta — an add and a remove in one call — which is
 # the same shape GitLab's add_labels/remove_labels had. So the swap stays a
 # single atomic write, and neither the claim nor the reclaim has to know what
@@ -1049,6 +1133,110 @@ claim_issue() { swap_labels "$1" "$2" "$LABEL_CLAIMED" "$LABEL_READY"; }
 
 # Release an issue by swapping its label from claimed back to ready.
 release_issue() { swap_labels "$1" "$2" "$LABEL_READY" "$LABEL_CLAIMED"; }
+
+# --- the refusal -------------------------------------------------------------
+
+# The refusal's comment, and it is **the gate's record rather than prose** — the
+# same shape `escalation_body` writes, from the same `reason` rows and the same
+# `md_cell`, so the second predicate arrives as a second row rather than as a
+# rewrite. There is one predicate today, so there is one row.
+#
+# Rows that passed are carried too, for the reason the handover carries them:
+# they tell the operator where *not* to look. That is vacuous with one predicate
+# and stops being vacuous the moment the second lands.
+#
+# Two things `escalation_body` has are deliberately absent. **No kind word** —
+# the rows already say which predicate failed, and a kind would be a second
+# representation of the fact the single label exists to keep singular. **No
+# `Read at` line** — the gate needs one because it edits its comment in place, so
+# its rows outlive the instant they were read; this posts a new comment every
+# time and never edits one, so GitHub's own timestamp is exact and a printed one
+# would be a second copy that can disagree.
+#
+# **The legend carries two verdicts, not four.** The refusal has no clock and
+# judges everything it reads, so `defer` and `note` are unreachable.
+#
+# **It never says the issue is blocked.** The predicate resolves no referent
+# state, so a closed edge verifies a claim without blocking. The honest sentence
+# is *this claim could not be verified*.
+#
+# The way back in is instruction rather than record, and that is a deliberate
+# departure from the loop's other comments: a one-way label with no stated way
+# back is a trap.
+refusal_body() {
+  local r verdict what raw mark
+
+  printf '**Refused — this issue was not dispatched.**\n\n'
+  printf '`%s` is off and `%s` is on. The loop re-derives this every pass it can see the issue, and clears the flag on its own once every row below reads `ok`.\n\n' \
+    "$LABEL_READY" "$LABEL_REFUSED"
+
+  printf '| Verdict | What | Raw values |\n|---|---|---|\n'
+  for r in "$@"; do
+    # The fourth field is `reason`'s permanence mark, read so that it cannot
+    # leak into the raw column and rendered nowhere: nothing here has a clock.
+    IFS=$'\t' read -r verdict what raw mark <<< "$r"
+    printf '| %s | %s | `%s` |\n' "$(md_cell "$verdict")" "$(md_cell "$what")" "$(md_cell "$raw")"
+  done
+
+  printf '\n`ok` passed · `no` stopped the dispatch.\n'
+
+  printf '\n**Ways back in**\n\n'
+  printf -- '- **Add the native dependency edge** for every referent named above, then re-apply `%s`.\n' \
+    "$LABEL_READY"
+}
+
+# The two writes, one pass, **label first**.
+#
+# Direct, not through the writeback seam: the seam's comment and label verbs are
+# pull-request-addressed and cannot reach an issue, and its label verb takes
+# exactly one of add or remove rather than the delta. The issue phase has never
+# used the seam and already writes direct at four sites; this is its fifth.
+#
+# Splitting the two writes across two passes was rejected — the one-action-per-
+# pass convention governs dispatch actions, not writes, and a crash between
+# passes leaves an issue labelled and silent.
+#
+#   0  both landed
+#   1  the label swap did not land, so the issue is still ready and still
+#      silent; the next pass derives the same verdict and refuses again
+#   2  the flag is on and the record is not — said on its own line, because a
+#      flagged issue with no comment is the one state an operator cannot read
+refuse_issue() {
+  local github="$1" number="$2" file status=0
+  shift 2
+
+  # Label first, and the swap is the one atomic add/remove delta the claim and
+  # the release already use.
+  if ! swap_labels "$github" "$number" "$LABEL_REFUSED" "$LABEL_READY"; then
+    log "refusal label swap failed for $github#$number, leaving it ready"
+    return 1
+  fi
+
+  # Free text travels to gh-axi as a file: a --body that happened to look like
+  # JSON would be reinterpreted, and this body is a markdown table.
+  file=$(mktemp "${TMPDIR:-/tmp}/agent-loop-refusal.XXXXXX") || return 2
+  if ! refusal_body "$@" > "$file"; then
+    rm -f "$file"
+    return 2
+  fi
+  gh-axi issue comment "$number" --repo "$github" --body-file "$file" >/dev/null 2>&1 || status=$?
+  rm -f "$file"
+  if (( status != 0 )); then
+    log "refusal comment failed for $github#$number, the flag is on and the record did not land"
+    return 2
+  fi
+  return 0
+}
+
+# The flag coming off, on its own. **The comment is a record of an event** —
+# on this pass, this issue claimed a blocker the graph did not carry — which was
+# true then and stays true, so it is never withdrawn. **The label is a live flag**
+# over a fact the loop re-derives every pass it can see the issue, so it does
+# withdraw. A strictly one-way label was rejected: it leaves a fixed, re-labelled,
+# dispatched issue wearing a flag that is now false, forever.
+clear_refusal() {
+  gh-axi issue edit "$2" --repo "$1" --remove-label "$LABEL_REFUSED" >/dev/null 2>&1
+}
 
 # --- issue phase -------------------------------------------------------------
 
@@ -1099,7 +1287,7 @@ issue_phase() {
 # respects the worker budget, claims issues and dispatches workers at them.
 issue_phase_project() {
   local github="$1" orca_id="$2" issues number weburl type title edges blockers worktree_id
-  local prnumber body64 body
+  local prnumber body64 body flagged missing
 
   # ponytail: the CLI's own error text goes to stderr, so it reaches the
   # terminal but not the log file. Capture it into the log line if reading the
@@ -1127,9 +1315,9 @@ issue_phase_project() {
 
   # stdin is closed for the body: gh-axi must not swallow the issue list.
   #
-  # `body64` sits between the type and the title, so the title is still the
+  # `body64` sits between the flag and the title, so the title is still the
   # remainder of the line.
-  while IFS=$'\t' read -r number weburl type body64 title; do
+  while IFS=$'\t' read -r number weburl type flagged body64 title; do
     [[ -n "$number" ]] || continue
 
     # First, and before the blocker read: an issue something already delivers is
@@ -1158,6 +1346,52 @@ issue_phase_project() {
       SKIPS=$((SKIPS + 1))
       continue
     fi
+
+    # **Before the open-blocker skip**, because a skip is a retry and a refusal
+    # is terminal. Ordering the skip first would give an issue that is both
+    # blocked and unverified exactly the repeated skip and repeated read the
+    # refusal exists to end — suppression whose duration is set by an unrelated
+    # event. It cannot precede the read above, though: `$edges` *is* the
+    # dependencies payload, so the placement is semantic rather than a cost
+    # argument.
+    #
+    # A predicate that could not be evaluated at all reads as *pass*, not as
+    # refuse. Under-refusing is safe and over-refusing is not, and there is no
+    # input here that can fail to be read: the body arrived on the candidate
+    # stream and the edges arrived above.
+    missing=$(unverified_claims "$body" "$github" "$edges") || missing=""
+    if [[ -n "$missing" ]]; then
+      missing=$(tr '\n' ',' <<< "$missing")
+      missing="${missing%,}"
+      # **The verdict per predicate, derived once**, so the log line and the
+      # record cannot tell different stories. Every predicate's key is on the
+      # line, the passing ones included — the same *where not to look* property
+      # the record's rows have.
+      #
+      # The line goes down before the writes, because it reports what the pass
+      # *derived* and that is true whether or not the writes land. A write that
+      # fails says so on its own line, underneath.
+      log "issue $github#$number refused edges=missing:$missing"
+      REFUSALS=$((REFUSALS + 1))
+      refuse_issue "$github" "$number" \
+        "$(reason no "every blocking claim in the body is carried by the graph" "missing=$missing")" \
+        < /dev/null || :
+      continue
+    fi
+
+    # The flag is live, not permanent: the check passed, so a flag standing over
+    # it is now false and comes off. **Delivery rather than action** — nothing
+    # else is written, no counter moves, and the issue goes on through the
+    # remaining gates on this same pass, where a dispatch is already counted as
+    # a dispatch. A counter here would count one issue twice.
+    if [[ "$flagged" == "flagged" ]]; then
+      if clear_refusal "$github" "$number" < /dev/null; then
+        log "issue $github#$number refusal cleared"
+      else
+        log "issue $github#$number refusal flag removal failed"
+      fi
+    fi
+
     if (( blockers > 0 )); then
       log "issue $github#$number skipped: blocked by $blockers open blocker"
       SKIPS=$((SKIPS + 1))
@@ -3624,6 +3858,9 @@ run_pass() {
   DISPATCHES=0
   SKIPS=0
   SWEEPS=0
+  # Appended after `sweeps` on the pass-end line, so every existing assertion on
+  # that line still matches as a substring and no test had to be edited.
+  REFUSALS=0
   # A budget that failed open would dispatch a fresh maxWorkers on top of the
   # workers it failed to see.
   local inventory=true
@@ -3646,7 +3883,7 @@ run_pass() {
   else
     log "worker inventory unreadable, skipping the sweep"
   fi
-  log "pass end dispatches=$DISPATCHES skips=$SKIPS sweeps=$SWEEPS"
+  log "pass end dispatches=$DISPATCHES skips=$SKIPS sweeps=$SWEEPS refusals=$REFUSALS"
 }
 
 # --- main --------------------------------------------------------------------

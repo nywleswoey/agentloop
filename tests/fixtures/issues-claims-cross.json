@@ -1,0 +1,14 @@
+{ "data": { "repository": { "issues": { "nodes": [
+  { "number": 66, "title": "Cross-repository claim the graph carries",
+    "url": "https://github.com/nywleswoey/automation/issues/66",
+    "body": "## Blocked by\n\n- nywleswoey/other#5\n",
+    "labels": { "nodes": [ { "name": "ready-for-agent" } ] } },
+  { "number": 67, "title": "Cross-repository claim against a same-repository edge",
+    "url": "https://github.com/nywleswoey/automation/issues/67",
+    "body": "## Blocked by\n\n- nywleswoey/other#5\n",
+    "labels": { "nodes": [ { "name": "ready-for-agent" } ] } },
+  { "number": 68, "title": "Claim on a closed issue the graph never recorded",
+    "url": "https://github.com/nywleswoey/automation/issues/68",
+    "body": "## Blocked by\n\n- #6\n",
+    "labels": { "nodes": [ { "name": "ready-for-agent" } ] } }
+] } } } }

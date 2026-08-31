@@ -253,14 +253,13 @@ check_grep "created label agent-escalated in nywleswoey/merge-only" "$OUT"
 check "the four labels are the only ones ever written" \
   test "$(grep -cE 'label create --name (ready-for-agent|agent-in-progress)' "$STUB_CALLS")" -eq 0
 
-# Nothing applies or removes the refusal label yet: it exists so that the write
-# which will apply it cannot fail. Asserted on the source, because that is an
-# absence and an absence has no behaviour to observe — a call log from a pass
-# that refuses nothing would be empty whether or not the applying code existed.
-setup "no code path applies or removes the refusal label yet"
-check "the constant is used at its definition and in the startup assertion, and nowhere else" \
-  test "$(grep -cF 'LABEL_REFUSED' "$SCRIPT")" -eq 2
-check "and the name itself is written down once, as the constant" \
+# The name itself is written down once, as the constant. Everything that applies,
+# removes or reads the flag goes through it, so the one query that finds every
+# refused issue across every repository cannot be made impossible by a second
+# spelling. Asserted on the source, because a second spelling that happened to
+# agree with the first has no behaviour to observe.
+setup "the refusal label's name is written down exactly once"
+check "the name itself is written down once, as the constant" \
   test "$(grep -cF "'agent-refused'" "$SCRIPT")" -eq 1
 
 # --- runtime not reachable ---------------------------------------------------
@@ -616,6 +615,205 @@ check_status 0 "$STATUS"
 check_grep "claimed nywleswoey/automation#17" "$OUT"
 check_grep "dispatched nywleswoey/automation#17" "$OUT"
 check_grep "pass end dispatches=1 skips=0 sweeps=1" "$OUT"
+
+# --- issue phase: an unverified blocking claim refuses --------------------------
+
+# One pass per fixture, several candidates in it. The per-issue log line
+# distinguishes them, so one pass proves five cases as convincingly as five
+# passes do, and every assertion names its own issue so a batch failure names
+# the case that broke. The worker budget is raised so the pass-arm candidates
+# dispatch rather than deferring.
+
+REFUSE_60="gh-axi issue edit 60 --repo nywleswoey/automation --add-label agent-refused --remove-label ready-for-agent"
+COMMENT_60="gh-axi issue comment 60 --repo nywleswoey/automation --body-file"
+
+setup "a blocking claim the graph does not carry refuses, and one it carries passes"
+export STUB_ISSUES=claims
+write_config "nywleswoey/automation" "repo-aaa" 300 9
+run_once
+check_status 0 "$STATUS"
+# #60 claims two referents against an empty edge set: both are named.
+check_grep "issue nywleswoey/automation#60 refused edges=missing:nywleswoey/automation#61,nywleswoey/automation#62" "$OUT"
+# #61 claims two and the graph carries one: only the missing half is named.
+check_grep "issue nywleswoey/automation#61 refused edges=missing:nywleswoey/automation#71" "$OUT"
+# #62's one claim is carried by a *closed* edge, and #63's by a superset. No
+# referent's state is resolved, so a closed edge verifies without blocking.
+check_grep "dispatched nywleswoey/automation#62" "$OUT"
+check_grep "dispatched nywleswoey/automation#63" "$OUT"
+# An empty body and an absent one both pass: fail-closed governs inputs the loop
+# could not read, not inputs that read as empty.
+check_grep "dispatched nywleswoey/automation#64" "$OUT"
+check_grep "dispatched nywleswoey/automation#65" "$OUT"
+check_grep "pass end dispatches=4 skips=0 sweeps=1 refusals=2" "$OUT"
+
+# A refusal is not a skip: the issue is not dispatched and not claimed.
+check_no_grep "gh-axi issue edit 60 --repo nywleswoey/automation --add-label agent-in-progress" "$STUB_CALLS"
+check_no_grep "gh-axi issue edit 61 --repo nywleswoey/automation --add-label agent-in-progress" "$STUB_CALLS"
+check_no_grep "agent-loop-feat-60-" "$STUB_CALLS"
+check_no_grep "agent-loop-feat-61-" "$STUB_CALLS"
+# Label first, and the swap is one atomic delta.
+check_grep "$REFUSE_60" "$STUB_CALLS"
+check_grep "$COMMENT_60" "$STUB_CALLS"
+check "the label swap precedes the comment" \
+  test "$(call_line "$REFUSE_60")" -lt "$(call_line "$COMMENT_60")"
+# The check reads the body off the candidate stream and the edges off the
+# dependencies payload the open-blocker gate already asked for, so it spends no
+# request of its own: one blocked_by read per candidate and nothing else.
+check "the blockers are read once per candidate" \
+  test "$(grep -cF '/dependencies/blocked_by' "$STUB_CALLS")" -eq 6
+check "no referent is resolved" \
+  test "$(grep -cE '^gh-axi api /repos/nywleswoey/automation/issues/[0-9]+$' "$STUB_CALLS")" -eq 0
+
+# The record. A verdict column, a what column and a raw column — the same shape
+# `escalation_body` writes, from the same row helper.
+BODY_60="$STUB_STATE/issue-body-60.txt"
+check_grep '**Refused — this issue was not dispatched.**' "$BODY_60"
+check_grep '`ready-for-agent` is off and `agent-refused` is on.' "$BODY_60"
+check_grep '| Verdict | What | Raw values |' "$BODY_60"
+check_grep '| no | every blocking claim in the body is carried by the graph | `missing=nywleswoey/automation#61,nywleswoey/automation#62` |' "$BODY_60"
+check_grep '`ok` passed · `no` stopped the dispatch.' "$BODY_60"
+check_grep '**Ways back in**' "$BODY_60"
+check_grep '- **Add the native dependency edge** for every referent named above, then re-apply `ready-for-agent`.' "$BODY_60"
+# No kind word: the rows already say which predicate failed.
+check_no_grep 'Escalated' "$BODY_60"
+# No `Read at` line: this posts a new comment every time and never edits one, so
+# GitHub's own timestamp is exact and a printed one could disagree with it.
+check_no_grep 'Read at' "$BODY_60"
+# The legend carries two verdicts, not four: the refusal has no clock and judges
+# everything it reads.
+check_no_grep 'defer' "$BODY_60"
+check_no_grep 'note' "$BODY_60"
+# It never says the issue is blocked. No referent state is resolved, so a closed
+# edge verifies a claim without blocking; the honest sentence is that the claim
+# could not be verified.
+check_no_grep 'is blocked' "$BODY_60"
+# Prose referents outside the claim anchor nothing.
+check_no_grep '#98' "$BODY_60"
+check_no_grep '#99' "$BODY_60"
+
+# P \ E and none of E: #70 is carried, #71 is not, and only #71 is named.
+BODY_61="$STUB_STATE/issue-body-61.txt"
+check_grep '`missing=nywleswoey/automation#71`' "$BODY_61"
+check_no_grep '#70' "$BODY_61"
+
+setup "a referent is normalized to (repository, number), and only the pair matches"
+export STUB_ISSUES=claims-cross
+run_once
+check_status 0 "$STATUS"
+# #66 claims nywleswoey/other#5 and the graph carries an edge in that repository.
+check_grep "dispatched nywleswoey/automation#66" "$OUT"
+# #67 claims the same referent and the graph carries #5 in *this* repository. An
+# edge with no repository of its own is attributed to the issue's, which is the
+# only repository a same-repository edge could mean — so the pair does not match.
+check_grep "issue nywleswoey/automation#67 refused edges=missing:nywleswoey/other#5" "$OUT"
+# The accepted false positive, asserted deliberately: #6 is a closed issue in
+# this world, and no edge records it. The refusal stands, because resolving the
+# referent would have the graph defer to prose in the acquitting direction and
+# would cost a REST call per unmatched referent.
+check_grep "issue nywleswoey/automation#68 refused edges=missing:nywleswoey/automation#6" "$OUT"
+check "no referent is resolved" \
+  test "$(grep -cE '^gh-axi api /repos/nywleswoey/automation/issues/[0-9]+$' "$STUB_CALLS")" -eq 0
+check_grep "pass end dispatches=1 skips=0 sweeps=1 refusals=2" "$OUT"
+
+setup "an issue that is both blocked and unverified is refused, not skipped"
+# The refusal precedes the open-blocker skip because a skip is a retry and a
+# refusal is terminal: ordering the skip first would give this issue exactly the
+# repeated skip and repeated read the refusal exists to end.
+export STUB_ISSUES=claim-blocked
+run_once
+check_status 0 "$STATUS"
+check_grep "issue nywleswoey/automation#69 refused edges=missing:nywleswoey/automation#71" "$OUT"
+check_no_grep "issue nywleswoey/automation#69 skipped: blocked by" "$OUT"
+check_no_grep "--add-label agent-in-progress" "$STUB_CALLS"
+check_no_grep "worktree create" "$STUB_CALLS"
+check_grep "pass end dispatches=0 skips=0 sweeps=1 refusals=1" "$OUT"
+
+setup "a full worker budget does not suppress a refusal"
+# A refusal spends no slot, so it precedes the budget check too.
+export STUB_ISSUES=claim-blocked STUB_ORCA_PS=busy
+run_once
+check_status 0 "$STATUS"
+check_grep "issue nywleswoey/automation#69 refused edges=missing:nywleswoey/automation#71" "$OUT"
+check_no_grep "deferred: worker budget full" "$OUT"
+check_grep "pass end dispatches=0 skips=0 sweeps=0 refusals=1" "$OUT"
+
+setup "an issue an open pull request already delivers is not refused"
+# The named gap. The open-pull-request check stays first and unchanged, so an
+# issue with an unrepresented claim that is already being delivered is never
+# refused. It is empty in practice — such an issue was already dispatched — and
+# closing it would mean stripping labels off tickets mid-delivery.
+export STUB_ISSUES=claim-delivered STUB_WORLD=open-issue-branch STUB_NOW=2026-08-27T12:00:00Z
+run_once
+check_status 0 "$STATUS"
+check_grep "issue nywleswoey/automation#17 skipped: pull request #401 already delivers it" "$OUT"
+check_no_grep "#17 refused" "$OUT"
+check_no_grep "issue edit 17" "$STUB_CALLS"
+check_no_grep "issue comment 17" "$STUB_CALLS"
+
+# --- issue phase: the refusal flag is live, not permanent -----------------------
+
+setup "a passing issue wearing the flag has it removed and nothing else written"
+export STUB_ISSUES=claim-flagged
+run_once
+check_status 0 "$STATUS"
+# #72 passes and is flagged. The flag comes off and nothing else is written for
+# it: the open blocker then skips it, as it would have without the flag.
+check_grep "issue nywleswoey/automation#72 refusal cleared" "$OUT"
+check_grep "gh-axi issue edit 72 --repo nywleswoey/automation --remove-label agent-refused" "$STUB_CALLS"
+check "the flag removal is the only write #72 gets" \
+  test "$(grep -cE '^gh-axi issue (edit|comment) 72 ' "$STUB_CALLS")" -eq 1
+check_grep "issue nywleswoey/automation#72 skipped: blocked by 1 open blocker" "$OUT"
+# #73 passes, is flagged, and is workable: clearing does not stop it reaching the
+# remaining gates on this same pass, and the dispatch is counted as a dispatch.
+check_grep "issue nywleswoey/automation#73 refusal cleared" "$OUT"
+check_grep "dispatched nywleswoey/automation#73" "$OUT"
+# #74 passes and is not flagged: nothing is written at all.
+check_no_grep "issue nywleswoey/automation#74 refusal cleared" "$OUT"
+check "an unflagged passing issue is written nothing" \
+  test "$(grep -cE '^gh-axi issue (edit|comment) 74 ' "$STUB_CALLS")" -eq 0
+# #75 was re-armed by hand and is still unverified, so it refuses again and
+# comments again. That is correct: nothing but a human re-adds `ready-for-agent`,
+# so the second comment lands in front of the person who just acted.
+check_grep "issue nywleswoey/automation#75 refused edges=missing:nywleswoey/automation#71" "$OUT"
+check_grep "gh-axi issue edit 75 --repo nywleswoey/automation --add-label agent-refused --remove-label ready-for-agent" "$STUB_CALLS"
+check_grep '`missing=nywleswoey/automation#71`' "$STUB_STATE/issue-body-75.txt"
+# A clear increments no counter, so the pass counts one dispatch, the two open
+# blockers as skips, and one refusal.
+check_grep "pass end dispatches=1 skips=2 sweeps=1 refusals=1" "$OUT"
+
+# --- issue phase: a refusal's writes can fail, and the pass survives ------------
+
+setup "a refusal whose label swap will not land leaves the issue ready and silent"
+# Label first is what makes this the safe half to lose: the issue is still in the
+# queue, nothing was said, and the next pass derives the same verdict and refuses
+# again from scratch.
+export STUB_ISSUES=claim-blocked STUB_GH_FAIL=claim
+run_once
+check_status 0 "$STATUS"
+check_grep "issue nywleswoey/automation#69 refused edges=missing:nywleswoey/automation#71" "$OUT"
+check_grep "refusal label swap failed for nywleswoey/automation#69, leaving it ready" "$OUT"
+check_no_grep "issue comment 69" "$STUB_CALLS"
+check_grep "pass end dispatches=0 skips=0 sweeps=1 refusals=1" "$OUT"
+
+setup "a refusal whose comment will not land says so on its own line"
+# The other half, and the one an operator cannot read on their own: a flagged
+# issue out of the queue with no record saying why.
+export STUB_ISSUES=claim-blocked STUB_GH_FAIL=issue-comment
+run_once
+check_status 0 "$STATUS"
+check_grep "issue nywleswoey/automation#69 refused edges=missing:nywleswoey/automation#71" "$OUT"
+check_grep "gh-axi issue edit 69 --repo nywleswoey/automation --add-label agent-refused --remove-label ready-for-agent" "$STUB_CALLS"
+check_grep "refusal comment failed for nywleswoey/automation#69, the flag is on and the record did not land" "$OUT"
+check_grep "pass end dispatches=0 skips=0 sweeps=1 refusals=1" "$OUT"
+
+setup "a flag that will not come off does not stop the issue reaching the gates"
+# The clear is delivery, not action: it is retried next pass, and a lost one must
+# not change what the issue is otherwise entitled to on this pass.
+export STUB_ISSUES=claim-flagged STUB_GH_FAIL=claim
+run_once
+check_status 0 "$STATUS"
+check_grep "issue nywleswoey/automation#72 refusal flag removal failed" "$OUT"
+check_grep "issue nywleswoey/automation#72 skipped: blocked by 1 open blocker" "$OUT"
 
 # --- issue phase: the worker budget is global ----------------------------------
 
