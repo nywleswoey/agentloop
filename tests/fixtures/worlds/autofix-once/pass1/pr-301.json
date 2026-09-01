@@ -54,7 +54,7 @@
             {
               "id": "PRRT_kwDO301a",
               "isResolved": false,
-              "isOutdated": false,
+              "isOutdated": true,
               "path": "agent-loop.sh",
               "line": 700,
               "comments": {
@@ -72,7 +72,7 @@
             {
               "id": "PRRT_kwDO301b",
               "isResolved": false,
-              "isOutdated": false,
+              "isOutdated": true,
               "path": "gh.sh",
               "line": 60,
               "comments": {

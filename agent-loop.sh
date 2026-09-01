@@ -2155,7 +2155,122 @@ sweep_worktrees() {
 # gone rather than driven, and the state it leaves behind is a row in the table
 # above instead.
 #
-# **The rule both invariants lean on is: the loop does not act on its own
+# **A third invariant, with its own register: no metered write may be spent
+# where it provably cannot change anything.** Stated absolutely — a metered
+# write with no such bound is a **defect** — because the rule was already being
+# enforced ad hoc at three sites with no shared name, and the one site that
+# stated its argument as settled is the one that was wrong. The register is
+# closed rather than a sample: `pr-writeback.sh` has six verbs, and the other
+# three — `comment`, `edit` and `label` — are the handover writes, which are
+# deliberately not metered per head for the reason given at the escalate seam
+# below.
+#
+#   metered write     bound
+#   ---------------------------------------------------------------------------
+#   review (nudge)    aggregate-bounded into an absorbing `declined` record by
+#                     reviewRetryTimeoutSeconds. A passing row, and what passing
+#                     looks like
+#   merge             at most one per repository per pass, and withheld at a
+#                     head a standing record already refused — including across
+#                     a withdrawal, now that the notice carries the head-keyed
+#                     marker that survives it (#100, closed)
+#   autofix trigger   once per head (`spent:trigger`), and never at a head the
+#                     loop minted (`spent:own-head`) — **but nothing bounds
+#                     re-firing across heads at threads the bot has already
+#                     fixed.** A failing row: accepted and priced, tracked as
+#                     #131
+#
+# **The failing row is not a reason to soften the invariant to fit it.** The
+# precedent is exact and it is one register up: *a cycle with no driver is a
+# defect* is stated absolutely, and the register then lists the one row whose
+# driver is **none** and argues it in the open rather than rewording the rule
+# until the row passes. A register that lists only what passes is not a
+# register.
+#
+# **Why the autofix row fails.** Autofix does not resolve the threads it fixes,
+# so `threads > 0` is satisfied by already-fixed threads forever and the trigger
+# fires a fully metered run at every future human head on that pull request. The
+# bot takes it in full — *"Coding task started for 8 unresolved review
+# comments"* — with no dedup and no decline (#128). The domain fact underneath,
+# which no count could have carried: on a pull request autofix has run on,
+# **"unresolved" has stopped meaning "outstanding".**
+#
+# **Two clauses were retracted from the `threads` derivation commentary below,
+# and they were falsified separately and for unrelated reasons (#110).** State
+# them separately or the retraction misleads: the first does not imply the
+# second, so nobody should try to repair the second by fixing the first. They
+# were also in the wrong place, and that is positional rather than a matter of
+# degree — the paragraph they sat in is `pr_facts` per-field derivation
+# commentary, where every neighbour answers *how is this field computed*, and a
+# spend claim was parked in a derivation note.
+#
+#   *the loop's trigger condition and the bot's are the same predicate* — false
+#   **narrowly and by choice.** The bot's documented precondition has three
+#   conjuncts (#107, verbatim: *"Autofix only processes unresolved CodeRabbit
+#   review threads with valid fix instructions"*); the loop tests two; the third
+#   was priced and declined (#111).
+#
+#   *a metered run that would do nothing cannot be fired by construction* —
+#   false for an **unrelated** reason. #128's eight already-fixed threads all
+#   *satisfy* the bot's precondition, so on that axis loop and bot genuinely are
+#   the same predicate and the run still does nothing. **The bot's precondition
+#   was never a usefulness test.**
+#
+# **The weakened fallback is rejected rather than kept**: *the loop never fires
+# a run the bot would refuse outright* is true, and true-but-misleading. It is
+# true precisely because the bot refuses nothing.
+#
+# **The honest version is a superset, and it is on the record: the loop tests
+# two of the bot's three documented conjuncts, knowingly.** The third — *valid
+# fix instructions* — costs **+122% of the entire state response on every pass,
+# per open pull request**, for zero observed benefit: 44 of 44 threads carried
+# the block (#111). The price is written next to the decision so it can be
+# re-opened on evidence rather than re-litigated on intuition. And #111's fourth
+# argument inverts the usual one: the unfiltered superset **announces itself**
+# in the log at every head where a filtered subset would fail silently, so
+# visibility is a reason for the waste rather than a consolation for it.
+#
+# **The decision, in one line: the `needs-autofix` trigger's thread count does
+# not filter, on any predicate, at any of its three consumers** — the trigger,
+# the `kv` line, and the stalled handover's `ok` row. Six tickets went looking
+# for a filter that would stop the re-fire; there is none. The pointer sits at
+# the derivation, where the temptation is; the argument sits here, with the
+# other spend arguments, so the file has one place where spend is argued.
+#
+# **`isOutdated` is the filter everybody reaches for, and it is dead.** Autofix
+# acts on outdated threads and will follow a stale thread over the live file,
+# and it rewrites the very lines its own threads anchor to — so after one run
+# **every** thread on the pull request is outdated, and the filter takes the
+# count to zero permanently on exactly the pull requests the trigger exists for
+# (#108). Under-firing on live findings is strictly worse than the waste.
+#
+# **The derivation emits one number and keeps emitting one.** A second column is
+# structurally cheap — the emit list is positional and the caller reads it with
+# a `read -r` sequence — and #109 considered both free candidates and **declined
+# both on truthfulness rather than cost**, so a cheaper derivation does not
+# reopen the question: `outdated=` re-commits the conflation this decision
+# forbids, and a locally-derived *predates the last autofix status* reads 8 of 8
+# at the head where autofix hung and fixed nothing. `threads=8` on the `kv` line
+# stays **raw**, so the number matches what GitHub's own UI shows the operator.
+#
+# **The query is not the place to fix this either.** `isOutdated`, `id`, `path`
+# and `line` are fetched every pass for every open pull request and read by
+# nothing. That is real, and it is a change to how the count is *read* rather
+# than to what it filters, so it goes to #112, which has to rewrite that
+# selection anyway. `isOutdated` **stays** — its presence is what keeps the
+# pointer at the derivation honest, because the pointer warns against filtering
+# on a field that is genuinely sitting right there.
+#
+# **What would reopen #131**, named here so it is reachable from the row: the
+# bot gaining an already-fixed signal on the wire, or a free head-keyed fact
+# that survives. Neither exists today. The counter worth revisiting first is
+# that autofix metering is **silent** — #128 measured 24m27s to acceptance and
+# then 1h52m still at *started*, with no refusal comment ever, where `review`
+# refuses loudly in seconds. The loop cannot see that backpressure, so if
+# autofix ever gains a visible signal the way `review` has one, this accounting
+# is worth re-opening.
+#
+# **The rule all three invariants lean on is: the loop does not act on its own
 # output.** It has exactly two sites, and they are meant to read as one
 # principle — terminality's ban on a `no` resting on a cause the loop's own
 # writes produced, and autofix's ban on a spend at a head the loop minted.
@@ -2371,9 +2486,10 @@ query_pr_state() {
 # **A thread is CodeRabbit's when CodeRabbit opened it.** The first comment's
 # author decides, not any comment's: a thread I opened that the bot replied to
 # is my conversation, not its finding. That is also the bot's own precondition
-# — autofix processes unresolved CodeRabbit threads — so the loop's trigger
-# condition and the bot's are the same predicate, and a metered run that would
-# do nothing cannot be fired by construction.
+# — autofix processes unresolved CodeRabbit threads.
+#
+# This paragraph used to draw a spend conclusion from that last sentence. It is
+# **retracted**, and the retraction lives with the third invariant above (#110).
 #
 # **CodeRabbit comment freshness is the *updated* timestamp; mine is the
 # created one.** CodeRabbit delivers by editing comments it already posted, so
@@ -2502,6 +2618,15 @@ pr_facts() {
     # and null indexes to null, which falls through to the defaults each of the
     # three names for itself.
     | ($signals | max_by(.at // "")) as $newest
+    # **This count does not filter, on any predicate — and least of all on
+    # `isOutdated`, which is fetched by the query above and read by nothing, so
+    # adding `select(.isOutdated != true)` here is the most inviting one-token
+    # edit in the file.** It is not a trim. Autofix rewrites the lines its own
+    # threads anchor to, so after one run **every** thread is outdated: the
+    # filter takes this count to zero permanently, on exactly the pull requests
+    # the trigger exists for, and the loop loses autofix in silence (#108). The
+    # full argument, and the decision that this count stays unfiltered at all
+    # three of its consumers, is with the third invariant above.
     | [ $pr.reviewThreads.nodes[]?
         | select(.isResolved != true)
         | select(.comments.nodes[0].author.login | is_coderabbit) ] as $threads
