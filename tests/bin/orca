@@ -93,7 +93,20 @@ case "$cmd" in
           echo "error: worktree rm failed" >&2
           exit 1
         fi
-        printf '{"id":"stub-worktree-rm","ok":true,"result":{"removed":true}}\n'
+        # Captured from Orca 1.4.193, not hand-cut: see
+        # docs/orca-worktree-rm-capture.md for the transcript both fixtures came
+        # from. The default arm is the response for a worktree with nothing
+        # ahead of its base, which is the shape this stub always emitted. The
+        # preserved arm carries `preservedBranch`, which the real CLI returns
+        # for *every* worktree holding a commit the base does not — pushed,
+        # unpushed or squash-merged alike. Set STUB_ORCA_RM_PRESERVED=1 to get
+        # it; nothing reads the removal's stdout yet, because `agent-loop.sh`
+        # sends it to /dev/null.
+        if [[ -n "${STUB_ORCA_RM_PRESERVED:-}" ]]; then
+          cat "$STUB_FIXTURES/orca-worktree-rm-preserved.json"
+        else
+          cat "$STUB_FIXTURES/orca-worktree-rm-deleted.json"
+        fi
         ;;
       *)
         echo "stub orca: unhandled worktree subcommand: ${1:-}" >&2
