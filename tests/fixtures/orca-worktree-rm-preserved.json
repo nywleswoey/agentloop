@@ -1,0 +1,14 @@
+{
+  "id": "a786afd3-c2b2-458f-bacd-e55c9b796183",
+  "ok": true,
+  "result": {
+    "removed": true,
+    "preservedBranch": {
+      "branchName": "nywleswoey/wf135-capture-unpushed",
+      "head": "04e4351f4b2f13b7f364c1566b5634dd4803c844"
+    }
+  },
+  "_meta": {
+    "runtimeId": "171f004f-3867-4793-af44-48384dd60c97"
+  }
+}
