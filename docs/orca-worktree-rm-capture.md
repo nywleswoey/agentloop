@@ -5,8 +5,9 @@ Captured 2026-09-12 against the installed Orca CLI, for
 
 `agent-loop.sh:1958` leans its whole safety argument on one sentence of
 `orca worktree rm --help`, and
-[#125](https://github.com/nywleswoey/agentloop/issues/125) now removes worktrees
-carrying unpushed commits on the strength of it:
+[#125](https://github.com/nywleswoey/agentloop/issues/125) plans to remove
+worktrees carrying unpushed commits on the strength of it; the current sweep
+still skips them:
 
 > For Git worktrees, removal also attempts to delete the checked-out local
 > branch, with or without `--force`. Orca retains branches it knows predated the
