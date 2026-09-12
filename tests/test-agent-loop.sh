@@ -4194,6 +4194,39 @@ check_status 0 "$STATUS"
 check_grep "worker inventory unreadable, leaving nywleswoey/automation#92 claimed" "$OUT"
 check_no_grep "--add-label agent-decomposed" "$STUB_CALLS"
 
+# --- which build is running ---------------------------------------------------
+
+# Nothing used to identify the loaded code, so a park could not be attributed to
+# the commit that caused it. `build=` names what is loaded, measured once and
+# frozen; `drift=` says every pass whether the checkout has moved under it.
+
+setup "the pass-end line names the build and reports no drift on a matching checkout"
+run_once
+check_status 0 "$STATUS"
+check_grep "pass end dispatches=0 skips=0 sweeps=1 refusals=0 build=headsha0 drift=none" "$OUT"
+
+setup "a dirty script directory stops build= naming a commit and leaves drift unanswerable"
+# The loaded bytes are not any commit, so the field says so and the comparison
+# has nothing to compare against.
+export STUB_DIRTY="$ROOT"
+run_once
+check_status 0 "$STATUS"
+check_grep "refusals=0 build=headsha0-dirty drift=unknown" "$OUT"
+
+setup "a checkout that moves mid-run drifts without moving build="
+# Bash reached EOF before pass one, so the running bytes cannot change; the
+# checkout underneath them can. `build=X drift=Y` is the window where X decides
+# and Y writes.
+write_config "nywleswoey/automation" "repo-aaa" 1
+start_loop
+check "a first pass ran" await "pass end"
+check_grep "build=headsha0 drift=none" "$OUT"
+printf 'movedsha1' > "$STUB_STATE/git-head"
+check "a later pass saw the move" await "drift=movedsha1"
+check_grep "build=headsha0 drift=movedsha1" "$OUT"
+stop_loop TERM
+check_status 0 "$STATUS"
+
 # --- the deleted machinery ------------------------------------------------------
 
 # The PR phase used to spend a worktree, a checkout and an Orca worker to

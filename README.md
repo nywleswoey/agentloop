@@ -419,6 +419,26 @@ Then edit `agent-loop.config.json`:
 ./agent-loop.sh --config /path/to/other.json
 ```
 
+### Restarting after a pull
+
+**Restart the loop after any pull that moves `HEAD`.** The rule is manual, documented and deliberately coarse — there is no supervisor, no health check and no auto-restart.
+
+Bash parses the whole script before it runs the pass loop, so a running daemon keeps executing the bytes it started with no matter what lands on disk. Every pass-end line therefore carries two fields:
+
+| Field | Meaning |
+|---|---|
+| `build=<short sha>` | What is loaded. Measured once at start-up and frozen. `git show <sha>:agent-loop.sh` reads the code that ran. |
+| `build=<short sha>-dirty` | The tree was dirty at start-up, so the loaded bytes are not any commit. |
+| `drift=none` | The checkout still matches what is loaded. |
+| `drift=<short sha>` | The checkout has moved to this commit; the loop has not. Restart. |
+| `drift=unknown` | `build=` is `-dirty`, so no comparison is possible. |
+
+`grep -v 'drift=none'` over the log lists every stale pass.
+
+The coarseness is inherited rather than chosen. A finer trigger — *restart when behaviour actually changed* — would have to beat comparing checkout heads, which mis-flags any commit touching neither frozen file, about 15% of recent commits. Restarting costs almost nothing: the start-up reclaim keeps every claim held by a live worker and every claim an open pull request already delivers, and nothing survives in memory across passes.
+
+`build=` covers the frozen pair only — `agent-loop.sh` and the `gh.sh` it sources. `pr-writeback.sh` is exec'd as a subprocess and re-read from disk on every invocation, and it sources its own fresh copy of `gh.sh`. Config is frozen too — it is read once at start-up. So **a stale loop is not uniformly stale**: during a drift window, `build=X drift=Y` does not mean the loop is running X — it means **X decides, Y writes**. A writeback bug seen during that window belongs to Y.
+
 ### Environment overrides
 
 For tests and troubleshooting:
