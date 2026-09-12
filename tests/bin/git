@@ -14,8 +14,10 @@
 #                                         0 otherwise
 #   rev-list --reverse <range>            $STUB_REVLIST, one sha per line
 #   rev-parse --verify <sha>              fails for shas in $STUB_UNKNOWN_SHA
-#   rev-parse HEAD                        the stub's current head, moved by
-#                                         reset and cherry-pick
+#   rev-parse [--short] HEAD              the stub's current head, moved by
+#                                         reset and cherry-pick. The head is
+#                                         already short, so --short changes
+#                                         nothing.
 #   merge-base --is-ancestor <a> <b>      fails when <a> is in
 #                                         $STUB_NOT_ANCESTOR
 #   reset --hard <sha>                    moves the stub's head to <sha>
@@ -23,7 +25,8 @@
 #                                         otherwise moves head to picked<n>
 #   push ...                              fails when $STUB_PUSH_FAIL is set
 #
-# $STUB_GIT_FAIL names a command that must fail: "rev-list".
+# $STUB_GIT_FAIL names a command that must fail: "rev-list", "rev-parse" or
+# "status".
 
 set -uo pipefail
 
@@ -56,6 +59,10 @@ case "${1:-}" in
     cat "$STUB_FIXTURES/worktrees-${STUB_WORKTREES:-none}.txt"
     ;;
   status)
+    if [[ "${STUB_GIT_FAIL:-}" == "status" ]]; then
+      echo "fatal: not a git repository" >&2
+      exit 128
+    fi
     for dirty in ${STUB_DIRTY:-}; do
       if [[ "$dirty" == "$target" ]]; then
         printf ' M src/file.txt\n'
@@ -63,6 +70,10 @@ case "${1:-}" in
     done
     ;;
   rev-parse)
+    if [[ "${STUB_GIT_FAIL:-}" == "rev-parse" ]]; then
+      echo "fatal: not a git repository" >&2
+      exit 128
+    fi
     if [[ "${2:-}" == "--verify" ]]; then
       in_list "${3:-}" "${STUB_UNKNOWN_SHA:-}" && exit 1
       printf '%s\n' "${3:-}"

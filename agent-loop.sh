@@ -4984,6 +4984,12 @@ closeout_one() {
 
 # --- which build is running ---------------------------------------------------
 
+# The one read both fields make. `--short` because the value is read by eye off
+# a log line and typed back into `git show <sha>:agent-loop.sh`.
+current_head() {
+  git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null
+}
+
 # `build=` is what is loaded, measured once at start-up and never again. Bash
 # parses the whole file before it can execute the pass loop, so EOF is reached
 # before pass one and nothing is ever re-read: the bytes running now are the
@@ -4997,20 +5003,20 @@ closeout_one() {
 #
 # The `-dirty` suffix is not decoration. A dirty tree means the loaded bytes are
 # not any commit, so the field stops claiming to name one.
+#
+# Every value is greppable and every failure is fail-safe: a read that cannot
+# answer never lets the field claim a commit it cannot stand behind.
 measure_build() {
   local head dirty
-  if ! head=$(git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null); then
+  if ! head=$(current_head); then
     # No readable checkout: nothing can be said about what is loaded, and the
     # per-pass comparison has nothing to compare against either.
     BUILD="unknown"
     return 0
   fi
-  if ! dirty=$(git -C "$SCRIPT_DIR" status --porcelain 2>/dev/null); then
-    # Unreadable is not clean. Treated as dirty, which is the answer that stops
-    # the field claiming a commit it cannot stand behind.
-    dirty="unreadable"
-  fi
-  if [[ -n "$dirty" ]]; then
+  # Unreadable is not clean: a dirty tree and a status read that failed both
+  # leave the loaded bytes unpinnable to a commit.
+  if ! dirty=$(git -C "$SCRIPT_DIR" status --porcelain 2>/dev/null) || [[ -n "$dirty" ]]; then
     BUILD="$head-dirty"
   else
     BUILD="$head"
@@ -5042,7 +5048,7 @@ current_drift() {
     printf 'unknown'
     return 0
   fi
-  if ! head=$(git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null); then
+  if ! head=$(current_head); then
     printf 'unknown'
     return 0
   fi
@@ -5092,7 +5098,9 @@ run_pass() {
   # would leave a bare pass line ambiguous between *current* and *a build too
   # old to emit the field*; emitting it unconditionally makes its absence
   # positive evidence of a pre-stamp build.
-  log "pass end dispatches=$DISPATCHES skips=$SKIPS sweeps=$SWEEPS refusals=$REFUSALS build=$BUILD drift=$(current_drift)"
+  local drift
+  drift=$(current_drift)
+  log "pass end dispatches=$DISPATCHES skips=$SKIPS sweeps=$SWEEPS refusals=$REFUSALS build=$BUILD drift=$drift"
 }
 
 # --- main --------------------------------------------------------------------

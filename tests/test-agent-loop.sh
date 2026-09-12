@@ -4213,6 +4213,20 @@ run_once
 check_status 0 "$STATUS"
 check_grep "refusals=0 build=headsha0-dirty drift=unknown" "$OUT"
 
+setup "an unreadable checkout leaves both fields claiming nothing"
+# Every read here is fail-safe: a field that cannot answer says so rather than
+# naming a commit it has not stood behind.
+export STUB_GIT_FAIL=rev-parse
+run_once
+check_status 0 "$STATUS"
+check_grep "refusals=0 build=unknown drift=unknown" "$OUT"
+
+setup "a status read that fails is read as dirty rather than clean"
+export STUB_GIT_FAIL=status
+run_once
+check_status 0 "$STATUS"
+check_grep "refusals=0 build=headsha0-dirty drift=unknown" "$OUT"
+
 setup "a checkout that moves mid-run drifts without moving build="
 # Bash reached EOF before pass one, so the running bytes cannot change; the
 # checkout underneath them can. `build=X drift=Y` is the window where X decides
