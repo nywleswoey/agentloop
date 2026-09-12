@@ -2693,6 +2693,21 @@ setup "the autofix trigger fires at most once per head commit"
 PASS_N=0
 
 # Pass one: reviewed, findings unresolved, autofix never attempted here.
+#
+# **Both review threads in this world are `isOutdated: true`, and that is the
+# guard.** Nothing reads the field, so the flip is inert today: it changes no
+# assertion, no log line and no argv, and the expectation below stands exactly
+# as it did when they were `false`. Add `select(.isOutdated != true)` to the
+# `threads` derivation and this count goes to 0, the pull request never reaches
+# `needs-autofix`, and the line below never prints — which is the regression the
+# derivation warns about and the invariants block argues. Pass one carries it
+# because it is the case that already asserts `action=triggered`, so the failure
+# names the trigger not firing rather than a count being off by two. Every other
+# `isOutdated` in `tests/fixtures` stays `false`, so live and outdated threads
+# are both represented and the blind spot is closed rather than moved.
+# Behavioural on purpose: a grep for `isOutdated` would have made the suite's
+# *exactly three* code-reading checks four, to buy what a fixture value already
+# buys.
 replay autofix-once/pass1 2026-08-27T12:00:00Z
 check_status 0 "$STATUS"
 check_grep "pr nywleswoey/automation#301 301a301a301a301a301a301a301a301a301a301a needs-autofix review=terminal threads=2 autofix=unspent action=triggered" "$PASS_LOG"
