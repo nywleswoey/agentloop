@@ -2608,10 +2608,11 @@ query_pr_state() {
 # is one a human has already been asked to look at, and the hand-merge exit is
 # untouched — so it is named here rather than guarded against.
 #
-# The reply is carried so the handover can paste it and for no other reason.
-# **Nothing keys on it** — a performed reply with no status is a CodeRabbit
-# failure and a not-completed reply is a refusal, and both escalate — so it is
-# flattened onto one line like every other value here rather than parsed.
+# The reply is carried so the handover can paste it, and so the chain can tell
+# a comment-only answer from silence. **It is keyed on its presence, never on
+# its content** (#143) — a reply with no status is a stall, silence is not, and
+# nothing reads what the reply says — so it is flattened onto one line like
+# every other value here rather than parsed.
 pr_facts() {
   jq -r \
     --arg crctx "$CODERABBIT_STATUS_CONTEXT" \
@@ -2887,7 +2888,7 @@ merge_pr() {
 # The verdict column reads `ok`, `no`, `defer` — and `note` for a row that
 # judged nothing at all. There are two of those, and both are rows the reader
 # needs beside a judgement rather than as one. CodeRabbit's reply to a nudge is
-# pasted verbatim because **nothing keys on it**, and giving it `ok` would claim
+# pasted verbatim because **nothing keys on its content**, and giving it `ok` would claim
 # a judgement was made about prose the loop is specifically forbidden to parse.
 # The gate clock's row carries the age and the bound and nothing else: the clock
 # is not a veto, so any verdict on that row would be a judgement the combination
@@ -2978,9 +2979,11 @@ escalation_body() {
     # The third of the three things CodeRabbit can do with a command, and the
     # only one that used to have no kind: `stalled` is *never reported*, `stuck`
     # is *reported and still thinking*, and this is *reported, and the answer was
-    # no — every time*. Giving it `stalled` would make `stalled`'s own gloss
-    # false of it, and `refused` is the merge's.
-    declined) meaning="CodeRabbit answered every command and never ran a review inside the retry window" ;;
+    # no* — with any silence after the refusal inheriting it (#143), which is
+    # why the gloss no longer claims CodeRabbit answered every command. Giving
+    # it `stalled` would make `stalled`'s own gloss false of it, and `refused`
+    # is the merge's.
+    declined) meaning="CodeRabbit refused at this head and never ran a review inside the retry window" ;;
     refused)  meaning="the gate said merge and GitHub said no" ;;
     # Not reachable from this file, and it still must not lose the record: a
     # kind with no gloss is worth less to the operator than one with, and worth
@@ -3991,7 +3994,7 @@ pr_phase_one() {
   local esc_kind esc_comment wdn_kinds signal pending_at signal_desc signal_at block block_abbrev
   local nudge_at nudge_first_at nudge_count reply
   local now read_at head_epoch status_epoch trigger_epoch pending_epoch nudge_epoch
-  local signal_epoch first_epoch answered answer_refused ask signal_kv declined_rows
+  local signal_epoch first_epoch status_answered status_stands answer_refused ask signal_kv declined_rows
   local spent in_flight age status needs_review route origin stalled_reason
   local state review kv merge_out merge_status stands withheld
 
@@ -4297,16 +4300,59 @@ pr_phase_one() {
     fi
   elif $needs_review; then
     kv="$kv route=$route"
-    # **Did CodeRabbit answer the command I sent?** — `signalAt > nudgeAt`, the
-    # same freshness shape `$reply` uses, and the only attribution available: the
-    # status carries no invocation id, so anything stronger would be timestamp
-    # ordering wearing a better name. Without a nudge to be newer than there is
-    # nothing to answer, so an empty `nudgeAt` is unanswered by construction.
+    # **Did CodeRabbit answer the command I sent?** An answer is any CodeRabbit
+    # output newer than the latest nudge — a status (`signalAt > nudgeAt`) **or**
+    # a comment (`$reply`, selected by the same freshness shape) — and it is
+    # keyed on its **presence, never on its content** (#143). What an answer
+    # *means* comes from the status alone, below. Timestamp ordering is the only
+    # attribution available: the status carries no invocation id, so anything
+    # stronger would be ordering wearing a better name. Without a nudge to be
+    # newer than there is nothing to answer, so an empty `nudgeAt` is unanswered
+    # by construction.
     signal_epoch=$(epoch_of "$signal_at") || signal_epoch=""
     nudge_epoch=$(epoch_of "$nudge_at") || nudge_epoch=""
-    answered=false
+    # **The origin of the refusal run is the *first* nudge at this head**, read
+    # here because two things below measure from it: the retry window, and which
+    # status silence may inherit. The fallback is the newest nudge, which can
+    # only make the window run late by the width of one retry, and is reachable
+    # only if a timestamp the loop wrote will not parse.
+    first_epoch=$(epoch_of "$nudge_first_at") || first_epoch=""
+    [[ -n "$first_epoch" ]] || first_epoch="$nudge_epoch"
+    status_answered=false
     if [[ -n "$nudge_epoch" && -n "$signal_epoch" ]] && (( signal_epoch > nudge_epoch )); then
-      answered=true
+      status_answered=true
+    fi
+    # **Silence inherits the answer that stands in its refusal run.** No status
+    # and no comment after the latest nudge carries no meaning of its own, so
+    # past one poll interval it takes the newest status since the run's first
+    # nudge — and a refusal followed by silence is still a refusal, retried
+    # under `reviewRetryTimeoutSeconds` rather than handed over as `stalled`.
+    #
+    # The premise this replaced — *a rate limit always writes a status, so it
+    # always answers* — held for 25 nudges inside refusal runs on `#117` and
+    # `#141`, each answered within ~10s, and was falsified by `#142`: its second
+    # nudge at 04:43:28Z drew no status, no `queued`, no comment, ever, and one
+    # poll interval later the loop handed over a record whose reader's only move
+    # was the nudge the retry row exists to make. Nothing the loop can read says
+    # why a command was ignored, so the rule is cause-blind by necessity.
+    #
+    # **Within one poll interval of the latest nudge silence inherits nothing**,
+    # so it stays `nudge-in-flight` below. That keeps *a command in flight is
+    # never pre-empted* true by construction rather than by timing — unreachable
+    # at today's cadence, where a pass never follows its nudge by less than an
+    # interval, and true at any cadence.
+    #
+    # **A comment is not silence**, which is why presence counts it: a
+    # comment-only answer carrying no status — the `Already reviewed the last
+    # commit` shape — inherits nothing and stalls on the poll-interval clock.
+    # Counting statuses alone would hold it in the run for the whole retry
+    # window and surface it as `declined`, late and under the wrong kind.
+    status_stands=false
+    if $status_answered; then
+      status_stands=true
+    elif [[ -z "$reply" && -n "$nudge_epoch" && -n "$signal_epoch" ]] \
+        && (( now - nudge_epoch > POLL_INTERVAL && signal_epoch > first_epoch )); then
+      status_stands=true
     fi
     # **And was that answer a refusal?** One bash comparison against a one-value
     # allowlist, beside where `route` is derived: jq keeps emitting facts, bash
@@ -4322,8 +4368,11 @@ pr_phase_one() {
     # the poll-interval clock below runs exactly as it does today — and *was this
     # head reviewed* stays the merge-risk block test's sole property, so a
     # two-second no-op review is still caught where it is caught today.
+    #
+    # It is read off the *standing* status, so an inherited `Review completed`
+    # is exactly as inert as a fresh one, and silence after it stalls.
     answer_refused=false
-    if $answered && [[ "$signal_desc" != "$CODERABBIT_STATUS_REVIEWED" ]]; then
+    if $status_stands && [[ "$signal_desc" != "$CODERABBIT_STATUS_REVIEWED" ]]; then
       answer_refused=true
     fi
     # **The meter, and it is *awaiting an answer* rather than *asked once
@@ -4336,10 +4385,11 @@ pr_phase_one() {
     # from racing.** The retry window is read *only* on the arm where nothing is
     # outstanding: a command already in flight is never pre-empted by the outer
     # bound, because it may be the one that lands and pre-empting it would post
-    # a record the next pass has to retract. `nudge-stalled` therefore stays
-    # reachable throughout the retry sequence, and the window may overrun by up
-    # to one poll interval before `declined` posts — the slack every clock in
-    # this phase already has.
+    # a record the next pass has to retract. Silence inherits nothing inside
+    # that interval, so the window may overrun by up to one poll interval before
+    # `declined` posts — the slack every clock in this phase already has. Past
+    # it, a silent tail stays in the retry sequence, and `nudge-stalled` is
+    # reachable inside a run only by a comment-only answer.
     ask=false
     # **`nudgeFirstAt` is the whole of *is a command of mine outstanding at this
     # head*.** The head-scoping is done once, in jq, and read here as an
@@ -4383,14 +4433,16 @@ pr_phase_one() {
         # Past the bound with still no answer. `stalled`, like the autofix
         # clock: a command was triggered and CodeRabbit never answered.
         #
-        # **What reaches here is now only genuine silence**, and that is what
-        # keeps this prose true rather than repairing it: a rate limit always
-        # writes a status, so it always answers, so it always un-spends, and it
-        # can no longer arrive at this branch at all. What is left is the
-        # `Already reviewed the last commit` refusal, which writes no status
-        # ever, a force-push orphan, and a review still in flight past the
-        # bound — and the two causes an operator can act on are defensible for
-        # every one of them.
+        # **What reaches here is a stall** (#143): silence with no refusal
+        # standing since the first nudge at this head, or a comment-only answer
+        # carrying no status — the `Already reviewed the last commit` reply,
+        # which writes no status ever and so is no refusal by the glossary's
+        # definition. The one-way rule's `Review completed` still arrives here
+        # too, fresh or inherited, exactly as before. Silence after a refusal no
+        # longer does: it inherits the refusal above and is retried. What is
+        # left is that reply, a force-push orphan, a review still in flight past
+        # the bound, and a `Review completed` that moved nothing — and the two
+        # causes an operator can act on are defensible for every one of them.
         #
         # The bound is **cause-blind** — a curable cause was cured by the
         # nudge, an incurable one arrives here — so none of the documented
@@ -4445,12 +4497,9 @@ pr_phase_one() {
       #
       # **The origin is the *first* nudge at this head**, so the window measures
       # the whole wait rather than resetting on every retry — and a push resets
-      # it, because the fact itself is head-scoped. The fallback is the newest
-      # nudge, which can only make the window run late by the width of one
-      # retry, and is reachable only if a timestamp the loop wrote will not
-      # parse.
-      first_epoch=$(epoch_of "$nudge_first_at") || first_epoch=""
-      [[ -n "$first_epoch" ]] || first_epoch="$nudge_epoch"
+      # it, because the fact itself is head-scoped. A silent tail runs on the
+      # same clock: silence inherits the run's refusal, so the run is one wait
+      # with one origin. The fallback is read where `first_epoch` is.
       age=$(( now - first_epoch ))
       # `retries=` counts every nudge on the pull request rather than only those
       # at this head, and that is deliberate: it is the **read-budget canary**,
@@ -4469,24 +4518,33 @@ pr_phase_one() {
       else
         # The bounded exit, and its **own kind**: `stalled` means CodeRabbit
         # never reported inside the bound and would become false of this, where
-        # what happened here is that CodeRabbit answered every single time and
-        # the answer was no. `refused` was not available — the merge owns it,
-        # and re-using a kind across two subsystems is worse than a new word.
+        # what happened here is that CodeRabbit refused at this head and nothing
+        # after the refusal changed it. `refused` was not available — the merge
+        # owns it, and re-using a kind across two subsystems is worse than a
+        # new word.
+        #
+        # **One kind, whether the run's tail was refused or silent** (#143). A
+        # `declined-silent` kind was rejected: a retraction cost in the handover
+        # register for a difference the reader does not act on. The rows say
+        # only what is true of both, and the gap between `last-nudge=` and
+        # `answered-at=` is where a silent tail shows.
         state=nudge-declined
         # Built as a local list and handed over in one call, like the gate's
         # own variable-length rows: `want_handover` is the only writer of the
         # handover globals in this file, and a second one is how the two come to
         # disagree about what a pending handover is.
         declined_rows=()
-        declined_rows+=("$(reason ok "CodeRabbit answered every command at this head" \
+        declined_rows+=("$(reason ok "CodeRabbit refused at this head and never ran a review" \
           "first-nudge=$nudge_first_at retries=$nudge_count route=$route head=$head_date")")
         # **The description is pasted verbatim**, and that is safe *precisely
-        # because* `signalAt > nudgeAt` is what got the pass here: it is
-        # guaranteed to be an answer to the loop's own command rather than a
-        # stale slot. This is the diagnosis half of the rule the allowlist above
-        # states the control half of — verbatim, and nothing in between.
-        declined_rows+=("$(reason no "CodeRabbit refused every one and never ran a review — its newest answer was \"$signal_desc\"" \
-          "age=${age}s bound=${REVIEW_RETRY_TIMEOUT}s answered-at=$signal_at route=$route")")
+        # because* the status is newer than the run's first nudge — which is
+        # what got the pass here, whether it answered the last nudge or silence
+        # inherited it: it is still an answer to a command the loop wrote
+        # rather than a stale slot. This is the diagnosis half of the rule the
+        # allowlist above states the control half of — verbatim, and nothing in
+        # between.
+        declined_rows+=("$(reason no "the retry window closed with no review run — its newest answer since the first nudge was \"$signal_desc\"" \
+          "age=${age}s bound=${REVIEW_RETRY_TIMEOUT}s last-nudge=$nudge_at answered-at=$signal_at route=$route")")
         # The one route with **no remaining path to a verdict at all**, said out
         # loud because the operator cannot derive it from the other rows: autofix
         # is spent at a CodeRabbit-authored head and will not run again there,

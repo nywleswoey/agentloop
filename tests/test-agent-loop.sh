@@ -1908,7 +1908,7 @@ check "the first line names the kind" \
 check_grep "not be installed on this repository, or the organisation may be out of seats" "$BODY"
 check_grep "age=301s bound=300s nudge=2026-08-27T11:55:00Z route=no-signal,no-block" "$BODY"
 # No CodeRabbit prose is parsed. The reply is read once, here, and shipped
-# verbatim as a raw value — nothing keys on it.
+# verbatim as a raw value — nothing keys on its content.
 check_grep "CodeRabbit's reply to the nudge, verbatim and unparsed" "$BODY"
 check_grep "**Actions performed**" "$BODY"
 check_grep "Review triggered." "$BODY"
@@ -2043,17 +2043,19 @@ check "CodeRabbit's own words close the line" \
 DECLINED_BODY="$STUB_STATE/pr-body-290.txt"
 check "the escalation body was captured" test -f "$DECLINED_BODY"
 # Its **own kind**. `stalled` means *CodeRabbit never reported inside the bound*
-# and would be false of a pull request CodeRabbit answered every single time.
+# and would be false of a pull request CodeRabbit refused.
 check "the first line names the kind" \
-  test "$(head -1 "$DECLINED_BODY")" = '**Escalated — `declined`:** CodeRabbit answered every command and never ran a review inside the retry window.'
+  test "$(head -1 "$DECLINED_BODY")" = '**Escalated — `declined`:** CodeRabbit refused at this head and never ran a review inside the retry window.'
+check_grep "| CodeRabbit refused at this head and never ran a review |" "$DECLINED_BODY"
 check_grep "first-nudge=2026-08-27T11:05:00Z retries=3 route=no-block" "$DECLINED_BODY"
 # The `no` row pastes CodeRabbit's own newest description **verbatim** rather
-# than guessing at seats and installations. That is safe precisely because
-# `signalAt > nudgeAt` is what got the pass here, so the description is
-# guaranteed to be an answer to the loop's own command and not a stale slot.
-check_grep 'its newest answer was "Review rate limited"' "$DECLINED_BODY"
+# than guessing at seats and installations. That is safe precisely because the
+# status is newer than the run's first nudge, so the description is an answer
+# to a command the loop wrote and not a stale slot.
+check_grep 'its newest answer since the first nudge was "Review rate limited"' "$DECLINED_BODY"
 check_no_grep "not be installed on this repository, or the organisation may be out of seats" "$DECLINED_BODY"
-check_grep "age=5401s bound=5400s answered-at=2026-08-27T11:15:20Z" "$DECLINED_BODY"
+# Answered here, with no silent tail: the answer is newer than the last nudge.
+check_grep "age=5401s bound=5400s last-nudge=2026-08-27T11:15:10Z answered-at=2026-08-27T11:15:20Z" "$DECLINED_BODY"
 # The reply is still a witness nothing parses: created as *Actions performed* on
 # every command and edited to its outcome afterwards, so no rule may read it.
 check_grep "CodeRabbit's reply to the last nudge, verbatim and unparsed" "$DECLINED_BODY"
@@ -2113,6 +2115,120 @@ check_no_grep "signal=" "$PASS_LOG"
 check_no_grep "nudge-declined" "$PASS_LOG"
 check_no_grep "action=escalated" "$PASS_LOG"
 
+# --- pr phase: silence inside a refusal run (#143) ----------------------------------
+
+# `#142`, replayed from its real comments and statuses. CodeRabbit refused the
+# first nudge at this head with `Review rate limited`, and then answered the
+# second with **nothing at all** — no status, no comment, ever. One poll interval
+# later the loop handed over as `stalled`, and the handover's reader had exactly
+# one move: the nudge the retry row exists to make.
+#
+# `pass1` and `pass2` are the capture of the loop's own `query_pr_state` read,
+# cut at the instant of the pass and keeping only what existed then. The real
+# timeline stops at the stalled handover, so the retry-bound twins replay
+# `pass2` held still: the nudges the fixed loop would have posted in between
+# exist in no capture, which is why `retries=3` and `last-nudge=04:43:28Z` hold
+# at 06:08. `comment-only` is the one declared mutant, below. The head is
+# CodeRabbit's own autofix commit and its verdict names the commit before it,
+# which is why the route is `other-head` and the autofix spend is `own-head`
+# throughout. The repository is `automation` only because the stub resolves no
+# other. Silence with no status at all is `other-head/pass2`'s 281, above.
+setup "#142: the refusal the silent tail inherits"
+replay silent-tail/pass1 2026-09-13T04:43:27Z
+check_status 0 "$STATUS"
+# The loop's own line from that morning, field for field.
+check_grep "pr nywleswoey/automation#142 20fd8b9647b5bcf404960665da342c2e181e7cf7 needs-review review=terminal threads=0 autofix=spent:own-head route=other-head retries=2 age=318 bound=5400 origin=first-nudge answer=refused action=nudged signal=Review rate limited" "$PASS_LOG"
+check_grep "gh-axi pr comment 142 --repo nywleswoey/automation --body @coderabbitai review" "$STUB_CALLS"
+
+# Silence within one poll interval of the latest nudge is a command in flight,
+# and a command in flight is never pre-empted — by construction, since silence
+# inherits nothing until the interval has passed.
+setup "#142: silence inside one poll interval is still in flight"
+replay silent-tail/pass2 2026-09-13T04:48:28Z
+check_status 0 "$STATUS"
+check_grep "pr nywleswoey/automation#142 20fd8b9647b5bcf404960665da342c2e181e7cf7 nudge-in-flight review=terminal threads=0 autofix=spent:own-head route=other-head age=300 bound=300 answer=none" "$PASS_LOG"
+check_no_grep "signal=" "$PASS_LOG"
+check_no_grep "action=escalated" "$PASS_LOG"
+check "no second command inside the interval" \
+  test "$(grep -cF 'pr comment 142 --repo nywleswoey/automation --body @coderabbitai review' "$STUB_CALLS")" -eq 0
+
+# The mutant twin, and the defect itself: one second past the interval the
+# silence inherits the refusal standing since the run's first nudge, so the
+# pull request stays `needs-review`, is nudged, and the clock is still the
+# retry window's from that first nudge. `retries=` counts the silent nudge
+# exactly as it counted the refused one.
+setup "#142: silence past one poll interval inherits the refusal and is asked again"
+replay silent-tail/pass2 2026-09-13T04:48:29Z
+check_status 0 "$STATUS"
+check_grep "pr nywleswoey/automation#142 20fd8b9647b5bcf404960665da342c2e181e7cf7 needs-review review=terminal threads=0 autofix=spent:own-head route=other-head retries=3 age=620 bound=5400 origin=first-nudge answer=refused action=nudged signal=Review rate limited" "$PASS_LOG"
+check_grep "gh-axi pr comment 142 --repo nywleswoey/automation --body @coderabbitai review" "$STUB_CALLS"
+check_no_grep "nudge-stalled" "$PASS_LOG"
+check_no_grep "action=escalated" "$PASS_LOG"
+
+# The instant the loop actually handed over, which now nudges instead.
+setup "#142: the pass that handed over as stalled asks again"
+replay silent-tail/pass2 2026-09-13T04:48:45Z
+check_status 0 "$STATUS"
+check_grep "pr nywleswoey/automation#142 20fd8b9647b5bcf404960665da342c2e181e7cf7 needs-review review=terminal threads=0 autofix=spent:own-head route=other-head retries=3 age=636 bound=5400 origin=first-nudge answer=refused action=nudged signal=Review rate limited" "$PASS_LOG"
+check_no_grep "kind=stalled" "$PASS_LOG"
+
+# `reviewRetryTimeoutSeconds` governs the silent tail, pinned to the second from
+# the run's **first** nudge (04:38:09Z) and not from the silent one.
+setup "#142: a silent tail one second inside the retry bound is asked again"
+replay silent-tail/pass2 2026-09-13T06:08:09Z
+check_status 0 "$STATUS"
+check_grep "pr nywleswoey/automation#142 20fd8b9647b5bcf404960665da342c2e181e7cf7 needs-review review=terminal threads=0 autofix=spent:own-head route=other-head retries=3 age=5400 bound=5400 origin=first-nudge answer=refused action=nudged signal=Review rate limited" "$PASS_LOG"
+check_no_grep "nudge-declined" "$PASS_LOG"
+
+setup "#142: a silent tail one second past the retry bound is declined"
+replay silent-tail/pass2 2026-09-13T06:08:10Z
+check_status 0 "$STATUS"
+check_grep "pr nywleswoey/automation#142 20fd8b9647b5bcf404960665da342c2e181e7cf7 nudge-declined review=terminal threads=0 autofix=spent:own-head route=other-head retries=3 age=5401 bound=5400 origin=first-nudge answer=refused action=escalated kind=declined label=added handover=posted signal=Review rate limited" "$PASS_LOG"
+check_no_grep "kind=stalled" "$PASS_LOG"
+check "the expired silent tail is not asked again" \
+  test "$(grep -cF 'pr comment 142 --repo nywleswoey/automation --body @coderabbitai review' "$STUB_CALLS")" -eq 0
+SILENT_TAIL_BODY="$STUB_STATE/pr-body-142.txt"
+check "the escalation body was captured" test -f "$SILENT_TAIL_BODY"
+# One kind, whose rows stay true of a run that ended in silence: CodeRabbit
+# refused at this head, and nothing claims it answered every command.
+check "the first line names the kind" \
+  test "$(head -1 "$SILENT_TAIL_BODY")" = '**Escalated — `declined`:** CodeRabbit refused at this head and never ran a review inside the retry window.'
+check_grep "| CodeRabbit refused at this head and never ran a review |" "$SILENT_TAIL_BODY"
+check_no_grep "answered every command" "$SILENT_TAIL_BODY"
+check_grep "first-nudge=2026-09-13T04:38:09Z retries=3 route=other-head head=2026-09-13T04:32:56Z" "$SILENT_TAIL_BODY"
+# The silent tail is the gap between the last nudge and the answer that stands.
+check_grep "last-nudge=2026-09-13T04:43:28Z answered-at=2026-09-13T04:38:40Z" "$SILENT_TAIL_BODY"
+check_grep 'its newest answer since the first nudge was "Review rate limited"' "$SILENT_TAIL_BODY"
+check_grep "the loop has no remaining path to a verdict on this pull request" "$SILENT_TAIL_BODY"
+# Nothing answered the last nudge, so there is no reply to paste.
+check_grep "| CodeRabbit's reply to the last nudge, verbatim and unparsed | \`none\` |" "$SILENT_TAIL_BODY"
+
+# **Presence counts a comment.** The same world with a CodeRabbit reply to the
+# silent nudge and still no status after it — the reply's text is CodeRabbit's
+# own `Review rate limited.` from nudge one, which is exactly the prose no rule
+# may read. A comment-only answer is not silence, so it inherits nothing and
+# stalls one poll interval after the nudge it answered. Statuses-only presence
+# would hold it in the run for the whole retry window and surface it late, under
+# the wrong kind.
+#
+# The world is `pass2` plus one comment that was never posted: CodeRabbit's real
+# reply to nudge one, re-dated to seven seconds after nudge two. Nothing else in
+# it is edited.
+setup "#142: a comment-only answer inside one poll interval is still in flight"
+replay silent-tail/comment-only 2026-09-13T04:48:28Z
+check_status 0 "$STATUS"
+check_grep "pr nywleswoey/automation#142 20fd8b9647b5bcf404960665da342c2e181e7cf7 nudge-in-flight review=terminal threads=0 autofix=spent:own-head route=other-head age=300 bound=300 answer=none" "$PASS_LOG"
+check_no_grep "action=escalated" "$PASS_LOG"
+
+setup "#142: a comment-only answer inside a refusal run is stalled"
+replay silent-tail/comment-only 2026-09-13T04:48:29Z
+check_status 0 "$STATUS"
+check_grep "pr nywleswoey/automation#142 20fd8b9647b5bcf404960665da342c2e181e7cf7 nudge-stalled review=terminal threads=0 autofix=spent:own-head route=other-head age=301 bound=300 answer=none action=escalated kind=stalled label=added" "$PASS_LOG"
+check_no_grep "answer=refused" "$PASS_LOG"
+check_no_grep "signal=" "$PASS_LOG"
+check "the stalled nudge is not sent again" \
+  test "$(grep -cF 'pr comment 142 --repo nywleswoey/automation --body @coderabbitai review' "$STUB_CALLS")" -eq 0
+
 # --- pr phase: what the description may and may not decide --------------------------
 
 # One world separating the six things the description read has to get right. The
@@ -2124,13 +2240,12 @@ export STUB_WORLD=declined STUB_NOW=2026-08-27T12:40:01Z
 run_once
 check_status 0 "$STATUS"
 
-# 291 — **`nudge-stalled` survives.** A nudge stands, nothing answered it, and
-# the pass is a poll interval past the *retry* bound as well as past its own.
-# Deleting the park must not delete the state that catches real silence, and
-# what still reaches here is only genuine silence — a rate limit always writes a
-# status, so it always answers, so it always un-spends, and it can no longer
-# arrive at this branch at all. That is what keeps `stalled`'s prose true rather
-# than repairing it.
+# 291 — **`nudge-stalled` survives.** A nudge stands, CodeRabbit's reply is the
+# only thing after it, and no status has ever been put on this head — so there
+# is no refusal for anything to inherit. The pass is a poll interval past the
+# *retry* bound as well as past its own. Deleting the park must not delete the
+# state that catches a genuine stall, and a comment-only answer carrying no
+# status is one of its two ways in (#143).
 check_grep "pr nywleswoey/automation#291 291a291a291a291a291a291a291a291a291a291a nudge-stalled review=pending threads=0 autofix=unspent route=no-signal,no-block age=5701 bound=300 answer=none action=escalated kind=stalled label=added" "$OUT"
 SILENT_BODY="$STUB_STATE/pr-body-291.txt"
 check "the escalation body was captured" test -f "$SILENT_BODY"

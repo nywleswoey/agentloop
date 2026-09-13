@@ -1,0 +1,213 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "number": 142,
+        "headRefOid": "20fd8b9647b5bcf404960665da342c2e181e7cf7",
+        "mergeable": "UNKNOWN",
+        "mergeStateStatus": "UNKNOWN",
+        "files": {
+          "totalCount": 4,
+          "nodes": [
+            {
+              "path": "README.md"
+            },
+            {
+              "path": "agent-loop.sh"
+            },
+            {
+              "path": "tests/bin/git"
+            },
+            {
+              "path": "tests/test-agent-loop.sh"
+            }
+          ]
+        },
+        "commits": {
+          "nodes": [
+            {
+              "commit": {
+                "oid": "20fd8b9647b5bcf404960665da342c2e181e7cf7",
+                "committedDate": "2026-09-13T04:32:56Z",
+                "author": {
+                  "user": {
+                    "login": "coderabbitai[bot]"
+                  }
+                },
+                "statusCheckRollup": {
+                  "state": "SUCCESS",
+                  "contexts": {
+                    "nodes": [
+                      {
+                        "__typename": "StatusContext",
+                        "context": "CodeRabbit",
+                        "state": "SUCCESS",
+                        "description": "Review rate limited",
+                        "createdAt": "2026-09-13T04:38:40Z",
+                        "creator": {
+                          "login": "coderabbitai"
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "reviewThreads": {
+          "nodes": [
+            {
+              "id": "PRRT_kwDOUAHXl86h2YcK",
+              "isResolved": true,
+              "isOutdated": true,
+              "path": "agent-loop.sh",
+              "line": null,
+              "comments": {
+                "nodes": [
+                  {
+                    "databaseId": 3998708724,
+                    "createdAt": "2026-09-13T04:22:14Z",
+                    "author": {
+                      "login": "coderabbitai"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "id": "PRRT_kwDOUAHXl86h2YcM",
+              "isResolved": true,
+              "isOutdated": true,
+              "path": "agent-loop.sh",
+              "line": null,
+              "comments": {
+                "nodes": [
+                  {
+                    "databaseId": 3998708726,
+                    "createdAt": "2026-09-13T04:22:14Z",
+                    "author": {
+                      "login": "coderabbitai"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "id": "PRRT_kwDOUAHXl86h2YcO",
+              "isResolved": true,
+              "isOutdated": true,
+              "path": "README.md",
+              "line": null,
+              "comments": {
+                "nodes": [
+                  {
+                    "databaseId": 3998708728,
+                    "createdAt": "2026-09-13T04:22:14Z",
+                    "author": {
+                      "login": "coderabbitai"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "comments": {
+          "nodes": [
+            {
+              "databaseId": 5651087076,
+              "createdAt": "2026-09-13T04:15:09Z",
+              "updatedAt": "2026-09-13T04:38:24Z",
+              "body": "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n<!-- review_stack_entry_start -->\n\n<a href=\"https://app.coderabbit.ai/change-stack/nywleswoey/agentloop/pull/142#gh-light-mode-only\"><img src=\"https://storage.googleapis.com/coderabbit_public_assets/review-stack-in-coderabbit-ui.svg\" alt=\"Review Change Stack\" width=\"202\" height=\"32\"></a><a href=\"https://app.coderabbit.ai/change-stack/nywleswoey/agentloop/pull/142#gh-dark-mode-only\"><img src=\"https://storage.googleapis.com/coderabbit_public_assets/review-stack-in-coderabbit-ui-dark.svg\" alt=\"Review Change Stack\" width=\"202\" height=\"32\"></a>\n\n<!-- review_stack_entry_end -->\n<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->\n\n> [!WARNING]\n> ## Review limit reached\n> \n> **Next included review available in 38 minutes.**\n> \n> [Check out review usage here](https://app.coderabbit.ai/dashboard/review-capacity?orgId=c0bed9d3-34d5-4c33-9c74-7d2e8e02ab47).\n> \n> <details>\n> <summary>View limit details</summary>\n> \n> **Limit details:** You’ve used the included review currently available.\n> \n> You've used all free OSS reviews for now. Wait for the free limit to reset to keep reviewing this public repository.\n> \n> [Learn how review limits work](https://docs.coderabbit.ai/management/plans#rate-limits).\n> \n> **Review configuration:**\n> \n> <details>\n> <summary>⚙️ Run configuration</summary>\n> \n> **Configuration used**: defaults\n> \n> **Review profile**: CHILL\n> \n> **Plan**: Advanced\n> \n> **Run ID**: `8fa17684-ad91-46fc-9536-d5741bb24af2`\n> \n> </details>\n> \n> <details>\n> <summary>📥 Commits</summary>\n> \n> Reviewing files that changed from the base of the PR and between 2c9dc86bad8ff56d68693108c79d6e62210c38e2 and 20fd8b9647b5bcf404960665da342c2e181e7cf7.\n> \n> </details>\n> \n> <details>\n> <summary>📒 Files selected for processing (4)</summary>\n> \n> * `README.md`\n> * `agent-loop.sh`\n> * `tests/bin/git`\n> * `tests/test-agent-loop.sh`\n> \n> </details>\n> \n> </details>\n\n<!-- end of auto-generated comment: rate limited by coderabbit.ai -->\n\n<!-- walkthrough_start -->\n\n<details>\n<summary>📝 Walkthrough</summary>\n\n## Walkthrough\n\nThe daemon now records a startup-frozen build identity and reports checkout drift on each pass. Tests cover clean, dirty, unreadable, failed, and moving-checkout states. The README documents restart guidance and freshness differences across daemon-related scripts and configuration.\n\n### Changes\n\n**Build provenance and drift diagnostics**\n\n|Layer / File(s)|Summary|\n|---|---|\n|**Runtime build identity and drift** <br> `agent-loop.sh`|The daemon measures the script checkout once before the pass loop, derives per-pass drift, and appends `build` and `drift` fields to pass-end logs.|\n|**Diagnostics validation and restart guidance** <br> `tests/bin/git`, `tests/test-agent-loop.sh`, `README.md`|The Git stub supports commit and status failures. Tests cover clean, dirty, unreadable, failed, and changed-checkout states. The README documents restart guidance and freshness behavior.|\n\n<!-- change_assessment_start -->\n**Priority:** ➖ Normal\n\n\n\n\n\n**Estimated code review effort:** 2 (Simple) | ~12 minutes\n\n<!-- change_assessment_commit:\"2c9dc86bad8ff56d68693108c79d6e62210c38e2\" -->\n**Change:** Feature · **Severity of issue fixed:** Medium\n<!-- change_assessment_end -->\n\n### Sequence Diagram(s)\n\n```mermaid\nsequenceDiagram\n  participant agent-loop.sh\n  participant Git checkout\n  participant Pass-end log\n  agent-loop.sh->>Git checkout: Read startup HEAD and status\n  Git checkout-->>agent-loop.sh: Return build identity\n  loop Each pass\n    agent-loop.sh->>Git checkout: Read current HEAD\n    Git checkout-->>agent-loop.sh: Return current head\n    agent-loop.sh->>Pass-end log: Write build and drift\n  end\n```\n\n</details>\n\n<!-- walkthrough_end -->\n<!-- final_review_risk_start -->\n**Merge Risk:** _🟡 Moderate_ · up to `2c9dc`\n<!-- final_review_risk_coverage:{\"sourceCommitId\":\"2c9dc86bad8ff56d68693108c79d6e62210c38e2\",\"coveredCommitId\":\"2c9dc86bad8ff56d68693108c79d6e62210c38e2\",\"kind\":\"reviewed\"} -->\n\nA checkout change during startup can be hidden by the new diagnostics, misleading operators about whether a daemon must be restarted. Capture the build before startup work and correct the comparison and documentation before merging.\n<!-- final_review_risk_end -->\n<!-- pre_merge_checks_walkthrough_start -->\n\n<details>\n<summary>🚥 Pre-merge checks | ✅ 5</summary>\n\n<details>\n<summary>✅ Passed checks (5 passed)</summary>\n\n|         Check name         | Status   | Explanation                                                                                                                                                                                               |\n| :------------------------: | :------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |\n|      Description Check     | ✅ Passed | Check skipped - CodeRabbit’s high-level summary is enabled.                                                                                                                                               |\n|         Title check        | ✅ Passed | The title clearly describes the primary change: pass-end lines now report the running build and checkout movement.                                                                                        |\n|     Linked Issues check    | ✅ Passed | Issue `#138` requires startup-frozen build identity, per-pass checkout drift, unconditional pass-end fields, dirty and unknown handling, unchanged pass-end prefixes, and restart guidance. The PR summary… |\n| Out of Scope Changes check | ✅ Passed | The reported changes are limited to `agent-loop.sh`, the Git test stub, `tests/test-agent-loop.sh`, and `README.md`. They implement or test the requirements in `#138`. No supervision, deployment, networ… |\n|     Docstring Coverage     | ✅ Passed | Docstring coverage is 100.00% which is sufficient. The required threshold is 80.00%. Docstring coverage is scoped to functions touched by this diff. Analyzed 5 functions across 2 files. (2 skipped: 2 … |\n\n</details>\n\n</details>\n\n<!-- pre_merge_checks_walkthrough_end -->\n<!-- finishing_touch_checkbox_start -->\n\n<details>\n<summary>✨ Finishing Touches</summary>\n\n<details>\n<summary>📝 Generate docstrings</summary>\n\n- [ ] <!-- {\"checkboxId\":\"7962f53c-55bc-4827-bfbf-6a18da830691\"} --> Create stacked PR\n- [ ] <!-- {\"checkboxId\":\"3e1879ae-f29b-4d0d-8e06-d12b7ba33d98\"} --> Commit on current branch\n\n</details>\n<details>\n<summary>🧪 Generate unit tests (beta)</summary>\n\n- [ ] <!-- {\"checkboxId\": \"f47ac10b-58cc-4372-a567-0e02b2c3d479\", \"radioGroupId\": \"utg-output-choice-group-5651094586\"} -->   Create PR with unit tests\n- [ ] <!-- {\"checkboxId\": \"6ba7b810-9dad-11d1-80b4-00c04fd430c8\", \"radioGroupId\": \"utg-output-choice-group-5651094586\"} -->   Commit unit tests in branch `nywleswoey/agent-loop-feat-138-the-pass-end-line-names-the-build-the-lo`\n\n</details>\n\n</details>\n\n<!-- finishing_touch_checkbox_end -->\n<!-- tips_start -->\n\n---\n\nThanks for using [CodeRabbit](https://coderabbit.ai?utm_source=oss&utm_medium=github&utm_campaign=nywleswoey/agentloop&utm_content=142)! It's free for OSS, and your support helps us grow. If you like it, consider giving us a shout-out.\n\n<details>\n<summary>❤️ Share</summary>\n\n- [X](https://twitter.com/intent/tweet?text=I%20just%20used%20%40coderabbitai%20for%20my%20code%20review%2C%20and%20it%27s%20fantastic%21%20It%27s%20free%20for%20OSS%20and%20offers%20a%20free%20trial%20for%20the%20proprietary%20code.%20Check%20it%20out%3A&url=https%3A//coderabbit.ai)\n- [Mastodon](https://mastodon.social/share?text=I%20just%20used%20%40coderabbitai%20for%20my%20code%20review%2C%20and%20it%27s%20fantastic%21%20It%27s%20free%20for%20OSS%20and%20offers%20a%20free%20trial%20for%20the%20proprietary%20code.%20Check%20it%20out%3A%20https%3A%2F%2Fcoderabbit.ai)\n- [Reddit](https://www.reddit.com/submit?title=Great%20tool%20for%20code%20review%20-%20CodeRabbit&text=I%20just%20used%20CodeRabbit%20for%20my%20code%20review%2C%20and%20it%27s%20fantastic%21%20It%27s%20free%20for%20OSS%20and%20offers%20a%20free%20trial%20for%20proprietary%20code.%20Check%20it%20out%3A%20https%3A//coderabbit.ai)\n- [LinkedIn](https://www.linkedin.com/sharing/share-offsite/?url=https%3A%2F%2Fcoderabbit.ai&mini=true&title=Great%20tool%20for%20code%20review%20-%20CodeRabbit&summary=I%20just%20used%20CodeRabbit%20for%20my%20code%20review%2C%20and%20it%27s%20fantastic%21%20It%27s%20free%20for%20OSS%20and%20offers%20a%20free%20trial%20for%20proprietary%20code)\n\n</details>\n\n\n<sub>Comment `@coderabbitai help` to get the list of available commands.</sub>\n\n<!-- tips_end -->",
+              "author": {
+                "login": "coderabbitai"
+              }
+            },
+            {
+              "databaseId": 5651094586,
+              "createdAt": "2026-09-13T04:16:57Z",
+              "updatedAt": "2026-09-13T04:16:57Z",
+              "body": "@coderabbitai review",
+              "author": {
+                "login": "nywleswoey"
+              }
+            },
+            {
+              "databaseId": 5651095275,
+              "createdAt": "2026-09-13T04:17:07Z",
+              "updatedAt": "2026-09-13T04:22:21Z",
+              "body": "<!-- This is an auto-generated reply by CodeRabbit -->\n<!-- CodeRabbit review command invocation: v2:79d219022fa8747c4d40bce52d9fc17f5d9a287d7a10ccbe7d744e49a8c3a4e7 -->\n<details>\n<summary>✅ Action performed</summary>\n\nReview finished.\n\n> Note: CodeRabbit is an incremental review system and does not re-review already reviewed commits. This command is applicable only when automatic reviews are paused.\n\n</details>",
+              "author": {
+                "login": "coderabbitai"
+              }
+            },
+            {
+              "databaseId": 5651137409,
+              "createdAt": "2026-09-13T04:27:32Z",
+              "updatedAt": "2026-09-13T04:27:32Z",
+              "body": "@coderabbitai autofix\n<!-- agent-loop-autofix-head: 2c9dc86bad8ff56d68693108c79d6e62210c38e2 -->",
+              "author": {
+                "login": "nywleswoey"
+              }
+            },
+            {
+              "databaseId": 5651138075,
+              "createdAt": "2026-09-13T04:27:43Z",
+              "updatedAt": "2026-09-13T04:33:05Z",
+              "body": "<!-- This is an auto-generated comment: autofix status by CodeRabbit -->\n🤖 **Completed:** [Fix CodeRabbit issues in PR #142](https://app.coderabbit.ai/code/tasks/6a05b2a1-e95b-45ff-88b2-1c9dc6580720?source=coding_agent_github_pr_comment) — [View commit `20fd8b9`](https://github.com/nywleswoey/agentloop/commit/20fd8b9647b5bcf404960665da342c2e181e7cf7)\n<!-- coding-agent-task-id: 6a05b2a1-e95b-45ff-88b2-1c9dc6580720 -->",
+              "author": {
+                "login": "coderabbitai"
+              }
+            },
+            {
+              "databaseId": 5651158342,
+              "createdAt": "2026-09-13T04:32:49Z",
+              "updatedAt": "2026-09-13T04:32:49Z",
+              "body": "**Escalated — `escalate`:** a veto is present and says no.\n\nThe loop is holding this pull request at `2c9dc86bad8ff56d68693108c79d6e62210c38e2` — no merge, no autofix trigger, no nudge — while this record stands. It re-reads every pass and **withdraws this record on its own** if the picture changes.\n\nRead at 2026-09-13T04:32:48Z.\n\n| Verdict | What | Raw values |\n|---|---|---|\n| no | CodeRabbit's merge-risk verdict does not clear this commit | `block=parsed level=moderate abbrev=2c9dc head=2c9dc86bad8ff56d68693108c79d6e62210c38e2` |\n| ok | every status check on this commit is green | `green=1 pending=0 failed=0 total=1` |\n| ok | GitHub reports no conflict between this head and its base | `mergeable=MERGEABLE` |\n| ok | GitHub's merge state raises nothing this veto owns | `state=CLEAN` |\n| no | this pull request changes what runs unattended | `files=4 guarded=agent-loop.sh` |\n\n`ok` passed · `no` blocked the merge · `defer` not yet computed when this was read · `note` judged nothing at all.\n\n**Ways back in** — none of them required; the loop may clear this itself.\n\n- **Merge it by hand.** Close-out still ticks and closes the issue this branch names: it reads merged pull requests from GitHub and cannot tell whose hand pressed the button.\n- **Push a commit.** The head moves, this record stops matching it, and the loop re-derives from scratch on the next pass.\n- **Convert it to draft.** Draft is the hold gesture, and the loop stops seeing this pull request at all.\n\nThere is no override label. A push is both the fix and the re-engagement.\n\n<!-- agent-loop-escalated: 2c9dc86bad8ff56d68693108c79d6e62210c38e2 escalate -->\n",
+              "author": {
+                "login": "nywleswoey"
+              }
+            },
+            {
+              "databaseId": 5651179239,
+              "createdAt": "2026-09-13T04:38:09Z",
+              "updatedAt": "2026-09-13T04:38:09Z",
+              "body": "@coderabbitai review",
+              "author": {
+                "login": "nywleswoey"
+              }
+            },
+            {
+              "databaseId": 5651179676,
+              "createdAt": "2026-09-13T04:38:16Z",
+              "updatedAt": "2026-09-13T04:38:43Z",
+              "body": "<!-- This is an auto-generated reply by CodeRabbit -->\n<!-- CodeRabbit review command invocation: v2:ed6984702039e445e5882970b6090d3c7ea27558b3e0801988b74247a8dc13f7 -->\n<details>\n<summary>⚠️ Action not completed</summary>\n\nReview rate limited.\n\n> Note: CodeRabbit is an incremental review system and does not re-review already reviewed commits. This command is applicable only when automatic reviews are paused.\n\n</details>",
+              "author": {
+                "login": "coderabbitai"
+              }
+            },
+            {
+              "databaseId": 5651200308,
+              "createdAt": "2026-09-13T04:43:28Z",
+              "updatedAt": "2026-09-13T04:43:28Z",
+              "body": "@coderabbitai review",
+              "author": {
+                "login": "nywleswoey"
+              }
+            },
+            {
+              "databaseId": 5651200999,
+              "createdAt": "2026-09-13T04:43:35Z",
+              "updatedAt": "2026-09-13T04:43:35Z",
+              "body": "<!-- This is an auto-generated reply by CodeRabbit -->\n<!-- CodeRabbit review command invocation: v2:ed6984702039e445e5882970b6090d3c7ea27558b3e0801988b74247a8dc13f7 -->\n<details>\n<summary>⚠️ Action not completed</summary>\n\nReview rate limited.\n\n> Note: CodeRabbit is an incremental review system and does not re-review already reviewed commits. This command is applicable only when automatic reviews are paused.\n\n</details>",
+              "author": {
+                "login": "coderabbitai"
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
