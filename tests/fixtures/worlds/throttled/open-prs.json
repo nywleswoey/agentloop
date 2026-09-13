@@ -1,0 +1,46 @@
+{
+  "data": {
+    "repository": {
+      "pullRequests": {
+        "pageInfo": {
+          "hasNextPage": false,
+          "endCursor": null
+        },
+        "nodes": [
+          {
+            "number": 241,
+            "title": "a high verdict on this head, written before the reviewer was throttled",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/241",
+            "headRefName": "throttled",
+            "headRefOid": "241b241b241b241b241b241b241b241b241b241b",
+            "labels": {
+              "nodes": []
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
+          },
+          {
+            "number": 242,
+            "title": "a minimal verdict on this head, written before the reviewer was throttled",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "url": "https://github.com/nywleswoey/automation/pull/242",
+            "headRefName": "throttled-minimal",
+            "headRefOid": "242c242c242c242c242c242c242c242c242c242c",
+            "labels": {
+              "nodes": []
+            },
+            "author": {
+              "login": "nywleswoey"
+            },
+            "baseRefName": "main"
+          }
+        ]
+      }
+    }
+  }
+}

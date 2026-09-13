@@ -83,21 +83,16 @@ AUTOFIX_STATUS_MARKER='<!-- This is an auto-generated comment: autofix status by
 # looked for another would nudge every pass forever, having never once
 # recognised what it had already said.
 REVIEW_TRIGGER='@coderabbitai review'
-# The walkthrough comment, and the two things the risk gate reads out of it.
+# The walkthrough comment, which carries the verdict the risk gate reads.
 #
 # The walkthrough is the comment CodeRabbit *edits* rather than replaces, which
-# is why both of the gate's reads live in one body and why freshness anywhere
-# near it is the **updated** timestamp: observed gaps of five and seven days sit
-# between a walkthrough's creation and the edit that carries today's verdict.
+# is why freshness anywhere near it is the **updated** timestamp: observed gaps
+# of five and seven days sit between a walkthrough's creation and the edit that
+# carries today's verdict.
 #
-# The rate-limit marker is tested **every pass regardless of timestamp**, and
-# ahead of every veto. It arrives by that same edit, so there is no timestamp
-# that could gate the test without missing it; and a throttled pull request
-# keeps a *stale* verdict, which V1 would read as CodeRabbit changing shape and
-# hand over permanently. The rate limit self-clears as usage ages out, so the
-# defer it produces is the one thing in the gate exempt from the gate clock.
+# The rate-limit block that edit can also carry is deliberately not read — see
+# the commentary at the top of risk_gate's vetoes.
 WALKTHROUGH_MARKER='<!-- This is an auto-generated comment: summarize by coderabbit.ai -->'
-RATE_LIMIT_MARKER='<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->'
 # The merge-risk verdict, delimited inside the walkthrough. Its shape is
 # `**Merge Risk:** _<emoji> <Level>_ · up to \`<abbrev>\`` — and the abbreviation
 # is **five** characters on every capture taken, not the seven the prose around
@@ -2177,13 +2172,6 @@ sweep_worktrees() {
 #   needs-autofix -> autofix pushes a CodeRabbit-
 #     authored head -> nudge and review -> gate ->
 #     needs-autofix at the next human head           a human push
-#   escalate -> retract when the rate-limit marker
-#     appears -> re-escalate when it ages out        CodeRabbit's fair-usage
-#                                                    window, which is a rolling
-#                                                    window over an organisation
-#                                                    rather than a reaction to
-#                                                    any write on this pull
-#                                                    request
 #   nudge -> refusal -> nudge                        **none** — bounded in
 #                                                    aggregate instead, by
 #                                                    reviewRetryTimeoutSeconds
@@ -3415,7 +3403,6 @@ consume_record() {
 # these are routinely empty, and `read` folding a run of tabs would silently
 # shift one field into another's slot.
 #
-#   limited      the walkthrough carries the rate-limit marker
 #   level        the merge-risk level, letters only and lowercased
 #   abbrev       the commit abbreviation the verdict was computed for
 #   block        parsed | unparseable | absent
@@ -3446,7 +3433,6 @@ gate_facts() {
   jq -r \
     --arg crlogin "$CODERABBIT_LOGIN" \
     --arg walkthrough "$WALKTHROUGH_MARKER" \
-    --arg ratelimit "$RATE_LIMIT_MARKER" \
     --arg riskstart "$RISK_BLOCK_MARKER" \
     --arg workflows "$CI_WORKFLOW_DIR" \
     --arg scripts "$UNATTENDED_SCRIPTS" "$RISK_BLOCK_PARSE"'
@@ -3491,8 +3477,7 @@ gate_facts() {
     | ($pr.files.totalCount // 0) as $filecount
     | ($scripts | split(",")) as $guardedfiles
     | [ $paths[] | select(startswith($workflows) or IN($guardedfiles[])) | flat ] as $guarded
-    | [ (($body | contains($ratelimit)) | tostring),
-        (if $risk then ($risk.level | ascii_downcase | gsub("[^a-z]"; "")) else "" end),
+    | [ (if $risk then ($risk.level | ascii_downcase | gsub("[^a-z]"; "")) else "" end),
         (($risk.abbrev // "") | ascii_downcase),
         (if ($body | contains($riskstart)) then (if $risk then "parsed" else "unparseable" end) else "absent" end),
         (($pr.mergeable // "") | ascii_upcase),
@@ -3522,7 +3507,7 @@ GATE_REASONS=()
 # be made sense of.
 risk_gate() {
   local head="$1" head_date="$2" head_epoch="$3" now="$4" response="$5"
-  local limited=false level="" abbrev="" block="" mergeable="" mergestate=""
+  local level="" abbrev="" block="" mergeable="" mergestate=""
   local green=0 pending=0 failed=0 total=0 pendingnames="" failednames=""
   local filecount=0 truncated=false guarded=""
   local v1 v2 v3 v3conflict v3state v4 age clock="" deferred=false expired=false
@@ -3533,7 +3518,7 @@ risk_gate() {
   GATE_KV=""
   GATE_REASONS=()
 
-  # Either all fifteen values arrive or the gate does not judge at all.
+  # Either all fourteen values arrive or the gate does not judge at all.
   #
   # Failing closed here would mean failing closed to a **write**: with every
   # value empty, V1 sees no verdict and escalates, so a jq that hiccuped would
@@ -3553,7 +3538,6 @@ risk_gate() {
   # test. It stays because the failure it prevents is a write.
   local complete=false
   {
-    read -r limited
     read -r level
     read -r abbrev
     read -r block
@@ -3571,31 +3555,39 @@ risk_gate() {
   } < <(gate_facts <<< "$response") || true
   $complete || return 1
 
-  # **Ahead of every veto, and every pass regardless of timestamp.** A
-  # rate-limited pull request keeps a stale verdict; V1 would catch that
-  # staleness and route it to a handover, turning a transient throttle into a
-  # permanent one — and throttling would then escalate the whole queue whenever
-  # the reviewer is merely slow. So this defers, and it is the one defer the
-  # gate clock does not bound.
+  # **The gate does not ask whether CodeRabbit is throttled** (#120). A test
+  # stood here that deferred on the walkthrough's rate-limit marker, ahead of
+  # every veto and outside the gate clock, and it is gone, so nobody re-derives
+  # it from the argument that defended it: *a throttled pull request keeps a
+  # stale verdict, which V1 would read as CodeRabbit changing shape and hand over
+  # permanently.*
   #
-  # **This is the gate's own question at the gate's own scope** — *is the
-  # verdict I am about to parse throttled* — and it is deliberately not the
-  # chain's, which asks whether the *reviewer* is and now answers it from the
-  # head-scoped status instead. One signal, one veto, on both sides.
+  # - **Its own fixture contradicted it.** The suite's case asserted, in the same
+  #   breath, that the throttled verdict named this head and carried High — a
+  #   current, head-scoped verdict. The defer's only effect was to suppress a
+  #   correct escalation.
+  # - **"Stale" was the chain's population, not the gate's.** The chain's reader
+  #   routes a block naming another commit to `needs-review`, nudged and bounded
+  #   into `declined` before this is called (Aug 22 → Sep 1: `route=other-head`
+  #   38 times, `route=no-block` 330). What can still arrive is the two readers
+  #   agreeing — V1 then judges the level the head was actually reviewed at — or
+  #   disagreeing, where V1 escalates **with or without the marker**, because
+  #   the disagreement drives it. The test resolved neither; it silenced both.
+  # - **"Permanent" stopped being true when handovers became retractable.** The
+  #   worst it could have prevented was one retraction and one re-escalation.
+  # - **And the wait was the chain's deadlock one scope up:** the marker lives
+  #   in a slot only a review rewrites, and the gate is downstream of the only
+  #   thing that asks for one.
   #
-  # ponytail: the unbounded defer is the last thing standing on the argument the
-  # chain's `rate-limited` park was deleted for — *the rate limit self-clears,
-  # so its bound is external* — and that argument is measurably weak: nothing
-  # here reads the estimate the comment ships with, and the walkthrough is a
-  # slot rewritten only by a review. It is left exactly as it was because the
-  # scopes are genuinely different and because a bound here needs its own
-  # evidence, not this one's. Bound it, or fold it into the gate clock, when
-  # a pull request is observed parking on it.
-  if [[ "$limited" == "true" ]]; then
-    GATE_VERDICT=defer
-    GATE_KV="verdict=defer gate=rate-limited"
-    return 0
-  fi
+  # `gate=rate-limited` never appeared in the log over the same window — 4958
+  # lines, 33 gate verdicts. That sample is small and carries none of this; the
+  # reachability argument does, and the count is only consistent with it.
+  #
+  # Throttling is a fact about the reviewer; the gate's business is the verdict,
+  # and a verdict already written and scoped to this commit is not made wrong by
+  # its author being busy. The chain's head-scoped status read is the loop's one
+  # throttle surface, and it reads both deliveries. What this costs, deliberately:
+  # the gate can merge while CodeRabbit is throttled.
 
   # V1 — CodeRabbit's verdict. The abbreviation must be a **prefix of the head**,
   # which is what scopes the verdict to the code being merged, and the level
@@ -4235,8 +4227,7 @@ pr_phase_one() {
     # it.
     #
     # **The origin is not `headDate`.** A real pull request sat four and a half
-    # hours between its head commit and its review starting, and the rate-limit
-    # exemption is designed to let a pull request wait hours — so a clock from
+    # hours between its head commit and its review starting — so a clock from
     # the commit would already be expired the instant a legitimate review began.
     # It runs from the oldest signal that has not reported instead.
     #
