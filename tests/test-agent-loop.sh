@@ -44,7 +44,7 @@ setup() {
   export STUB_ORCA_STATUS=ready STUB_ISSUES=none STUB_ORCA_PS=idle
   export STUB_CLAIMED=none STUB_WORKTREES=none STUB_DIRTY="" STUB_UNPUSHED=""
   export STUB_WORLD=none STUB_MERGED=none
-  unset AGENT_LOOP_LOG_MAX_BYTES AGENT_LOOP_RUNTIME_WAIT_SECONDS STUB_ORCA_READY_READS STUB_GH_FAIL STUB_GH_PARTIAL STUB_GH_STDERR STUB_ORCA_FAIL STUB_GIT_FAIL
+  unset AGENT_LOOP_LOG_MAX_BYTES AGENT_LOOP_RUNTIME_WAIT_SECONDS STUB_ORCA_READY_READS STUB_GH_FAIL STUB_GH_PARTIAL STUB_GH_STDERR STUB_ORCA_FAIL STUB_GIT_FAIL STUB_TAIL_FAIL
   # Multi-pass cases number their passes from here.
   PASS_N=0
   # Unfrozen unless a case says otherwise, so the stub `date` is the real one
@@ -601,20 +601,14 @@ _last_orca=$(grep -n '^orca ' "$STUB_CALLS" | tail -1 | cut -d: -f1)
 check "the create is the only call after the runtime's last read" \
   test "$(tail -n +$((_last_orca + 1)) "$STUB_CALLS" | grep -cv '^gh-axi issue create ')" -eq 0
 
-setup "a set -e death with no die files the no-fatal-message title"
+setup "a death body that cannot read its log stops issue submission"
 write_config "nywleswoey/automation" "repo-aaa" 1
+export AGENT_LOOP_RUNTIME_WAIT_SECONDS=1 STUB_ORCA_READY_READS=2 STUB_TAIL_FAIL=1
 start_loop
-await "sleeping 1s"
-# A log that can no longer be appended to is an unhandled non-zero under
-# `set -e` on the next line the loop logs — a death that never passes through
-# `die`.
-chmod 444 "$LOG"
 await_exit
-chmod 644 "$LOG"
 check_status 1 "$STATUS"
-check_no_grep "fatal:" "$OUT"
-check_grep "gh-axi issue create --repo nywleswoey/deaths --title agent-loop died: exit 1, no fatal message --body-file" "$STUB_CALLS"
-check_grep "no fatal message" "$STUB_STATE/death-body.txt"
+check_no_grep "gh-axi issue create" "$STUB_CALLS"
+check_grep "death record failed: could not write body file" "$OUT"
 check "lockfile released" test ! -f "$LOCK"
 
 setup "an in-loop die under --once files nothing"
@@ -659,11 +653,11 @@ check_status nonzero "$STATUS"
 check_grep "deathRepo does not resolve: nywleswoey/typo-deaths" "$OUT"
 check "no pass ran" test "$(grep -cF 'pass start' "$OUT")" -eq 0
 
-setup "a deathRepo that cannot take issues fails at startup"
+setup "a deathRepo without issues enabled fails at startup"
 jq '.deathRepo = "nywleswoey/no-issues"' "$CONFIG" > "$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
 run_once
 check_status nonzero "$STATUS"
-check_grep "deathRepo cannot take issues from this identity: nywleswoey/no-issues (has_issues is false, permissions.pull is true)" "$OUT"
+check_grep "deathRepo must have issues enabled and be readable by this identity: nywleswoey/no-issues (has_issues is false, permissions.pull is true)" "$OUT"
 check "no pass ran" test "$(grep -cF 'pass start' "$OUT")" -eq 0
 
 setup "the runtime wait defaults to one poll interval"

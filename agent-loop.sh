@@ -627,7 +627,11 @@ write_death_record() {
     log "death record failed: could not create a body file"
     return 0
   fi
-  death_body "$status" > "$file"
+  if ! death_body "$status" > "$file"; then
+    log "death record failed: could not write body file"
+    rm -f "$file"
+    return 0
+  fi
   if ! error=$(gh-axi issue create --repo "$DEATH_REPO" --title "$title" --body-file "$file" 2>&1); then
     error="${error//$'\n'/ }"
     log "death record failed: gh-axi: ${error:-said nothing}"
@@ -647,18 +651,18 @@ death_body() {
     elapsed=$(( now - STARTED_AT ))
     uptime=$(printf '%dh%02dm%02ds' $(( elapsed / 3600 )) $(( elapsed % 3600 / 60 )) $(( elapsed % 60 )))
   fi
-  printf 'The loop died after it began passing, and nothing restarts it. Fix the cause, then restart it by hand.\n\n'
+  printf 'The loop died after it began passing, and nothing restarts it. Fix the cause, then restart it by hand.\n\n' || return 1
   if [[ -n "$FATAL_MESSAGE" ]]; then
-    printf 'fatal: %s\n\n' "$FATAL_MESSAGE"
+    printf 'fatal: %s\n\n' "$FATAL_MESSAGE" || return 1
   else
-    printf 'no fatal message: the loop exited without passing through `die`, most likely under `set -e`.\n\n'
+    printf 'no fatal message: the loop exited without passing through `die`, most likely under `set -e`.\n\n' || return 1
   fi
   printf 'exit=%s\nbuild=%s drift=%s\nuptime=%s\npasses=%s\n\n' \
-    "$status" "${BUILD:-unknown}" "$LAST_DRIFT" "$uptime" "$PASSES"
+    "$status" "${BUILD:-unknown}" "$LAST_DRIFT" "$uptime" "$PASSES" || return 1
   # Four backticks, so a log line carrying a three-backtick fence of its own
   # cannot close this one.
-  printf 'The last 20 log lines:\n\n````\n'
-  tail -n 20 "$LOG_PATH" 2>/dev/null
+  printf 'The last 20 log lines:\n\n````\n' || return 1
+  tail -n 20 "$LOG_PATH" 2>/dev/null || return 1
   printf '````\n'
 }
 
@@ -772,15 +776,16 @@ validate_config() {
   done
 
   # Resolved here, beside the projects, because a death record whose home was
-  # mistyped fails at the one moment it was needed (#129). Opening an issue
-  # takes issues switched on and read access, and nothing more. `// false`, so a
-  # read carrying neither field fails closed.
+  # mistyped fails at the one moment it was needed (#129). Startup proves only
+  # that issues are enabled and this identity can read the repository; issue
+  # creation permission is not knowable here, so creation remains best effort.
+  # `// false`, so a read carrying neither field fails closed.
   repo_json=$(gh_json "/repos/$DEATH_REPO" 2>/dev/null) \
     || die "deathRepo does not resolve: $DEATH_REPO"
   has_issues=$(jq -r '.has_issues // false' <<< "$repo_json")
   pull=$(jq -r '.permissions.pull // false' <<< "$repo_json")
   [[ "$has_issues" == "true" && "$pull" == "true" ]] \
-    || die "deathRepo cannot take issues from this identity: $DEATH_REPO (has_issues is $has_issues, permissions.pull is $pull)"
+    || die "deathRepo must have issues enabled and be readable by this identity: $DEATH_REPO (has_issues is $has_issues, permissions.pull is $pull)"
   log "validated deathRepo $DEATH_REPO"
 }
 
