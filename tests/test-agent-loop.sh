@@ -44,7 +44,7 @@ setup() {
   export STUB_ORCA_STATUS=ready STUB_ISSUES=none STUB_ORCA_PS=idle
   export STUB_CLAIMED=none STUB_WORKTREES=none STUB_DIRTY="" STUB_UNPUSHED=""
   export STUB_WORLD=none STUB_MERGED=none
-  unset AGENT_LOOP_LOG_MAX_BYTES STUB_GH_FAIL STUB_GH_PARTIAL STUB_GH_STDERR STUB_ORCA_FAIL STUB_GIT_FAIL
+  unset AGENT_LOOP_LOG_MAX_BYTES AGENT_LOOP_RUNTIME_WAIT_SECONDS STUB_ORCA_READY_READS STUB_GH_FAIL STUB_GH_PARTIAL STUB_GH_STDERR STUB_ORCA_FAIL STUB_GIT_FAIL
   # Multi-pass cases number their passes from here.
   PASS_N=0
   # Unfrozen unless a case says otherwise, so the stub `date` is the real one
@@ -53,6 +53,7 @@ setup() {
   CONFIG="$WORK/config.json"
   LOG="$WORK/agent-loop.log"
   LOCK="$WORK/agent-loop.pid"
+  export STUB_LOCK="$LOCK"
   write_config "nywleswoey/automation" "repo-aaa"
 }
 
@@ -66,6 +67,7 @@ write_config() {
   "mergeGateTimeoutSeconds": ${6:-3600},
   "reviewRetryTimeoutSeconds": ${8:-5400},
   "logPath": "$LOG",
+  "deathRepo": "nywleswoey/deaths",
   "labels": { "ready": "ready-for-agent", "claimed": "agent-in-progress" },
   "projects": [
     { "github": "$1", "orcaRepoId": "$2", "mergeMethod": "${7:-squash}" }
@@ -154,6 +156,20 @@ stop_loop() {
   STATUS=$?
 }
 
+# await_exit — wait for a loop that is ending on its own, up to 15s, and leave
+# its status in $STATUS. A loop still running at the deadline is killed, so a
+# hung exit fails the case rather than the suite.
+await_exit() {
+  local _
+  for _ in $(seq 1 150); do
+    kill -0 "$LOOP_PID" 2>/dev/null || break
+    sleep 0.1
+  done
+  kill -KILL "$LOOP_PID" 2>/dev/null
+  wait "$LOOP_PID"
+  STATUS=$?
+}
+
 # --- one pass and exit --------------------------------------------------------
 
 setup "--once runs a single pass and exits"
@@ -194,6 +210,7 @@ write_config "nywleswoey/typo-project" "repo-aaa"
 run_once
 check_status nonzero "$STATUS"
 check_grep "project does not resolve: nywleswoey/typo-project" "$OUT"
+check_no_grep "gh-axi issue create" "$STUB_CALLS"
 check "no pass ran" test "$(grep -cF 'pass start' "$OUT")" -eq 0
 check "lockfile released" test ! -f "$LOCK"
 
@@ -240,6 +257,7 @@ cat > "$CONFIG" <<JSON
   "mergeGateTimeoutSeconds": 3600,
   "reviewRetryTimeoutSeconds": 5400,
   "logPath": "$LOG",
+  "deathRepo": "nywleswoey/deaths",
   "labels": { "ready": "ready-for-agent", "claimed": "agent-in-progress" },
   "projects": [
     { "github": "nywleswoey/automation", "orcaRepoId": "repo-aaa", "mergeMethod": "squash" },
@@ -525,6 +543,7 @@ check "a second pass ran" test "$(grep -cF 'pass start' "$OUT")" -ge 2
 check_grep "sleeping 1s" "$OUT"
 stop_loop TERM
 check_status 0 "$STATUS"
+check_no_grep "gh-axi issue create" "$STUB_CALLS"
 
 # --- SIGINT releases the lock ------------------------------------------------
 
@@ -537,6 +556,119 @@ stop_loop INT
 check_status 0 "$STATUS"
 check_grep "shutting down" "$OUT"
 check "lockfile released" test ! -f "$LOCK"
+check_no_grep "gh-axi issue create" "$STUB_CALLS"
+
+# --- death: a loop that dies files an issue in deathRepo (#129) ---------------
+
+setup "an in-loop die files one issue in deathRepo, after the lock is gone"
+write_config "nywleswoey/automation" "repo-aaa" 1
+export AGENT_LOOP_RUNTIME_WAIT_SECONDS=1
+# Ready to start-up's read and to the first pass's, gone for good after: the
+# second pass is where the loop dies.
+export STUB_ORCA_READY_READS=2
+# Frozen, so uptime is read through date(1) and nothing else: a built-in clock
+# would put the seconds the case really took on the line.
+export STUB_NOW=2026-08-27T12:00:00Z
+start_loop
+await_exit
+check_status 1 "$STATUS"
+check_grep "validated deathRepo nywleswoey/deaths" "$OUT"
+check_grep "fatal: orca runtime did not become ready within 1s" "$OUT"
+check "exactly one issue was created" \
+  test "$(grep -cF 'gh-axi issue create' "$STUB_CALLS")" -eq 1
+check_grep "gh-axi issue create --repo nywleswoey/deaths --title agent-loop died: orca runtime did not become ready within 1s --body-file" "$STUB_CALLS"
+check "the lock was gone before the write was attempted" test ! -f "$STUB_STATE/create-saw-lock"
+check "lockfile released" test ! -f "$LOCK"
+BODY="$STUB_STATE/death-body.txt"
+check_grep "fatal: orca runtime did not become ready within 1s" "$BODY"
+check_grep "exit=1" "$BODY"
+check_grep "build=" "$BODY"
+check_grep "drift=" "$BODY"
+check_grep "uptime=0h00m00s" "$BODY"
+check_grep "passes=1" "$BODY"
+# The tail is fenced, and it is the log's own run-up: the pass that completed
+# and the fatal line itself.
+check "the log tail is fenced" test "$(grep -cxF '````' "$BODY")" -eq 2
+check "the fenced tail is at most twenty lines" \
+  test "$(awk '/^````$/ { f = !f; next } f' "$BODY" | wc -l)" -le 20
+check "the tail carries the completed pass" \
+  test -n "$(awk '/^````$/ { f = !f; next } f' "$BODY" | grep -F 'pass end dispatches=')"
+check "the tail carries the fatal line" \
+  test -n "$(awk '/^````$/ { f = !f; next } f' "$BODY" | grep -F 'fatal: orca runtime')"
+# The death path reads nothing: after the runtime's last read, the one create
+# is the only call anywhere — no GitHub read, no Orca read, no git.
+_last_orca=$(grep -n '^orca ' "$STUB_CALLS" | tail -1 | cut -d: -f1)
+check "the create is the only call after the runtime's last read" \
+  test "$(tail -n +$((_last_orca + 1)) "$STUB_CALLS" | grep -cv '^gh-axi issue create ')" -eq 0
+
+setup "a set -e death with no die files the no-fatal-message title"
+write_config "nywleswoey/automation" "repo-aaa" 1
+start_loop
+await "sleeping 1s"
+# A log that can no longer be appended to is an unhandled non-zero under
+# `set -e` on the next line the loop logs — a death that never passes through
+# `die`.
+chmod 444 "$LOG"
+await_exit
+chmod 644 "$LOG"
+check_status 1 "$STATUS"
+check_no_grep "fatal:" "$OUT"
+check_grep "gh-axi issue create --repo nywleswoey/deaths --title agent-loop died: exit 1, no fatal message --body-file" "$STUB_CALLS"
+check_grep "no fatal message" "$STUB_STATE/death-body.txt"
+check "lockfile released" test ! -f "$LOCK"
+
+setup "an in-loop die under --once files nothing"
+export AGENT_LOOP_RUNTIME_WAIT_SECONDS=1 STUB_ORCA_READY_READS=1
+run_once
+check_status 1 "$STATUS"
+check_grep "fatal: orca runtime did not become ready within 1s" "$OUT"
+check_no_grep "gh-axi issue create" "$STUB_CALLS"
+
+setup "a start-up die files nothing, even without --once"
+export AGENT_LOOP_RUNTIME_WAIT_SECONDS=1 STUB_ORCA_READY_READS=0
+start_loop
+await_exit
+check_status 1 "$STATUS"
+check_grep "fatal: orca runtime did not become ready within 1s" "$OUT"
+check "no pass ran" test "$(grep -cF 'pass start' "$OUT")" -eq 0
+check_no_grep "gh-axi issue create" "$STUB_CALLS"
+
+setup "a failed death write is logged and the loop exits with its own status"
+write_config "nywleswoey/automation" "repo-aaa" 1
+export AGENT_LOOP_RUNTIME_WAIT_SECONDS=1 STUB_ORCA_READY_READS=2 STUB_GH_FAIL=issue-create
+start_loop
+await_exit
+check_status 1 "$STATUS"
+check "exactly one write was attempted" \
+  test "$(grep -cF 'gh-axi issue create' "$STUB_CALLS")" -eq 1
+check_grep "death record failed: gh-axi: " "$OUT"
+check_grep "death record failed: gh-axi: " "$LOG"
+check "lockfile released" test ! -f "$LOCK"
+
+setup "a config with no deathRepo fails at startup"
+jq 'del(.deathRepo)' "$CONFIG" > "$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
+run_once
+check_status nonzero "$STATUS"
+check_grep "config is missing deathRepo" "$OUT"
+check "no pass ran" test "$(grep -cF 'pass start' "$OUT")" -eq 0
+
+setup "an unresolvable deathRepo fails at startup"
+jq '.deathRepo = "nywleswoey/typo-deaths"' "$CONFIG" > "$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
+run_once
+check_status nonzero "$STATUS"
+check_grep "deathRepo does not resolve: nywleswoey/typo-deaths" "$OUT"
+check "no pass ran" test "$(grep -cF 'pass start' "$OUT")" -eq 0
+
+setup "a deathRepo that cannot take issues fails at startup"
+jq '.deathRepo = "nywleswoey/no-issues"' "$CONFIG" > "$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
+run_once
+check_status nonzero "$STATUS"
+check_grep "deathRepo cannot take issues from this identity: nywleswoey/no-issues (has_issues is false, permissions.pull is true)" "$OUT"
+check "no pass ran" test "$(grep -cF 'pass start' "$OUT")" -eq 0
+
+setup "the runtime wait defaults to one poll interval"
+"$SCRIPT" --help > "$WORK/help.txt" 2>&1
+check_grep "how long to wait for the Orca runtime (default 300)" "$WORK/help.txt"
 
 # --- issue phase: a workable issue is claimed and dispatched -------------------
 
@@ -3691,6 +3823,7 @@ cat > "$CONFIG" <<JSON
   "reviewRetryTimeoutSeconds": 5400,
   "noMerge": true,
   "logPath": "$LOG",
+  "deathRepo": "nywleswoey/deaths",
   "labels": { "ready": "ready-for-agent", "claimed": "agent-in-progress" },
   "projects": [
     { "github": "nywleswoey/automation", "orcaRepoId": "repo-aaa", "mergeMethod": "squash" }
@@ -3779,6 +3912,7 @@ cat > "$CONFIG" <<JSON
   "mergeGateTimeoutSeconds": 3600,
   "reviewRetryTimeoutSeconds": 5400,
   "logPath": "$LOG",
+  "deathRepo": "nywleswoey/deaths",
   "labels": { "ready": "ready-for-agent", "claimed": "agent-in-progress" },
   "projects": [
     { "github": "nywleswoey/automation", "orcaRepoId": "repo-aaa" }
@@ -3835,6 +3969,7 @@ cat > "$CONFIG" <<JSON
   "mergeGateTimeoutSeconds": 3600,
   "reviewRetryTimeoutSeconds": 5400,
   "logPath": "$LOG",
+  "deathRepo": "nywleswoey/deaths",
   "labels": { "ready": "ready-for-agent", "claimed": "agent-in-progress" },
   "projects": [
     { "github": "nywleswoey/automation", "orcaRepoId": "repo-aaa", "mergeMethod": "squash" },
@@ -3973,6 +4108,7 @@ cat > "$CONFIG" <<JSON
   "reviewRetryTimeoutSeconds": 5400,
   "seenListPath": "$WORK/seen.jsonl",
   "logPath": "$LOG",
+  "deathRepo": "nywleswoey/deaths",
   "labels": { "ready": "ready-for-agent", "claimed": "agent-in-progress" },
   "projects": [
     { "github": "nywleswoey/automation", "orcaRepoId": "repo-aaa", "mergeMethod": "squash" }
@@ -3992,6 +4128,7 @@ cat > "$CONFIG" <<JSON
   "mergeGateTimeoutSeconds": 3600,
   "reviewRetryTimeoutSeconds": 5400,
   "logPath": "$LOG",
+  "deathRepo": "nywleswoey/deaths",
   "labels": { "ready": "ready-for-agent", "claimed": "agent-in-progress" },
   "projects": [
     { "github": "nywleswoey/automation", "orcaRepoId": "repo-aaa", "mergeMethod": "squash" }
@@ -4013,6 +4150,7 @@ cat > "$CONFIG" <<JSON
   "maxWorkers": 3,
   "autofixTimeoutSeconds": 5400,
   "logPath": "$LOG",
+  "deathRepo": "nywleswoey/deaths",
   "labels": { "ready": "ready-for-agent", "claimed": "agent-in-progress" },
   "projects": [
     { "github": "nywleswoey/automation", "orcaRepoId": "repo-aaa", "mergeMethod": "squash" }
@@ -4041,6 +4179,7 @@ cat > "$CONFIG" <<JSON
   "autofixTimeoutSeconds": 5400,
   "mergeGateTimeoutSeconds": 3600,
   "logPath": "$LOG",
+  "deathRepo": "nywleswoey/deaths",
   "labels": { "ready": "ready-for-agent", "claimed": "agent-in-progress" },
   "projects": [
     { "github": "nywleswoey/automation", "orcaRepoId": "repo-aaa", "mergeMethod": "squash" }

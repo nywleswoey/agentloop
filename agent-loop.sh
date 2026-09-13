@@ -37,7 +37,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_PATH="${AGENT_LOOP_CONFIG:-$SCRIPT_DIR/agent-loop.config.json}"
 LOG_MAX_BYTES="${AGENT_LOOP_LOG_MAX_BYTES:-5242880}"
-RUNTIME_WAIT_SECONDS="${AGENT_LOOP_RUNTIME_WAIT_SECONDS:-60}"
+# One poll interval (#129): a runtime back within one cycle never costs a
+# restart, and one that is not ends the loop into a death record.
+RUNTIME_WAIT_SECONDS="${AGENT_LOOP_RUNTIME_WAIT_SECONDS:-300}"
 ONCE=false
 BRANCH_REPORT=""
 LOG_PATH=""
@@ -53,6 +55,14 @@ BUILD_COMMIT=""
 # forgettable bypass. A flag is scoped to one invocation, grants nothing, and
 # only withholds. With `--once` it is a genuine dry run.
 NO_MERGE=false
+# What the death record (#129) is built from, all of it memory: the message
+# `die` stashes before it exits, whether the loop began passing, how many passes
+# it finished, the drift the last of them measured, and when the process began.
+FATAL_MESSAGE=""
+BEGAN_PASSING=false
+PASSES=0
+LAST_DRIFT=unknown
+STARTED_AT=""
 
 # What the PR phase recognises on GitHub. Every constant in this stanza is
 # CodeRabbit's surface rather than the loop's, and every one of them is an
@@ -364,7 +374,7 @@ Options:
 Environment overrides (for tests and troubleshooting):
   AGENT_LOOP_CONFIG                 default config path
   AGENT_LOOP_LOG_MAX_BYTES          log size cap before rotation (default 5 MiB)
-  AGENT_LOOP_RUNTIME_WAIT_SECONDS   how long to wait for the Orca runtime (default 60)
+  AGENT_LOOP_RUNTIME_WAIT_SECONDS   how long to wait for the Orca runtime (default 300)
 
 Requires: jq, git, orca, gh-axi
 EOF
@@ -412,8 +422,13 @@ rotate_log() {
   mv -f "$LOG_PATH" "$LOG_PATH.1"
 }
 
-# Log a fatal error and exit with status 1.
+# Log a fatal error and exit with status 1. The message is stashed first, where
+# the EXIT trap's death record reads it, so it survives a log that cannot write.
+# Only a `die` in the main shell reaches it: one inside `$(...)` or a pipeline
+# sets the subshell's copy, and its parent's death is recorded as having no
+# fatal message.
 die() {
+  FATAL_MESSAGE="$*"
   log "fatal: $*"
   exit 1
 }
@@ -475,6 +490,7 @@ load_config() {
   LABEL_READY=$(jq -r '.labels.ready // empty' "$CONFIG_PATH")
   LABEL_CLAIMED=$(jq -r '.labels.claimed // empty' "$CONFIG_PATH")
   PROJECT_COUNT=$(jq -r '.projects | length' "$CONFIG_PATH" 2>/dev/null || echo 0)
+  DEATH_REPO=$(jq -r '.deathRepo // empty' "$CONFIG_PATH")
 
   require_positive_int pollIntervalSeconds "$POLL_INTERVAL"
   require_positive_int maxWorkers "$MAX_WORKERS"
@@ -504,6 +520,11 @@ load_config() {
   require_field labels.ready "$LABEL_READY"
   require_field labels.claimed "$LABEL_CLAIMED"
   [[ "$PROJECT_COUNT" -gt 0 ]] || die "config lists no projects: $CONFIG_PATH"
+  # Where a death is recorded (#129). Required, because an optional key leaves
+  # the default deployment with no record at all; and its own key rather than a
+  # project's, because project order is a declared priority and reordering it
+  # must never move the death channel.
+  require_field deathRepo "$DEATH_REPO"
 
   # logPath is loaded last so that everything above can already report through
   # log() — it just has nowhere but stdout to go until this is set.
@@ -536,7 +557,7 @@ acquire_lock() {
     write_lock || die "could not take lockfile: $LOCK_PATH"
   fi
 
-  trap release_lock EXIT
+  trap on_exit EXIT
   # HUP as well as INT/TERM: closing the terminal a hand-started daemon lives in
   # must release the lock, not strand it.
   trap shutdown INT TERM HUP
@@ -559,6 +580,86 @@ release_lock() {
   [[ -n "${LOCK_PATH:-}" && -f "$LOCK_PATH" ]] || return 0
   [[ "$(cat "$LOCK_PATH" 2>/dev/null || true)" == "$$" ]] || return 0
   rm -f "$LOCK_PATH"
+}
+
+# The EXIT trap. A loop that dies after it began passing files one issue in
+# deathRepo on the way out (#129): restart is manual and nothing supervises the
+# process, so without it a dead loop reads exactly like one never started.
+#
+# The gate is the status rather than `die`, so a `set -e` exit that never logged
+# `fatal:` is recorded too; and it is the began-passing flag rather than the
+# call site, so the start-up failures a human is reading off stdout write
+# nothing, and an in-loop exit added later is covered without being listed.
+# Ctrl-C, SIGTERM and SIGHUP exit 0 through `shutdown` and write nothing.
+#
+# The order is the decision's. The status is captured before any command can
+# clobber it. The lock goes before the write, so a hung `gh-axi` holds nothing
+# and a restart never meets `already running`. Then one best-effort write, and
+# an explicit exit with the captured status.
+on_exit() {
+  local status=$?
+  # A failing command in here must not end the trap before the exit below. And
+  # a signal during a hung write takes its default action rather than
+  # `shutdown`'s, which would exit 0 and pass the death off as a clean stop.
+  set +e
+  trap - INT TERM HUP
+  release_lock
+  if $BEGAN_PASSING && (( status != 0 )); then
+    write_death_record "$status"
+  fi
+  exit "$status"
+}
+
+# One attempt, no retry, and never `die`: a death path that can re-enter `die`
+# can loop. What gh-axi said rides on the failure line from both channels, the
+# way a failed label swap's does. A GitHub that is unreachable at death leaves
+# that line as the only record, which #129 accepts.
+write_death_record() {
+  local status="$1" title file error
+  if [[ -n "$FATAL_MESSAGE" ]]; then
+    # GitHub refuses a title past 256 characters, and a refused title would
+    # lose the whole record. The body carries the message whole.
+    title="agent-loop died: ${FATAL_MESSAGE:0:200}"
+  else
+    title="agent-loop died: exit $status, no fatal message"
+  fi
+  if ! file=$(mktemp "${TMPDIR:-/tmp}/agent-loop-death.XXXXXX"); then
+    log "death record failed: could not create a body file"
+    return 0
+  fi
+  death_body "$status" > "$file"
+  if ! error=$(gh-axi issue create --repo "$DEATH_REPO" --title "$title" --body-file "$file" 2>&1); then
+    error="${error//$'\n'/ }"
+    log "death record failed: gh-axi: ${error:-said nothing}"
+  fi
+  rm -f "$file"
+}
+
+# The death record's body, from memory and the local log only. No GitHub, Orca
+# or git read happens here: the loop may be dying because those reads fail, and
+# a record that queried would hang or come back empty at the one moment it is
+# needed. That is also why `drift=` is the last pass's rather than a fresh one.
+# The log tail duplicates the log on purpose — the log is on a machine nobody is
+# reading.
+death_body() {
+  local status="$1" now elapsed uptime=unknown
+  if [[ -n "$STARTED_AT" ]] && now=$(date -u +%s) && [[ "$now" =~ ^[0-9]+$ ]]; then
+    elapsed=$(( now - STARTED_AT ))
+    uptime=$(printf '%dh%02dm%02ds' $(( elapsed / 3600 )) $(( elapsed % 3600 / 60 )) $(( elapsed % 60 )))
+  fi
+  printf 'The loop died after it began passing, and nothing restarts it. Fix the cause, then restart it by hand.\n\n'
+  if [[ -n "$FATAL_MESSAGE" ]]; then
+    printf 'fatal: %s\n\n' "$FATAL_MESSAGE"
+  else
+    printf 'no fatal message: the loop exited without passing through `die`, most likely under `set -e`.\n\n'
+  fi
+  printf 'exit=%s\nbuild=%s drift=%s\nuptime=%s\npasses=%s\n\n' \
+    "$status" "${BUILD:-unknown}" "$LAST_DRIFT" "$uptime" "$PASSES"
+  # Four backticks, so a log line carrying a three-backtick fence of its own
+  # cannot close this one.
+  printf 'The last 20 log lines:\n\n````\n'
+  tail -n 20 "$LOG_PATH" 2>/dev/null
+  printf '````\n'
 }
 
 # Signal handler: release the lock and exit gracefully. Ctrl-C releases the
@@ -632,7 +733,7 @@ validate_config() {
   local repo_ids
   repo_ids=$(jq -r '.result.repos[].id' <<< "$ORCA_REPOS")
 
-  local i github orca_id method repo_json permission permitted
+  local i github orca_id method repo_json permission permitted has_issues pull
   for (( i = 0; i < PROJECT_COUNT; i++ )); do
     github=$(jq -r ".projects[$i].github // empty" "$CONFIG_PATH")
     orca_id=$(jq -r ".projects[$i].orcaRepoId // empty" "$CONFIG_PATH")
@@ -669,6 +770,18 @@ validate_config() {
     ensure_labels "$github"
     log "validated $github -> orca repo $orca_id, merging by $method"
   done
+
+  # Resolved here, beside the projects, because a death record whose home was
+  # mistyped fails at the one moment it was needed (#129). Opening an issue
+  # takes issues switched on and read access, and nothing more. `// false`, so a
+  # read carrying neither field fails closed.
+  repo_json=$(gh_json "/repos/$DEATH_REPO" 2>/dev/null) \
+    || die "deathRepo does not resolve: $DEATH_REPO"
+  has_issues=$(jq -r '.has_issues // false' <<< "$repo_json")
+  pull=$(jq -r '.permissions.pull // false' <<< "$repo_json")
+  [[ "$has_issues" == "true" && "$pull" == "true" ]] \
+    || die "deathRepo cannot take issues from this identity: $DEATH_REPO (has_issues is $has_issues, permissions.pull is $pull)"
+  log "validated deathRepo $DEATH_REPO"
 }
 
 # The Orca repo id a configured GitHub repository maps to, or nothing when the
@@ -5220,6 +5333,7 @@ run_pass() {
   # positive evidence of a pre-stamp build.
   local drift
   drift=$(current_drift)
+  LAST_DRIFT="$drift"
   log "pass end dispatches=$DISPATCHES skips=$SKIPS sweeps=$SWEEPS refusals=$REFUSALS build=$BUILD drift=$drift"
 }
 
@@ -5236,6 +5350,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+STARTED_AT=$(date -u +%s)
 require_tools
 load_config
 
@@ -5268,9 +5383,14 @@ measure_build
 closeout_phase
 reclaim_stale_claims
 
+# The began-passing flag, set immediately before the pass loop: from here on
+# nobody is at the keyboard, so a non-zero exit files a death record (#129).
+# Not under `--once`, which is a run a human started and is watching.
+$ONCE || BEGAN_PASSING=true
 while true; do
   ensure_runtime
   run_pass
+  PASSES=$((PASSES + 1))
   if $ONCE; then
     break
   fi

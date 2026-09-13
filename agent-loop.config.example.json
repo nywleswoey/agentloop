@@ -5,6 +5,7 @@
   "mergeGateTimeoutSeconds": 3600,
   "reviewRetryTimeoutSeconds": 5400,
   "logPath": "~/.agent-loop/agent-loop.log",
+  "deathRepo": "your-owner/your-repo",
   "labels": {
     "ready": "ready-for-agent",
     "claimed": "agent-in-progress"

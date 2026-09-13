@@ -1,3 +1,5 @@
 nywleswoey/automation	ready-for-agent,agent-in-progress,bug
 nywleswoey/other	ready-for-agent,agent-in-progress
 nywleswoey/merge-only	ready-for-agent,agent-in-progress,agent-refused,to-tickets	merge
+nywleswoey/deaths		
+nywleswoey/no-issues			no-issues

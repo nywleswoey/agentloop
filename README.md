@@ -364,6 +364,7 @@ Then edit `agent-loop.config.json`:
   "mergeGateTimeoutSeconds": 3600,
   "reviewRetryTimeoutSeconds": 5400,
   "logPath": "~/.agent-loop/agent-loop.log",
+  "deathRepo": "your-owner/your-repo",
   "labels": {
     "ready": "ready-for-agent",
     "claimed": "agent-in-progress"
@@ -386,6 +387,7 @@ Then edit `agent-loop.config.json`:
 | `reviewRetryTimeoutSeconds` | How long the loop keeps re-asking for a review CodeRabbit refuses, measured from the **first** nudge at the current head. Past it the pull request is handed over as `declined`, carrying CodeRabbit's own newest description verbatim. **Required; nothing defaults it.** The example config carries 5400 because CodeRabbit's fair-usage window rolls over sixty minutes and this clears it with thirty minutes of margin — `mergeGateTimeoutSeconds` at 3600 would expire at the moment the limit is most likely to lift, which is why this is its own key rather than a third consumer of that one. At a five-minute poll it is about seventeen retries and thirty-four comments, a third of the hundred-comment window the loop reads its own facts out of. |
 | `mergeGateTimeoutSeconds` | **Two consumers, with different origins.** The risk gate's `defer` — a pull request whose signals are not computed yet — measured from the head commit's date; and a CodeRabbit review that started and never finished, measured from the oldest pending signal on the head. That is why this stays its own key rather than folding into the one above: collapsing them would bind three distinct waits to one number across measurements differing by orders of magnitude. **Required; nothing defaults it** — and it is **a floor, not a tuned number**: set it to outlast the slowest legitimate check run in your repositories, and read the cost of going higher in [the bounded-exit invariant](#the-bounded-exit-invariant) before you do. No number here is derived from evidence: the review consumer has a four-second and a hundred-and-five-second pending window behind it, and the gate's own use of the number has **no sample at all**. |
 | `logPath` | Append-only log. Rotated at 5 MiB, one generation kept. |
+| `deathRepo` | GitHub repository, as `<owner>/<name>`, that a loop dying unattended files one issue in — see [When the loop dies](#when-the-loop-dies). **Required, and validated at startup**: it must resolve, and this identity must be able to open an issue there. Its own key rather than a project's, so reordering `projects` never moves it. |
 | `labels.ready` | Label the loop picks issues up by. |
 | `labels.claimed` | Label the loop swaps in once it claims an issue. |
 | `projects[].github` | GitHub repository, as `<owner>/<name>`. |
@@ -396,7 +398,7 @@ Then edit `agent-loop.config.json`:
 
 `agent-loop.config.json` is gitignored — it holds your own project paths and repo IDs.
 
-**Upgrading from a pre-merge-gate config?** `seenListPath` no longer exists and startup refuses a config that still names it, saying so by name. The PR phase keeps no local state: every pass re-derives from GitHub. `autofixTimeoutSeconds`, `mergeGateTimeoutSeconds`, `reviewRetryTimeoutSeconds` and `projects[].mergeMethod` are new and all four are required.
+**Upgrading from a pre-merge-gate config?** `seenListPath` no longer exists and startup refuses a config that still names it, saying so by name. The PR phase keeps no local state: every pass re-derives from GitHub. `autofixTimeoutSeconds`, `mergeGateTimeoutSeconds`, `reviewRetryTimeoutSeconds` and `projects[].mergeMethod` are new and all four are required. So is `deathRepo`, which is newer still: add it before restarting.
 
 ---
 
@@ -447,6 +449,15 @@ The coarseness is inherited rather than chosen. A finer trigger — *restart whe
 
 `build=` covers the frozen pair only — `agent-loop.sh` and the `gh.sh` it sources. `pr-writeback.sh` is exec'd as a subprocess and re-read from disk on every invocation, and it sources its own fresh copy of `gh.sh`. Config is frozen too — it is read once at start-up. During a drift window, `build=X drift=Y` means the daemon loop logic is running X while `pr-writeback.sh` may independently run Y: **X decides, Y writes**. The whole system is therefore not necessarily running X, and a writeback bug seen during that window belongs to Y.
 
+### When the loop dies
+
+Nothing supervises the loop, so a death is only noticed if something says so. A loop that exits non-zero after it began passing — through `die`, or through a bare `set -e` failure that never logs `fatal:` — files **one issue** in `deathRepo` on the way out, then exits with its own status:
+
+- **Title**: `agent-loop died: <fatal message>`, or `agent-loop died: exit <status>, no fatal message` when it never passed through `die`.
+- **Body**: the fatal message or its absence, the exit status, `build=` and `drift=` as of the last pass end, uptime, passes completed, and the last 20 log lines, fenced.
+
+The lock is released before the write, so a restart never meets `already running` behind a hung write. The write is a single attempt built from memory and the local log alone — no GitHub, Orca or git read — and if it fails, `death record failed: …` in the log is the only record. Ctrl-C, SIGTERM, SIGHUP, `--once` and every start-up failure write nothing: someone is at the keyboard for those. Close the issue once the loop is back.
+
 ### Environment overrides
 
 For tests and troubleshooting:
@@ -455,7 +466,7 @@ For tests and troubleshooting:
 |---|---|---|
 | `AGENT_LOOP_CONFIG` | `agent-loop.config.json` beside the script | Config path. |
 | `AGENT_LOOP_LOG_MAX_BYTES` | `5242880` | Log size cap before rotation. |
-| `AGENT_LOOP_RUNTIME_WAIT_SECONDS` | `60` | How long to wait for the Orca runtime. |
+| `AGENT_LOOP_RUNTIME_WAIT_SECONDS` | `300` | How long to wait for the Orca runtime. One poll interval: a runtime back within it never costs a restart, and one that is not ends the loop into a [death record](#when-the-loop-dies). |
 
 ---
 

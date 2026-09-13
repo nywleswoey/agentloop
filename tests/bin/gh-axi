@@ -83,6 +83,12 @@
 #                            a body rewrite; the file is copied whole to
 #                            $STUB_STATE/body-<number>.txt so a test can compare
 #                            it byte for byte
+#   issue create --repo <o>/<n> --title <text> --body-file <path>
+#                            the death record, the only issue the loop creates;
+#                            the file is copied whole to
+#                            $STUB_STATE/death-body.txt, and when $STUB_LOCK
+#                            names a lockfile that still exists at the moment of
+#                            the call, $STUB_STATE/create-saw-lock is left behind
 #   issue close <number>     a close, recorded in $STUB_STATE/closed-<number> so
 #                            a later read of the same issue reports it closed
 #   label create --name ...  the loop's own labels
@@ -107,7 +113,8 @@
 #
 # $STUB_GH_FAIL names a command that must fail: "issues", "claim", "prs",
 # "pr-state", "merged", "issue", "body", "close", "blockers", "labels",
-# "pr-comment", "pr-edit", "comment-edit", "issue-comment" or "merge".
+# "pr-comment", "pr-edit", "comment-edit", "issue-comment", "issue-create" or
+# "merge".
 # $STUB_GH_ERROR names which rendering it fails with, from
 # fixtures/gh-error-<name>.txt. $STUB_GH_STDERR makes that
 # failure gh-axi's own rather than GitHub's — reported on stderr, with stdout
@@ -308,6 +315,20 @@ if [[ "${1:-}" == "issue" ]]; then
         cp "$file" "$STUB_STATE/issue-body-$number.txt"
       fi
       printf 'comment:\n  issue: %s\n  created: true\n' "$number"
+      exit 0
+      ;;
+    create)
+      title=$(flag_value --title "$@")
+      file=$(flag_value --body-file "$@")
+      [[ -n "$(flag_value --repo "$@")" ]] || { echo "stub gh-axi: issue create needs --repo" >&2; exit 1; }
+      [[ -n "$title" ]] || { echo "stub gh-axi: issue create needs --title" >&2; exit 1; }
+      [[ -n "$file" && -f "$file" ]] || { echo "stub gh-axi: issue create needs --body-file" >&2; exit 1; }
+      # Read before anything can fail, so a case can ask whether the lock was
+      # still held when the write was attempted, landed or not.
+      [[ -n "${STUB_LOCK:-}" && -f "$STUB_LOCK" ]] && : > "$STUB_STATE/create-saw-lock"
+      cp "$file" "$STUB_STATE/death-body.txt"
+      fail_if issue-create 500
+      printf 'issue:\n  number: 900\n  created: true\n'
       exit 0
       ;;
     close)
@@ -568,9 +589,16 @@ if [[ "$path" == /repos/*/* ]]; then
     # The three permission booleans come with the repository read the loop
     # already makes, which is the read the configured merge method is validated
     # against — so a forbidden method fails at startup rather than at the merge.
-    emit "$(jq -nc --arg r "$repo" --arg m "$(repo_merge_methods "$repo")" '
+    # `has_issues` and `permissions.pull` are what deathRepo is validated
+    # against; repos.txt's fourth field reads `no-issues` for the one repository
+    # that exists to refuse an issue.
+    issues=$(awk -F'\t' -v r="$repo" '$1 == r { print ($4 == "no-issues" ? "false" : "true") }' \
+      "$STUB_FIXTURES/repos.txt")
+    emit "$(jq -nc --arg r "$repo" --arg m "$(repo_merge_methods "$repo")" --argjson issues "$issues" '
       ($m | split(",")) as $allowed
       | { full_name: $r,
+          has_issues: $issues,
+          permissions: { pull: true },
           allow_merge_commit: ($allowed | index("merge") != null),
           allow_squash_merge: ($allowed | index("squash") != null),
           allow_rebase_merge: ($allowed | index("rebase") != null) }')"
