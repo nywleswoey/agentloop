@@ -1,0 +1,19 @@
+#!/bin/bash
+#
+# Stub `tail` for the death-record regression test. By default it delegates to
+# the system utility, keeping every unrelated use byte-for-byte real. A case
+# can set STUB_TAIL_FAIL=1 to make the death body's log read fail.
+
+set -uo pipefail
+
+if [[ "${STUB_TAIL_FAIL:-}" == "1" ]]; then
+  echo "stub tail: configured failure" >&2
+  exit 1
+fi
+
+for candidate in /usr/bin/tail /bin/tail; do
+  [[ -x "$candidate" ]] && exec "$candidate" "$@"
+done
+
+echo "stub tail: no real tail on this system" >&2
+exit 1
