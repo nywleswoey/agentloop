@@ -3209,8 +3209,8 @@ check "one state line per pull request" \
 
 # One world at two frozen instants either side of the bound. Nothing but
 # $STUB_NOW differs, so whatever differs in the verdict is caused by the clock
-# and by nothing else. Both pull requests share a head date, so the clock says
-# the same thing about both — and only one of them is exempt from it.
+# and by nothing else. Nothing in the gate is exempt from the clock: every defer
+# it can reach expires into a handover.
 
 setup "an undecided signal inside the gate clock defers in silence"
 export STUB_WORLD=gate-clock STUB_NOW=2026-08-27T12:59:59Z
@@ -3241,40 +3241,35 @@ check_grep "| defer | GitHub's merge state is not one this veto can conclude fro
 check_grep "| note | the merge-gate clock has run out | \`age=3601s bound=3600s head=2026-08-27T12:00:00Z\` |" "$STUCK"
 check_no_grep "| no |" "$STUCK"
 
-# --- pr phase: the rate limit defers, ahead of every veto and outside the clock --------
+# --- pr phase: a throttle marker is not the gate's business ----------------------------
 
-# A throttled pull request keeps a **stale** verdict — 241's walkthrough puts
-# the level at high, which V1 alone would escalate on. The marker is tested
-# ahead of every veto, so it defers instead: the handover would otherwise turn a
-# transient throttle into a permanent one, and fair-usage throttling would
-# escalate the whole queue whenever the reviewer is merely slow.
+# The gate used to defer on the walkthrough's rate-limit marker, ahead of every
+# veto and outside the clock, on the claim that *a throttled pull request keeps a
+# stale verdict, which V1 would hand over permanently*. Decided in #120 and
+# removed in #152; the full argument sits where the test was, in risk_gate. The
+# part that belongs here: **its own fixture contradicted it.** This used to be
+# 241 in the gate-clock world, asserted in the same breath to name this head and
+# to carry High — a current, head-scoped verdict, not a stale one — and the
+# test's only effect on it was to suppress a correct escalation.
 #
-# It is also **exempt from the gate clock**, which is why it is in this world:
-# 241 shares 240's head date, so it is equally far past the bound at the second
-# instant and defers anyway. That is safe because unlike a review pause the rate
-# limit self-clears as usage ages out; the comment even ships its own estimate.
-check_grep "pr nywleswoey/automation#241 241b241b241b241b241b241b241b241b241b241b assessable review=terminal threads=0 autofix=unspent verdict=defer gate=rate-limited" "$OUT"
-check_no_grep "pr comment 241 --repo nywleswoey/automation" "$STUB_CALLS"
-check_no_grep "pr edit 241 --repo nywleswoey/automation" "$STUB_CALLS"
-check "the throttled pull request really does carry a verdict V1 would veto" \
-  test "$(jq -r '.data.repository.pullRequest.comments.nodes[0].body | test("Merge Risk:.*High")' "$FIXTURES/worlds/gate-clock/pr-241.json")" = "true"
-# It also names this head, so it reaches the gate at all: a verdict pinned to
-# another commit is the chain's business now, and would never get here.
-check "and it names this head" \
-  test "$(jq -r '.data.repository.pullRequest.comments.nodes[0].body | test("up to .241b")' "$FIXTURES/worlds/gate-clock/pr-241.json")" = "true"
-
-# The same fixture inside the clock defers too, which is what "regardless of
-# timestamp" means: the test has no clock of its own to be inside or outside of.
-setup "a rate-limited pull request defers on every pass, at any age"
-export STUB_WORLD=gate-clock STUB_NOW=2026-08-27T12:00:01Z
+# Throttling is a fact about the reviewer, and the chain's head-scoped status
+# read is the loop's only surface for it. A verdict already written and scoped
+# to this commit does not become wrong because its author is busy — so the two
+# pull requests here differ in the level alone, both carry the marker, and the
+# gate acts on the level.
+setup "a throttle marker on a head-scoped verdict changes nothing the gate decides"
+export STUB_WORLD=throttled STUB_NOW=2026-08-27T12:00:01Z
 run_once
 check_status 0 "$STATUS"
-check_grep "pr nywleswoey/automation#241 241b241b241b241b241b241b241b241b241b241b assessable review=terminal threads=0 autofix=unspent verdict=defer gate=rate-limited" "$OUT"
-check_no_grep "pr comment 241 --repo nywleswoey/automation" "$STUB_CALLS"
-# The rate-limit block arrives by an **edit**, so the comment carrying it can be
-# a week older than the pull request's head. The fixture is pinned to that gap.
-check "the rate-limit block arrived by editing a much older comment" \
-  test "$(jq -r '.data.repository.pullRequest.comments.nodes[0] | (.createdAt < .updatedAt)' "$FIXTURES/worlds/gate-clock/pr-241.json")" = "true"
+check "both walkthroughs really do carry the rate-limit marker" \
+  test "$(jq -rs 'map(.data.repository.pullRequest.comments.nodes[0].body | contains("rate limited by coderabbit.ai")) | all' "$FIXTURES/worlds/throttled/pr-241.json" "$FIXTURES/worlds/throttled/pr-242.json")" = "true"
+check "and both name their own head" \
+  test "$(jq -rs 'map(.data.repository.pullRequest | (.comments.nodes[0].body | capture("up to `(?<a>[0-9a-f]+)`").a) as $a | .headRefOid | startswith($a)) | all' "$FIXTURES/worlds/throttled/pr-241.json" "$FIXTURES/worlds/throttled/pr-242.json")" = "true"
+check_grep "pr nywleswoey/automation#241 241b241b241b241b241b241b241b241b241b241b assessable review=terminal threads=0 autofix=unspent verdict=escalate risk=no checks=ok mergeability=ok blast=ok action=escalated kind=escalate label=added" "$OUT"
+check_grep "pr nywleswoey/automation#242 242c242c242c242c242c242c242c242c242c242c assessable review=terminal threads=0 autofix=unspent verdict=merge risk=ok checks=ok mergeability=ok blast=ok action=merged method=squash" "$OUT"
+check "the merge names the assessed commit" \
+  grep -qxF -- "gh-axi api PUT /repos/nywleswoey/automation/pulls/242/merge --field sha=242c242c242c242c242c242c242c242c242c242c --field merge_method=squash --full --jq tojson|@base64" "$STUB_CALLS"
+check_no_grep "rate-limited" "$OUT"
 
 # --- pr phase: V3's classification, value by value --------------------------------------
 
