@@ -27,3 +27,9 @@ _Avoid_: retry loop, rate-limited state
 **Stall**:
 A nudge past its bound with no refusal standing — either silence with nothing before it at this head, or an answer that neither refused nor produced a review.
 _Avoid_: timeout
+
+### The sweep and the reclaim
+
+**Worker**:
+An agent the loop dispatched into a worktree, for as long as it is working or waiting there — or, once it is neither, for as long as its worktree holds uncommitted changes, up to the worker bound. A claim is never handed back while a worker holds it.
+_Avoid_: live agent (a worker between states is not live, and is still a worker)
