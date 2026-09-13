@@ -317,7 +317,11 @@ shape TOON has nothing left to restructure. `gh.sh` holds that seam — `gh_json
 decodes it and everything downstream is ordinary jq over ordinary JSON — and
 both scripts source it rather than carrying their own copy. Labels are written
 as deltas (`issue edit --add-label/--remove-label`) rather than as a whole set,
-which is what keeps the claim a single atomic call.
+so a swap never has to know what else the issue wears. One call is not one
+write, though: the remove can land while the add is lost, which once left a
+spec wearing neither label and invisible to the loop. So a swap that fails reads
+the labels back, logs what gh-axi said, and undoes whichever half landed — or,
+if the whole swap landed despite the failure, counts it as landed.
 
 The loop creates its seven labels — the two in the config, plus the constants
 `agent-escalated`, `agent-refused`, `agent-decomposed`, `implement` and

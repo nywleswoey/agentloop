@@ -44,7 +44,7 @@ setup() {
   export STUB_ORCA_STATUS=ready STUB_ISSUES=none STUB_ORCA_PS=idle
   export STUB_CLAIMED=none STUB_WORKTREES=none STUB_DIRTY="" STUB_UNPUSHED=""
   export STUB_WORLD=none STUB_MERGED=none
-  unset AGENT_LOOP_LOG_MAX_BYTES STUB_GH_FAIL STUB_ORCA_FAIL STUB_GIT_FAIL
+  unset AGENT_LOOP_LOG_MAX_BYTES STUB_GH_FAIL STUB_GH_PARTIAL STUB_GH_STDERR STUB_ORCA_FAIL STUB_GIT_FAIL
   # Multi-pass cases number their passes from here.
   PASS_N=0
   # Unfrozen unless a case says otherwise, so the stub `date` is the real one
@@ -540,9 +540,9 @@ check "lockfile released" test ! -f "$LOCK"
 
 # --- issue phase: a workable issue is claimed and dispatched -------------------
 
-# gh-axi edits labels as a delta, so the claim stays the one atomic call it was
-# on GitLab — an add and a remove together, with the issue's other labels none
-# of the loop's business.
+# gh-axi edits labels as a delta, so the claim stays the one call it was on
+# GitLab — an add and a remove together, with the issue's other labels none of
+# the loop's business.
 CLAIM_CALL="gh-axi issue edit 17 --repo nywleswoey/automation --add-label agent-in-progress --remove-label ready-for-agent"
 CREATE_CALL="orca worktree create --repo id:repo-aaa --name agent-loop-feat-17-agent-loop-issue-phase --no-parent --agent claude --prompt /implement https://github.com/nywleswoey/automation/issues/17 --json"
 
@@ -559,6 +559,73 @@ check_grep "claimed nywleswoey/automation#17" "$OUT"
 # handle is read back from the response rather than assumed from the name.
 check_grep "dispatched nywleswoey/automation#17 -> worktree repo-aaa::/tmp/stub/automation/agent-loop-issue-17-2" "$OUT"
 check_grep "pass end dispatches=1 skips=0 sweeps=1" "$OUT"
+
+# --- issue phase: a failed claim is read back, not believed ----------------------
+
+# #149's claim failed with `ready-for-agent` off and `agent-in-progress` never on,
+# under a line saying the issue had been left ready. A failed swap now reads the
+# labels back and undoes or accepts whatever half landed, so the caller's line is
+# true either way. The issue is #45 so the read-back has a fixture that agrees
+# with the queue: #17's REST fixture is close-out's, and already wears the claim.
+SWAP_CLAIM="gh-axi issue edit 45 --repo nywleswoey/automation --add-label agent-in-progress --remove-label ready-for-agent"
+SWAP_ERROR='(gh-axi: error: "gh: Internal Server Error (HTTP 500)" code: UNKNOWN)'
+
+setup "a claim that lands nothing says what gh-axi said and leaves the issue ready"
+export STUB_ISSUES=swap STUB_GH_FAIL=claim
+run_once
+check_status 0 "$STATUS"
+check_grep "$SWAP_CLAIM" "$STUB_CALLS"
+check_grep "gh-axi api /repos/nywleswoey/automation/issues/45 --full" "$STUB_CALLS"
+check_grep "label swap failed for nywleswoey/automation#45, nothing landed $SWAP_ERROR" "$OUT"
+check_grep "claim failed for nywleswoey/automation#45, leaving it ready" "$OUT"
+check_no_grep "worktree create" "$STUB_CALLS"
+check_grep "pass end dispatches=0 skips=1" "$OUT"
+
+setup "a claim gh-axi fails on its own still carries the error text"
+# gh-axi's own failures go to stderr with stdout empty; the old swap sent both
+# channels to /dev/null, and a fix that kept only stdout would log nothing here.
+export STUB_ISSUES=swap STUB_GH_FAIL=claim STUB_GH_STDERR=1
+run_once
+check_status 0 "$STATUS"
+check_grep "label swap failed for nywleswoey/automation#45, nothing landed $SWAP_ERROR" "$OUT"
+
+setup "a claim whose removal lands alone puts the ready label back"
+# #149's exact half: without the undo the issue wears neither label and no query
+# the loop makes will ever find it again.
+export STUB_ISSUES=swap STUB_GH_PARTIAL=remove
+run_once
+check_status 0 "$STATUS"
+check_grep "label swap half landed for nywleswoey/automation#45: ready-for-agent came off and agent-in-progress did not go on, so ready-for-agent is back on $SWAP_ERROR" "$OUT"
+check_grep "gh-axi issue edit 45 --repo nywleswoey/automation --add-label ready-for-agent" "$STUB_CALLS"
+check "the undo follows the swap" \
+  test "$(call_line "$SWAP_CLAIM")" -lt "$(call_line "gh-axi issue edit 45 --repo nywleswoey/automation --add-label ready-for-agent")"
+check "the issue wears ready-for-agent again" test "$(tail -n 1 "$STUB_STATE/labels-45")" = "+ready-for-agent"
+check_grep "claim failed for nywleswoey/automation#45, leaving it ready" "$OUT"
+check_no_grep "worktree create" "$STUB_CALLS"
+
+setup "a claim whose add lands alone takes the claim label back off"
+# The other half: an issue wearing both labels is in the ready queue and claimed
+# at once, with no worker behind the claim.
+export STUB_ISSUES=swap STUB_GH_PARTIAL=add
+run_once
+check_status 0 "$STATUS"
+check_grep "label swap half landed for nywleswoey/automation#45: agent-in-progress went on and ready-for-agent did not come off, so agent-in-progress is back off $SWAP_ERROR" "$OUT"
+check_grep "gh-axi issue edit 45 --repo nywleswoey/automation --remove-label agent-in-progress" "$STUB_CALLS"
+check "the issue no longer wears agent-in-progress" test "$(tail -n 1 "$STUB_STATE/labels-45")" = "-agent-in-progress"
+check_grep "claim failed for nywleswoey/automation#45, leaving it ready" "$OUT"
+check_no_grep "worktree create" "$STUB_CALLS"
+
+setup "a claim that failed but landed is a claim, and the issue is dispatched"
+# The label is the claim, so a swap that landed whole is not undone for the exit
+# status it came back with.
+export STUB_ISSUES=swap STUB_GH_PARTIAL=both
+run_once
+check_status 0 "$STATUS"
+check_grep "label swap failed for nywleswoey/automation#45 but landed $SWAP_ERROR" "$OUT"
+check_grep "claimed nywleswoey/automation#45" "$OUT"
+check_no_grep "claim failed" "$OUT"
+check_grep "worktree create" "$STUB_CALLS"
+check_grep "pass end dispatches=1 skips=0" "$OUT"
 
 setup "the change type and title become the readable half of the name"
 # The `bug` label maps onto `fix`, and punctuation, case, runs of separators and
@@ -882,7 +949,7 @@ check_no_grep "gh-axi issue edit 60 --repo nywleswoey/automation --add-label age
 check_no_grep "gh-axi issue edit 61 --repo nywleswoey/automation --add-label agent-in-progress" "$STUB_CALLS"
 check_no_grep "agent-loop-feat-60-" "$STUB_CALLS"
 check_no_grep "agent-loop-feat-61-" "$STUB_CALLS"
-# Label first, and the swap is one atomic delta.
+# Label first, and the swap is one delta.
 check_grep "$REFUSE_60" "$STUB_CALLS"
 check_grep "$COMMENT_60" "$STUB_CALLS"
 check "the label swap precedes the comment" \

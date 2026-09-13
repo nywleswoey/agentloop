@@ -111,7 +111,8 @@
 # $STUB_GH_ERROR names which rendering it fails with, from
 # fixtures/gh-error-<name>.txt. $STUB_GH_STDERR makes that
 # failure gh-axi's own rather than GitHub's — reported on stderr, with stdout
-# left empty.
+# left empty. $STUB_GH_PARTIAL fails a label swap after only part of it landed;
+# see the `issue edit` arm.
 
 set -uo pipefail
 
@@ -349,6 +350,16 @@ if [[ "${1:-}" == "issue" ]]; then
   fail_if claim
   removed=$(flag_value --remove-label "$@")
   added=$(flag_value --add-label "$@")
+  # $STUB_GH_PARTIAL lands a swap — both flags at once — only in part, and then
+  # fails the call, the way #149's claim went: "remove" lands the removal alone,
+  # "add" the add alone, and "both" lands the whole swap and still exits 1. A
+  # one-flag edit is never partial, so the loop's undo goes through.
+  if [[ -n "${STUB_GH_PARTIAL:-}" && -n "$added" && -n "$removed" ]]; then
+    [[ "$STUB_GH_PARTIAL" == remove ]] || printf '+%s\n' "$added" >> "$STUB_STATE/labels-$number"
+    [[ "$STUB_GH_PARTIAL" == add ]] || printf -- '-%s\n' "$removed" >> "$STUB_STATE/labels-$number"
+    cat "$STUB_FIXTURES/gh-error-500.txt"
+    exit 1
+  fi
   [[ -z "$added" ]] || printf '+%s\n' "$added" >> "$STUB_STATE/labels-$number"
   [[ -z "$removed" ]] || printf -- '-%s\n' "$removed" >> "$STUB_STATE/labels-$number"
   printf 'issue:\n  number: %s\n' "$number"
