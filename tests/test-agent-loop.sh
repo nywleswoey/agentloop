@@ -129,6 +129,18 @@ await() {
   return 1
 }
 
+# await_count <line> <count> — block until a line has appeared count times, up
+# to 10s.
+await_count() {
+  local line="$1" count="$2" _ seen
+  for _ in $(seq 1 100); do
+    seen=$(grep -cF "$line" "$OUT" 2>/dev/null || true)
+    [[ "$seen" -ge "$count" ]] && return 0
+    sleep 0.1
+  done
+  return 1
+}
+
 # stop_loop <signal> — signal the loop, wait for it, leave status in $STATUS.
 stop_loop() {
   local _
@@ -4193,6 +4205,71 @@ run_once
 check_status 0 "$STATUS"
 check_grep "worker inventory unreadable, leaving nywleswoey/automation#92 claimed" "$OUT"
 check_no_grep "--add-label agent-decomposed" "$STUB_CALLS"
+
+# --- which build is running ---------------------------------------------------
+
+# Nothing used to identify the loaded code, so a park could not be attributed to
+# the commit that caused it. `build=` names what is loaded, measured once and
+# frozen; `drift=` says every pass whether the checkout has moved under it.
+
+setup "the pass-end line names the build and reports no drift on a matching checkout"
+run_once
+check_status 0 "$STATUS"
+check_grep "pass end dispatches=0 skips=0 sweeps=1 refusals=0 build=headsha0 drift=none" "$OUT"
+check "build is measured before startup closeout" \
+  test "$(call_line "git -C $ROOT rev-parse HEAD")" -lt "$(call_line "is:pr is:merged")"
+
+setup "a dirty script directory stops build= naming a commit and leaves drift unanswerable"
+# The loaded bytes are not any commit, so the field says so and the comparison
+# has nothing to compare against.
+export STUB_DIRTY="$ROOT"
+run_once
+check_status 0 "$STATUS"
+check_grep "refusals=0 build=headsha0-dirty drift=unknown" "$OUT"
+
+setup "an unreadable checkout leaves both fields claiming nothing"
+# Every read here is fail-safe: a field that cannot answer says so rather than
+# naming a commit it has not stood behind.
+export STUB_GIT_FAIL=rev-parse
+run_once
+check_status 0 "$STATUS"
+check_grep "refusals=0 build=unknown drift=unknown" "$OUT"
+
+setup "a status read that fails is read as dirty rather than clean"
+export STUB_GIT_FAIL=status
+run_once
+check_status 0 "$STATUS"
+check_grep "refusals=0 build=headsha0-dirty drift=unknown" "$OUT"
+
+setup "a longer short abbreviation does not report drift when the full head is unchanged"
+printf '1111111111111111111111111111111111111111' > "$STUB_STATE/git-head"
+printf '1111111' > "$STUB_STATE/git-head-short"
+write_config "nywleswoey/automation" "repo-aaa" 1
+start_loop
+check "a first pass ran" await_count "pass end" 1
+check_grep "build=1111111 drift=none" "$OUT"
+# A concurrent fetch can add an object that forces Git to lengthen the unique
+# abbreviation even though HEAD still resolves to the same full object ID.
+printf '11111111' > "$STUB_STATE/git-head-short"
+check "a later pass ran after the abbreviation changed" await_count "pass end" 2
+check_no_grep "drift=11111111" "$OUT"
+check "both passes report no drift" test "$(grep -cF 'drift=none' "$OUT")" -ge 2
+stop_loop TERM
+check_status 0 "$STATUS"
+
+setup "a checkout that moves mid-run drifts without moving build="
+# Bash reached EOF before pass one, so the running bytes cannot change; the
+# checkout underneath them can. `build=X drift=Y` is the window where X decides
+# and Y writes.
+write_config "nywleswoey/automation" "repo-aaa" 1
+start_loop
+check "a first pass ran" await "pass end"
+check_grep "build=headsha0 drift=none" "$OUT"
+printf 'movedsha1' > "$STUB_STATE/git-head"
+check "a later pass saw the move" await "drift=movedsha1"
+check_grep "build=headsha0 drift=movedsha1" "$OUT"
+stop_loop TERM
+check_status 0 "$STATUS"
 
 # --- the deleted machinery ------------------------------------------------------
 

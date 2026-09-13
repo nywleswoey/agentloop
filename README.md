@@ -419,6 +419,29 @@ Then edit `agent-loop.config.json`:
 ./agent-loop.sh --config /path/to/other.json
 ```
 
+### Restarting after a pull
+
+**Restart the loop after any pull that moves `HEAD`.** The rule is manual, documented and deliberately coarse — there is no supervisor, no health check and no auto-restart.
+
+Bash parses the whole script before it runs the pass loop, so a running daemon keeps executing the bytes it started with no matter what lands on disk. Every pass-end line therefore carries two fields:
+
+| Field | Meaning |
+|---|---|
+| `build=<short sha>` | What is loaded. Measured once at start-up and frozen. `git show <sha>:agent-loop.sh` reads the code that ran. |
+| `build=<short sha>-dirty` | The tree was dirty at start-up, or the dirty check itself could not be read, so the loaded bytes are not any commit. |
+| `build=unknown` | The checkout could not be read at all at start-up. |
+| `drift=none` | The checkout still matches what is loaded. |
+| `drift=<short sha>` | The checkout has moved to this commit; the loop has not. Restart. |
+| `drift=unknown` | `build=` names no commit, or the checkout could not be read this pass, so no comparison is possible. |
+
+`grep -v 'drift=none'` over the log lists every stale pass. Every read behind these fields fails safe: one that cannot answer says `unknown` or `-dirty` rather than naming a commit it has not stood behind.
+
+The dirty check is repo-wide, not restricted to the two files `build=` covers — a dirty `README.md` alone is enough to suffix it. That coarseness runs the same direction as the restart rule: it over-reports rather than under-reports.
+
+The coarseness is inherited rather than chosen. A finer trigger — *restart when behaviour actually changed* — would have to beat comparing checkout heads, which mis-flags any commit touching neither frozen file, about 15% of recent commits. Restarting costs almost nothing: the start-up reclaim keeps every claim held by a live worker and every claim an open pull request already delivers, and nothing survives in memory across passes.
+
+`build=` covers the frozen pair only — `agent-loop.sh` and the `gh.sh` it sources. `pr-writeback.sh` is exec'd as a subprocess and re-read from disk on every invocation, and it sources its own fresh copy of `gh.sh`. Config is frozen too — it is read once at start-up. During a drift window, `build=X drift=Y` means the daemon loop logic is running X while `pr-writeback.sh` may independently run Y: **X decides, Y writes**. The whole system is therefore not necessarily running X, and a writeback bug seen during that window belongs to Y.
+
 ### Environment overrides
 
 For tests and troubleshooting:

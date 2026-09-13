@@ -41,6 +41,12 @@ RUNTIME_WAIT_SECONDS="${AGENT_LOOP_RUNTIME_WAIT_SECONDS:-60}"
 ONCE=false
 BRANCH_REPORT=""
 LOG_PATH=""
+# The log-sized name of what is loaded. Filled in by measure_build once, before
+# startup work that can move HEAD.
+BUILD=""
+# The full object ID behind BUILD. Kept separate so a changing abbreviation
+# length cannot look like drift when HEAD itself has not moved.
+BUILD_COMMIT=""
 # Holds the one irreversible write and nothing else. A flag rather than a config
 # key on purpose: a persistent switch would be the confirmation gate this whole
 # effort replaced walking back in as a boolean, and a `false` left in a file is a
@@ -4980,6 +4986,95 @@ closeout_one() {
   fi
 }
 
+# --- which build is running ---------------------------------------------------
+
+# The stable identity used for drift comparison. This must be the full object ID:
+# a fetch can introduce an abbreviation collision and lengthen `--short` without
+# moving HEAD.
+current_head() {
+  git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null
+}
+
+# Short IDs are presentation only: they are read by eye off a log line and typed
+# back into `git show <sha>:agent-loop.sh`.
+short_commit() {
+  git -C "$SCRIPT_DIR" rev-parse --short "$1" 2>/dev/null
+}
+
+# `build=` is what is loaded, measured once at start-up and never again. Bash
+# parses the whole file before it can execute the pass loop, so EOF is reached
+# before pass one and nothing is ever re-read: the bytes running now are the
+# bytes on disk at start-up, whether an editor truncated the file in place or
+# wrote-and-renamed it the way git does. One measurement is therefore exact for
+# the life of the process rather than merely convenient.
+#
+# A sha rather than a hash of the loaded files, because the field has a second
+# job a hash cannot do: `git show <sha>:agent-loop.sh` reads the code that
+# parked.
+#
+# The `-dirty` suffix is not decoration. A dirty tree means the loaded bytes are
+# not any commit, so the field stops claiming to name one.
+#
+# Every value is greppable and every failure is fail-safe: a read that cannot
+# answer never lets the field claim a commit it cannot stand behind.
+measure_build() {
+  local head short dirty
+  BUILD_COMMIT=""
+  if ! head=$(current_head) || ! short=$(short_commit "$head"); then
+    # No readable checkout: nothing can be said about what is loaded, and the
+    # per-pass comparison has nothing to compare against either.
+    BUILD="unknown"
+    return 0
+  fi
+  # Unreadable is not clean: a dirty tree and a status read that failed both
+  # leave the loaded bytes unpinnable to a commit.
+  if ! dirty=$(git -C "$SCRIPT_DIR" status --porcelain 2>/dev/null) || [[ -n "$dirty" ]]; then
+    BUILD="$short-dirty"
+  else
+    BUILD="$short"
+    BUILD_COMMIT="$head"
+  fi
+}
+
+# `drift=` is whether the checkout has moved, derived every pass rather than
+# frozen: the loop cannot re-read itself, but the disk under it changes.
+#
+# Named for the fact rather than the source, following the house pattern where
+# the key stays put and the value carries the verdict — `edges=ok` /
+# `edges=missing:...`, `action=nudged` / `action=failed rc=...`. Raw
+# `build=X head=Y` would mean spotting drift by noticing two short hashes
+# differ: workable on one line, useless across hundreds. `grep -v 'drift=none'`
+# lists every stale pass in the log.
+#
+# Commentary on the tear `build=` does not cover: it covers the frozen pair only
+# — this script, and the `gh.sh` sourced above. `pr-writeback.sh` is exec'd as a
+# subprocess and re-read from disk on every invocation, and it sources its own
+# fresh copy of `gh.sh`; config is frozen too, read once by `load_config`
+# before the loop. So a stale loop is not uniformly stale — it runs old logic and
+# new writebacks. During a drift window the daemon loop logic is running X, but
+# the whole system is not necessarily running X: **X decides, Y writes**. A
+# reader who assumes `build=` covers the whole system will misattribute a
+# writeback bug to it.
+current_drift() {
+  local head short
+  # A build that names no commit has nothing a head can be compared against.
+  if [[ -z "$BUILD_COMMIT" ]]; then
+    printf 'unknown'
+    return 0
+  fi
+  if ! head=$(current_head); then
+    printf 'unknown'
+    return 0
+  fi
+  if [[ "$head" == "$BUILD_COMMIT" ]]; then
+    printf 'none'
+  elif short=$(short_commit "$head"); then
+    printf '%s' "$short"
+  else
+    printf 'unknown'
+  fi
+}
+
 # --- pass --------------------------------------------------------------------
 
 # Run one complete pass: load the worktree inventory, run closeout, issue, and
@@ -5014,7 +5109,14 @@ run_pass() {
   else
     log "worker inventory unreadable, skipping the sweep"
   fi
-  log "pass end dispatches=$DISPATCHES skips=$SKIPS sweeps=$SWEEPS refusals=$REFUSALS"
+  # `build=` and `drift=` are appended rather than led, and both are emitted
+  # every pass even when they agree. A field that appeared only under drift
+  # would leave a bare pass line ambiguous between *current* and *a build too
+  # old to emit the field*; emitting it unconditionally makes its absence
+  # positive evidence of a pre-stamp build.
+  local drift
+  drift=$(current_drift)
+  log "pass end dispatches=$DISPATCHES skips=$SKIPS sweeps=$SWEEPS refusals=$REFUSALS build=$BUILD drift=$drift"
 }
 
 # --- main --------------------------------------------------------------------
@@ -5053,6 +5155,9 @@ ensure_runtime
 load_repos
 validate_config
 load_identity
+# Measure before closeout or reclaim initialization: either can outlive this
+# checkout state, while BUILD must name the bytes this process actually loaded.
+measure_build
 # Before the reclaim, not after: the reclaim hands back every claim with no live
 # worker, and a merged issue whose worktree has already been swept is exactly
 # that — so closing it out first is what stops it being dispatched a second time.
