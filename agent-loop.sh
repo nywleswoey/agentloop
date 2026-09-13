@@ -41,8 +41,12 @@ RUNTIME_WAIT_SECONDS="${AGENT_LOOP_RUNTIME_WAIT_SECONDS:-60}"
 ONCE=false
 BRANCH_REPORT=""
 LOG_PATH=""
-# What is loaded. Filled in by measure_build once, before the pass loop.
+# The log-sized name of what is loaded. Filled in by measure_build once, before
+# startup work that can move HEAD.
 BUILD=""
+# The full object ID behind BUILD. Kept separate so a changing abbreviation
+# length cannot look like drift when HEAD itself has not moved.
+BUILD_COMMIT=""
 # Holds the one irreversible write and nothing else. A flag rather than a config
 # key on purpose: a persistent switch would be the confirmation gate this whole
 # effort replaced walking back in as a boolean, and a `false` left in a file is a
@@ -4984,10 +4988,17 @@ closeout_one() {
 
 # --- which build is running ---------------------------------------------------
 
-# The one read both fields make. `--short` because the value is read by eye off
-# a log line and typed back into `git show <sha>:agent-loop.sh`.
+# The stable identity used for drift comparison. This must be the full object ID:
+# a fetch can introduce an abbreviation collision and lengthen `--short` without
+# moving HEAD.
 current_head() {
-  git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null
+  git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null
+}
+
+# Short IDs are presentation only: they are read by eye off a log line and typed
+# back into `git show <sha>:agent-loop.sh`.
+short_commit() {
+  git -C "$SCRIPT_DIR" rev-parse --short "$1" 2>/dev/null
 }
 
 # `build=` is what is loaded, measured once at start-up and never again. Bash
@@ -5007,8 +5018,9 @@ current_head() {
 # Every value is greppable and every failure is fail-safe: a read that cannot
 # answer never lets the field claim a commit it cannot stand behind.
 measure_build() {
-  local head dirty
-  if ! head=$(current_head); then
+  local head short dirty
+  BUILD_COMMIT=""
+  if ! head=$(current_head) || ! short=$(short_commit "$head"); then
     # No readable checkout: nothing can be said about what is loaded, and the
     # per-pass comparison has nothing to compare against either.
     BUILD="unknown"
@@ -5017,9 +5029,10 @@ measure_build() {
   # Unreadable is not clean: a dirty tree and a status read that failed both
   # leave the loaded bytes unpinnable to a commit.
   if ! dirty=$(git -C "$SCRIPT_DIR" status --porcelain 2>/dev/null) || [[ -n "$dirty" ]]; then
-    BUILD="$head-dirty"
+    BUILD="$short-dirty"
   else
-    BUILD="$head"
+    BUILD="$short"
+    BUILD_COMMIT="$head"
   fi
 }
 
@@ -5038,13 +5051,14 @@ measure_build() {
 # subprocess and re-read from disk on every invocation, and it sources its own
 # fresh copy of `gh.sh`; config is frozen too, read once by `load_config`
 # before the loop. So a stale loop is not uniformly stale — it runs old logic and
-# new writebacks. During a drift window `build=X drift=Y` does not mean *the
-# loop is running X*; it means **X decides, Y writes**. A reader who assumes
-# `build=` covers the whole system will misattribute a writeback bug to it.
+# new writebacks. During a drift window the daemon loop logic is running X, but
+# the whole system is not necessarily running X: **X decides, Y writes**. A
+# reader who assumes `build=` covers the whole system will misattribute a
+# writeback bug to it.
 current_drift() {
-  local head
+  local head short
   # A build that names no commit has nothing a head can be compared against.
-  if [[ "$BUILD" == *-dirty || "$BUILD" == "unknown" ]]; then
+  if [[ -z "$BUILD_COMMIT" ]]; then
     printf 'unknown'
     return 0
   fi
@@ -5052,10 +5066,12 @@ current_drift() {
     printf 'unknown'
     return 0
   fi
-  if [[ "$head" == "$BUILD" ]]; then
+  if [[ "$head" == "$BUILD_COMMIT" ]]; then
     printf 'none'
+  elif short=$(short_commit "$head"); then
+    printf '%s' "$short"
   else
-    printf '%s' "$head"
+    printf 'unknown'
   fi
 }
 
@@ -5139,15 +5155,14 @@ ensure_runtime
 load_repos
 validate_config
 load_identity
+# Measure before closeout or reclaim initialization: either can outlive this
+# checkout state, while BUILD must name the bytes this process actually loaded.
+measure_build
 # Before the reclaim, not after: the reclaim hands back every claim with no live
 # worker, and a merged issue whose worktree has already been swept is exactly
 # that — so closing it out first is what stops it being dispatched a second time.
 closeout_phase
 reclaim_stale_claims
-
-# Before the pass loop, and never again inside it: what is loaded is fixed the
-# moment this process started.
-measure_build
 
 while true; do
   ensure_runtime

@@ -440,7 +440,7 @@ The dirty check is repo-wide, not restricted to the two files `build=` covers �
 
 The coarseness is inherited rather than chosen. A finer trigger — *restart when behaviour actually changed* — would have to beat comparing checkout heads, which mis-flags any commit touching neither frozen file, about 15% of recent commits. Restarting costs almost nothing: the start-up reclaim keeps every claim held by a live worker and every claim an open pull request already delivers, and nothing survives in memory across passes.
 
-`build=` covers the frozen pair only — `agent-loop.sh` and the `gh.sh` it sources. `pr-writeback.sh` is exec'd as a subprocess and re-read from disk on every invocation, and it sources its own fresh copy of `gh.sh`. Config is frozen too — it is read once at start-up. So **a stale loop is not uniformly stale**: during a drift window, `build=X drift=Y` does not mean the loop is running X — it means **X decides, Y writes**. A writeback bug seen during that window belongs to Y.
+`build=` covers the frozen pair only — `agent-loop.sh` and the `gh.sh` it sources. `pr-writeback.sh` is exec'd as a subprocess and re-read from disk on every invocation, and it sources its own fresh copy of `gh.sh`. Config is frozen too — it is read once at start-up. During a drift window, `build=X drift=Y` means the daemon loop logic is running X while `pr-writeback.sh` may independently run Y: **X decides, Y writes**. The whole system is therefore not necessarily running X, and a writeback bug seen during that window belongs to Y.
 
 ### Environment overrides
 
