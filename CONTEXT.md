@@ -33,3 +33,13 @@ _Avoid_: timeout
 **Worker**:
 An agent the loop dispatched into a worktree, for as long as it is working or waiting there — or, once it is neither, for as long as its worktree holds uncommitted changes, up to the worker bound. A claim is never handed back while a worker holds it.
 _Avoid_: live agent (a worker between states is not live, and is still a worker)
+
+### Issues and their pull requests
+
+**Delivered**:
+An issue whose work a pull request carries, for as long as that pull request is open or merged. A pull request closed without merging undoes it: the issue is undelivered again, and goes back to the loop.
+_Avoid_: done, handled
+
+**Landed**:
+A delivered issue whose pull request has merged. Unlike delivery, landing is never undone.
+_Avoid_: delivered (when a merge is meant)
