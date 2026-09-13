@@ -1444,12 +1444,67 @@ unverified_claims() {
 }
 
 # gh-axi changes labels as a delta — an add and a remove in one call — which is
-# the same shape GitLab's add_labels/remove_labels had. So the swap stays a
-# single atomic write, and neither the claim nor the reclaim has to know what
-# else the issue is wearing. The raw REST route would not do: its PATCH replaces
-# the label set outright, and it has no way to send an empty one.
+# the same shape GitLab's add_labels/remove_labels had, so neither the claim nor
+# the reclaim has to know what else the issue is wearing. The raw REST route
+# would not do: its PATCH replaces the label set outright, and it has no way to
+# send an empty one.
+#
+# **One call is not one write.** The add and the remove can land apart. #149
+# lost its claim that way: `ready-for-agent` came off, `agent-in-progress` never
+# went on, the call failed, and the issue sat wearing neither label — in no
+# query the loop makes, under a line saying it had been left ready, with the
+# reason sent to /dev/null.
+#
+# So a failed call is not taken at its word. The labels are read back and the
+# swap ends in one of the two states every caller already names: landed, or not
+# landed at all. A half is undone — the removed label put back on, or the added
+# one taken back off — which is what keeps "leaving it ready" and "leaving it
+# claimed" true. A failed call whose swap landed anyway is a landed swap, since
+# the label is the claim. What gh-axi said rides on the line in every case, from
+# both channels: a refusal arrives on stdout, a failure of its own on stderr.
 swap_labels() {
-  gh-axi issue edit "$2" --repo "$1" --add-label "$3" --remove-label "$4" >/dev/null 2>&1
+  local github="$1" number="$2" add="$3" remove="$4" error issue wears
+  error=$(gh-axi issue edit "$number" --repo "$github" --add-label "$add" --remove-label "$remove" 2>&1) \
+    && return 0
+  error="${error//$'\n'/ }"
+  error="gh-axi: ${error:-said nothing}"
+
+  if ! issue=$(query_issue "$github" "$number"); then
+    log "label swap failed for $github#$number, and its labels could not be read back ($error)"
+    return 1
+  fi
+  # `$add` and `$remove` wear the add and the remove as booleans, tab-joined.
+  wears=$(jq -r --arg add "$add" --arg remove "$remove" '
+    [.labels[]?.name] as $names
+    | "\($names | index($add) != null)\t\($names | index($remove) != null)"' <<< "$issue")
+
+  case "$wears" in
+    $'true\tfalse')
+      log "label swap failed for $github#$number but landed ($error)"
+      return 0
+      ;;
+    $'false\ttrue')
+      log "label swap failed for $github#$number, nothing landed ($error)"
+      ;;
+    $'false\tfalse')
+      if gh-axi issue edit "$number" --repo "$github" --add-label "$remove" >/dev/null 2>&1; then
+        log "label swap half landed for $github#$number: $remove came off and $add did not go on, so $remove is back on ($error)"
+      else
+        log "label swap half landed for $github#$number: $remove came off and $add did not go on, and $remove would not go back on — it wears neither ($error)"
+      fi
+      ;;
+    $'true\ttrue')
+      if gh-axi issue edit "$number" --repo "$github" --remove-label "$add" >/dev/null 2>&1; then
+        log "label swap half landed for $github#$number: $add went on and $remove did not come off, so $add is back off ($error)"
+      else
+        log "label swap half landed for $github#$number: $add went on and $remove did not come off, and $add would not come back off — it wears both ($error)"
+      fi
+      ;;
+    *)
+      log "label swap failed for $github#$number, and its labels could not be read back ($error)"
+      ;;
+  esac
+  return 1
 }
 
 # Claim an issue by swapping its label from ready to claimed. The label swap is
@@ -1571,7 +1626,7 @@ refuse_issue() {
   local github="$1" number="$2" file status=0
   shift 2
 
-  # Label first, and the swap is the one atomic add/remove delta the claim and
+  # Label first, and the swap is the one add/remove delta the claim and
   # the release already use.
   if ! swap_labels "$github" "$number" "$LABEL_REFUSED" "$LABEL_READY"; then
     log "refusal label swap failed for $github#$number, leaving it ready"
@@ -4894,7 +4949,7 @@ closeout_claim() {
   [[ "$total" =~ ^[0-9]+$ ]] || total=0
   (( total > 0 )) || return 0
 
-  # One atomic swap, the same delta shape the claim uses: the marker on, the
+  # One swap, the same delta shape the claim uses: the marker on, the
   # claim off. The verb label stays — it is a modifier and nothing removes it —
   # and the ready label was taken off at claim and is never restored, so the
   # spec is now in no loop query at all. Steady-state cost zero.

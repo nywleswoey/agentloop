@@ -1,0 +1,5 @@
+{ "data": { "repository": { "issues": { "nodes": [
+  { "number": 45, "title": "A claim whose swap fails",
+    "url": "https://github.com/nywleswoey/automation/issues/45",
+    "labels": { "nodes": [ { "name": "implement" }, { "name": "ready-for-agent" } ] } }
+] } } } }
