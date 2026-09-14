@@ -1195,7 +1195,7 @@ ORCA_PS=''
 load_worktree_inventory() {
   local response
   response=$(orca worktree ps --json 2>/dev/null) || return 1
-  jq -e '.result.worktrees' <<< "$response" >/dev/null 2>&1 || return 1
+  jq -e '.result.worktrees | arrays' <<< "$response" >/dev/null 2>&1 || return 1
   ORCA_PS="$response"
 }
 

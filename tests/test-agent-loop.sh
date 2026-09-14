@@ -338,6 +338,18 @@ check "the inventory is read once, then once per second of the bound" \
 check_no_grep "orca open" "$STUB_CALLS"
 check "no pass ran" test "$(grep -cF 'pass start' "$OUT")" -eq 0
 
+# A truthy non-array is just as unreadable to the consumers that enumerate it.
+setup "a truthy non-array inventory waits on readiness and dies at its bound"
+export AGENT_LOOP_RUNTIME_WAIT_SECONDS=1 STUB_ORCA_PS=malformed
+run_once
+check_status 1 "$STATUS"
+check_grep "worker inventory unreadable, waiting on runtime readiness" "$OUT"
+check_grep "fatal: orca runtime did not become ready within 1s: worker inventory unreadable" "$OUT"
+check "the malformed inventory is re-read on the readiness clock" \
+  test "$(grep -cF 'orca worktree ps' "$STUB_CALLS")" -eq 2
+check_no_grep "orca open" "$STUB_CALLS"
+check "no pass ran on malformed inventory" test "$(grep -cF 'pass start' "$OUT")" -eq 0
+
 # Twins either side of the bound's edge pin the clock to the second rather than
 # to roughly its length: a 2s bound re-reads at 0s and at 1s, and never at 2s.
 setup "an inventory that reads again in the bound's last second carries on"
