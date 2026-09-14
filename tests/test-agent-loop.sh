@@ -1811,6 +1811,91 @@ check_grep "fatal: orca runtime did not become ready within 1s: worker inventory
 check_no_grep "skipping the sweep" "$OUT"
 check_no_grep "worktree rm" "$STUB_CALLS"
 
+# --- the worktree inventory (#156) --------------------------------------------------
+
+# Every orca-ps world is cut from one capture of the real CLI
+# (docs/orca-worktree-ps-capture.md), not written by hand: #130 found the old
+# hand-cut stub carried 4 of the 34 keys Orca returns and none of its
+# timestamps. The capture's own records are the key sets every world carries,
+# so a world can substitute a value but never invent or drop a field. Two worlds
+# exist to be wrong and are exempt — malformed, and the undated mutations below.
+# idle's `path: null` record is wrong in a value only, so it is still held to
+# the captured key set.
+PS_CAPTURE="$FIXTURES/orca-ps-capture.json"
+
+# jq_true <jq-args...> — passes when jq -e does, and prints nothing.
+jq_true() { jq -e "$@" >/dev/null 2>&1; }
+
+setup "the orca-ps worlds are cut from a capture that records its Orca version"
+check_grep "Orca 1.4.200" "$ROOT/docs/orca-worktree-ps-capture.md"
+check "the capture holds a main worktree and a non-main one" \
+  jq_true '.result.worktrees | any(.isMainWorktree) and any(.isMainWorktree | not)' "$PS_CAPTURE"
+for _world in "$FIXTURES"/orca-ps-*.json; do
+  case "${_world##*/}" in orca-ps-malformed.json|orca-ps-created-unknown.json) continue ;; esac
+  check "${_world##*/} carries every key the capture does, and no other" \
+    jq_true --slurpfile cap "$PS_CAPTURE" '
+      ($cap[0].result.worktrees) as $c
+      | ($c | map(select(.isMainWorktree)) | first | keys) as $main
+      | ($c | map(select(.isMainWorktree | not)) | first | keys) as $other
+      | ([$c[].agents[]] | first | keys) as $agent
+      | (keys == ($cap[0] | keys))
+        and (.result.worktrees | length > 0 and all(.[];
+          keys == (if .isMainWorktree then $main else $other end)
+          and all(.agents[]; keys == $agent)))' "$_world"
+  # createdAt is absent exactly on the main worktree (#130), which ownership
+  # already excludes; every other worktree is dated in epoch-ms.
+  check "${_world##*/} dates every non-main worktree in epoch-ms, and no main one" \
+    jq_true '.result.worktrees | all(.[];
+      if .isMainWorktree then has("createdAt") | not
+      else .createdAt | type == "number" and . == floor and . > 0 end)' "$_world"
+  # worktreeId is <orcaRepoId>::<path>, which is what lets a consumer name the
+  # repository through config with no new read.
+  check "${_world##*/} names each worktree <orcaRepoId>::<path>" \
+    jq_true '.result.worktrees | all(.[]; .worktreeId == "\(.repoId)::\(.path // "")")' "$_world"
+done
+
+# The capture itself, fed to the loop unaltered: its one Orca-created worktree
+# is named like a loop worker and was `working` when captured, and its four main
+# worktrees are not the loop's. So the payload Orca actually returns must read
+# as one live worker — skipped by the sweep and counted by the budget — and
+# nothing else.
+setup "the captured payload reads as one live loop worker"
+write_config "nywleswoey/automation" "repo-aaa" 300 1
+export STUB_ORCA_PS=capture STUB_ISSUES=workable
+run_once
+check_status 0 "$STATUS"
+check_grep "sweep skipped /tmp/stub/agentloop/agent-loop-feat-156-the-worktree-inventory-carries-createdat: its agent is still going" "$OUT"
+check_grep "issue nywleswoey/automation#17 deferred: worker budget full (1/1)" "$OUT"
+check "only the loop worker is swept at or skipped" \
+  test "$(grep -cF 'sweep skipped' "$OUT")" -eq 1
+check_no_grep "worktree rm" "$STUB_CALLS"
+check_no_grep "/tmp/stub/repo-" "$STUB_CALLS"
+
+# createdAt is undocumented (#130), so the inventory reads it defensively. The
+# created-unknown world is the sweep world with four mutations and nothing else:
+# agent-loop-issue-31 has no createdAt key, -32 a date string, -33 null, and
+# -pr-35 a fractional number. Each is still inventoried, carried as `unknown`,
+# and nothing that reads the inventory today does anything different with it.
+setup "a worktree whose createdAt is missing or unparseable is still swept and skipped as before"
+export STUB_ORCA_PS=created-unknown STUB_DIRTY="$SWEEP_DIRTY" STUB_UNPUSHED="$SWEEP_UNPUSHED"
+run_once
+check_status 0 "$STATUS"
+check_grep "swept /tmp/stub/automation/agent-loop-issue-31" "$OUT"
+check_grep "sweep skipped /tmp/stub/automation/agent-loop-issue-32: uncommitted changes" "$OUT"
+check_grep "sweep skipped /tmp/stub/automation/agent-loop-issue-33: 2 commits not on the remote" "$OUT"
+check_grep "sweep skipped /tmp/stub/automation/agent-loop-pr-34: its agent is still going" "$OUT"
+check_grep "sweep skipped /tmp/stub/automation/agent-loop-pr-35: its agent is still going" "$OUT"
+check_no_grep "path:/tmp/stub/automation/my-own-checkout" "$STUB_CALLS"
+check_grep "pass end dispatches=0 skips=0 sweeps=1" "$OUT"
+
+setup "a live worker whose createdAt is unparseable still spends a budget slot"
+write_config "nywleswoey/automation" "repo-aaa" 300 2
+export STUB_ORCA_PS=created-unknown STUB_ISSUES=workable
+run_once
+check_status 0 "$STATUS"
+check_grep "issue nywleswoey/automation#17 deferred: worker budget full (2/2)" "$OUT"
+check_no_grep "worktree create" "$STUB_CALLS"
+
 # --- pr phase: scope --------------------------------------------------------------
 
 # One pass over a world carrying every state the phase can derive at once, so

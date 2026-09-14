@@ -1199,16 +1199,37 @@ load_worktree_inventory() {
   ORCA_PS="$response"
 }
 
-# Every worktree Orca knows, one `<live|idle>\t<path>` line each. An agent that
-# is `working` or `waiting` is live; `waiting` counts because a worker parked
-# for my confirmation still holds its branch and owes me an answer — it is not
-# finished. `orca terminal list` is not used for this: it cannot tell a busy
-# terminal from an idle shell.
+# Every worktree Orca knows, one `<live|idle>\t<path>\t<createdAt>\t<worktreeId>`
+# line each. An agent that is `working` or `waiting` is live; `waiting` counts
+# because a worker parked for my confirmation still holds its branch and owes me
+# an answer — it is not finished. `orca terminal list` is not used for this: it
+# cannot tell a busy terminal from an idle shell.
+#
+# createdAt is the one durable origin the inventory carries (#130, #136): the
+# worktree's creation instant in epoch-ms, stamped by the same `orca worktree
+# create` that starts the agent, and never moved after. Never agent
+# `stateStartedAt`: it resets on every transition, `working` <-> `waiting`
+# included, so it resets inside the live predicate above. createdAt is absent
+# exactly on a main worktree, which ownership already excludes — but it is also
+# undocumented, so anything other than a positive integer prints `unknown`. That
+# is what lets a consumer tell "no origin" from an origin, and fail closed in its
+# own stated direction; it also keeps the column count fixed, since tab is IFS
+# whitespace to `read` and an empty field would slide the next one into its
+# place. worktreeId gets the same `unknown` for the same reason.
+#
+# worktreeId rather than a second read for the repository: it is
+# `<orcaRepoId>::<path>` (#130), and config maps `${id%%::*}` to the project's
+# `github`, so a consumer names the GitHub object with no new read. An `unknown`
+# matches no configured orcaRepoId, which is the closed direction.
 orca_worktrees() {
   jq -r '.result.worktrees[]?
     | select(.path != null)
     | [ (if any(.agents[]?.state; . == "working" or . == "waiting")
-         then "live" else "idle" end), .path ]
+         then "live" else "idle" end),
+        .path,
+        (.createdAt | if type == "number" and . > 0 and . == floor
+                      then tostring else "unknown" end),
+        (.worktreeId // "unknown") ]
     | @tsv' <<< "$ORCA_PS"
 }
 
@@ -1224,7 +1245,7 @@ resolve_path() {
 worktree_state() {
   local target="" state path
   target=$(resolve_path "$1")
-  while IFS=$'\t' read -r state path; do
+  while IFS=$'\t' read -r state path _; do
     if [[ "$(resolve_path "$path")" == "$target" ]]; then
       printf '%s' "$state"
       return 0
@@ -1245,7 +1266,7 @@ is_loop_worktree() {
 # in a worktree whose directory name matches.
 count_live_workers() {
   local state path count=0
-  while IFS=$'\t' read -r state path; do
+  while IFS=$'\t' read -r state path _; do
     [[ "$state" == "live" ]] || continue
     if [[ "${path##*/}" =~ $1 ]]; then
       count=$((count + 1))
@@ -2502,7 +2523,7 @@ issue_phase_project() {
 # left exactly where it is, with a line saying why.
 sweep_worktrees() {
   local state path dirty unpushed
-  while IFS=$'\t' read -r state path; do
+  while IFS=$'\t' read -r state path _; do
     # Ownership is asked first: a worktree of mine is out of scope before any
     # other question is put to it, and before git is run against it at all.
     is_loop_worktree "$path" || continue

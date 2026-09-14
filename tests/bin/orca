@@ -9,7 +9,9 @@
 # and down to every one after, whatever `orca open` does — a runtime that goes
 # away mid-run and stays away, which is how a case reaches the loop's one
 # in-loop `die` after start-up has already passed.
-# $STUB_ORCA_PS picks the worktree inventory (default: idle).
+# $STUB_ORCA_PS picks the worktree inventory (default: idle). Every world is cut
+# from a capture of Orca 1.4.200, not hand-cut: see
+# docs/orca-worktree-ps-capture.md for the capture and the substitution rule.
 # $STUB_ORCA_FAIL makes one call fail: create, rm, ps, terminal-create or
 # terminal-send.
 # $STUB_ORCA_PS_FAILS, a space-separated list of read numbers counted from 1,

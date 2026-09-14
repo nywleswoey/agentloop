@@ -115,7 +115,6 @@
         "workspaceStatus": "in-progress",
         "sortOrder": 1789377917040,
         "lastActivityAt": 1789377917040,
-        "createdAt": 1789377917040,
         "creatorProvenance": {
           "kind": "host"
         },
@@ -170,7 +169,7 @@
         "workspaceStatus": "in-progress",
         "sortOrder": 1789374317040,
         "lastActivityAt": 1789374317040,
-        "createdAt": 1789374317040,
+        "createdAt": "2026-09-14T10:25:17Z",
         "creatorProvenance": {
           "kind": "host"
         },
@@ -225,7 +224,7 @@
         "workspaceStatus": "in-progress",
         "sortOrder": 1789370717040,
         "lastActivityAt": 1789370717040,
-        "createdAt": 1789370717040,
+        "createdAt": null,
         "creatorProvenance": {
           "kind": "host"
         },
@@ -335,7 +334,7 @@
         "workspaceStatus": "in-progress",
         "sortOrder": 1789363517040,
         "lastActivityAt": 1789363517040,
-        "createdAt": 1789363517040,
+        "createdAt": 1789395917040.5,
         "creatorProvenance": {
           "kind": "host"
         },

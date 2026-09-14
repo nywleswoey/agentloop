@@ -1,11 +1,184 @@
 {
   "id": "stub-worktree-ps",
   "ok": true,
+  "_meta": {
+    "runtimeId": "b4889990-755d-4d79-a16f-51135cd66423"
+  },
   "result": {
     "worktrees": [
-      { "worktreeId": "repo-aaa::/tmp/stub/automation/agent-loop-issue-11", "path": "/tmp/stub/automation/agent-loop-issue-11", "agents": [ { "state": "working", "agentType": "claude" } ] },
-      { "worktreeId": "repo-aaa::/tmp/stub/automation/agent-loop-issue-12", "path": "/tmp/stub/automation/agent-loop-issue-12", "agents": [ { "state": "waiting", "agentType": "claude" } ] },
-      { "worktreeId": "repo-aaa::/tmp/stub/automation/agent-loop-pr-13", "path": "/tmp/stub/automation/agent-loop-pr-13", "agents": [ { "state": "working", "agentType": "claude" } ] }
-    ]
+      {
+        "workspaceKind": "git",
+        "worktreeId": "repo-aaa::/tmp/stub/automation/agent-loop-issue-11",
+        "repoId": "repo-aaa",
+        "hostId": "local",
+        "terminalPlatform": "darwin",
+        "repo": "automation",
+        "path": "/tmp/stub/automation/agent-loop-issue-11",
+        "branch": "refs/heads/nywleswoey/agent-loop-issue-11",
+        "isArchived": false,
+        "isMainWorktree": false,
+        "hasHostSidebarActivity": true,
+        "worktreeInstanceId": "00000000-0000-4000-8000-000000000000",
+        "parentWorktreeId": null,
+        "childWorktreeIds": [],
+        "displayName": "agent-loop-issue-11",
+        "workspaceStatus": "in-progress",
+        "sortOrder": 1789392317040,
+        "lastActivityAt": 1789392317040,
+        "createdAt": 1789392317040,
+        "creatorProvenance": {
+          "kind": "host"
+        },
+        "linkedIssue": null,
+        "linkedPR": null,
+        "linkedLinearIssue": null,
+        "linkedGitLabMR": null,
+        "linkedGitLabIssue": null,
+        "comment": "",
+        "isPinned": false,
+        "isActive": true,
+        "unread": false,
+        "liveTerminalCount": 1,
+        "hasAttachedPty": true,
+        "lastOutputAt": 1789395986132,
+        "preview": "",
+        "status": "working",
+        "agents": [
+          {
+            "paneKey": "00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000002",
+            "parentPaneKey": null,
+            "state": "working",
+            "agentType": "claude",
+            "prompt": "stub prompt",
+            "taskTitle": null,
+            "displayName": null,
+            "lastAssistantMessage": "stub message",
+            "toolName": "Bash",
+            "toolInput": "stub input",
+            "interrupted": false,
+            "stateStartedAt": 1789395919936,
+            "updatedAt": 1789395986066
+          }
+        ]
+      },
+      {
+        "workspaceKind": "git",
+        "worktreeId": "repo-aaa::/tmp/stub/automation/agent-loop-issue-12",
+        "repoId": "repo-aaa",
+        "hostId": "local",
+        "terminalPlatform": "darwin",
+        "repo": "automation",
+        "path": "/tmp/stub/automation/agent-loop-issue-12",
+        "branch": "refs/heads/nywleswoey/agent-loop-issue-12",
+        "isArchived": false,
+        "isMainWorktree": false,
+        "hasHostSidebarActivity": true,
+        "worktreeInstanceId": "00000000-0000-4000-8000-000000000000",
+        "parentWorktreeId": null,
+        "childWorktreeIds": [],
+        "displayName": "agent-loop-issue-12",
+        "workspaceStatus": "in-progress",
+        "sortOrder": 1789388717040,
+        "lastActivityAt": 1789388717040,
+        "createdAt": 1789388717040,
+        "creatorProvenance": {
+          "kind": "host"
+        },
+        "linkedIssue": null,
+        "linkedPR": null,
+        "linkedLinearIssue": null,
+        "linkedGitLabMR": null,
+        "linkedGitLabIssue": null,
+        "comment": "",
+        "isPinned": false,
+        "isActive": true,
+        "unread": false,
+        "liveTerminalCount": 1,
+        "hasAttachedPty": true,
+        "lastOutputAt": 1789395986132,
+        "preview": "",
+        "status": "working",
+        "agents": [
+          {
+            "paneKey": "00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000002",
+            "parentPaneKey": null,
+            "state": "waiting",
+            "agentType": "claude",
+            "prompt": "stub prompt",
+            "taskTitle": null,
+            "displayName": null,
+            "lastAssistantMessage": "stub message",
+            "toolName": "Bash",
+            "toolInput": "stub input",
+            "interrupted": false,
+            "stateStartedAt": 1789395919936,
+            "updatedAt": 1789395986066
+          }
+        ]
+      },
+      {
+        "workspaceKind": "git",
+        "worktreeId": "repo-aaa::/tmp/stub/automation/agent-loop-pr-13",
+        "repoId": "repo-aaa",
+        "hostId": "local",
+        "terminalPlatform": "darwin",
+        "repo": "automation",
+        "path": "/tmp/stub/automation/agent-loop-pr-13",
+        "branch": "refs/heads/nywleswoey/agent-loop-pr-13",
+        "isArchived": false,
+        "isMainWorktree": false,
+        "hasHostSidebarActivity": true,
+        "worktreeInstanceId": "00000000-0000-4000-8000-000000000000",
+        "parentWorktreeId": null,
+        "childWorktreeIds": [],
+        "displayName": "agent-loop-pr-13",
+        "workspaceStatus": "in-progress",
+        "sortOrder": 1789385117040,
+        "lastActivityAt": 1789385117040,
+        "createdAt": 1789385117040,
+        "creatorProvenance": {
+          "kind": "host"
+        },
+        "linkedIssue": null,
+        "linkedPR": null,
+        "linkedLinearIssue": null,
+        "linkedGitLabMR": null,
+        "linkedGitLabIssue": null,
+        "comment": "",
+        "isPinned": false,
+        "isActive": true,
+        "unread": false,
+        "liveTerminalCount": 1,
+        "hasAttachedPty": true,
+        "lastOutputAt": 1789395986132,
+        "preview": "",
+        "status": "working",
+        "agents": [
+          {
+            "paneKey": "00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000002",
+            "parentPaneKey": null,
+            "state": "working",
+            "agentType": "claude",
+            "prompt": "stub prompt",
+            "taskTitle": null,
+            "displayName": null,
+            "lastAssistantMessage": "stub message",
+            "toolName": "Bash",
+            "toolInput": "stub input",
+            "interrupted": false,
+            "stateStartedAt": 1789395919936,
+            "updatedAt": 1789395986066
+          }
+        ]
+      }
+    ],
+    "hostScope": {
+      "hostIds": [
+        "local"
+      ],
+      "omittedHostIds": []
+    },
+    "totalCount": 5,
+    "truncated": false
   }
 }
