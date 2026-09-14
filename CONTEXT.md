@@ -47,7 +47,11 @@ _Avoid_: delivered (when a merge is meant)
 ### Failures
 
 **Transient**:
-A failed read or write that says nothing durable about its object — a 5xx, a rate limit, a torn response, any git or Orca failure. Skipped, and asked again next pass.
+A failed read or write that says nothing durable about its object — a 5xx, a rate limit, a torn response, any git or Orca failure. Skipped, and asked again next pass. One Orca read is not: an unreadable worker inventory is part of readiness, not a transient.
+
+**Ready** (of the runtime):
+Orca is reachable **and** its worker inventory (`orca worktree ps`) reads. A runtime that is not ready is re-read with a one-second sleep between reads, for `RUNTIME_WAIT_SECONDS` sleeps, then the loop dies; only an unreachable one is started with `orca open`.
+_Avoid_: ready (unqualified, which is the `ready-for-agent` label)
 
 **Refused**:
 A failed read or write GitHub answered with a durable no, as `gh_error_class` classifies it. A refused read ends the loop; a refused write flags its object.
