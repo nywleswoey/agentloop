@@ -12,6 +12,9 @@
 # $STUB_ORCA_PS picks the worktree inventory (default: idle).
 # $STUB_ORCA_FAIL makes one call fail: create, rm, ps, terminal-create or
 # terminal-send.
+# $STUB_ORCA_PS_FAILS, a space-separated list of read numbers counted from 1,
+# fails exactly those `worktree ps` reads and answers every other — an
+# inventory that stops reading at a chosen read and recovers at a chosen one.
 #
 # `worktree create` copies its --prompt whole to
 # $STUB_STATE/prompt-<requested-name>.txt, so a test can compare a multi-line
@@ -61,7 +64,9 @@ case "$cmd" in
   worktree)
     case "${1:-}" in
       ps)
-        if [[ "${STUB_ORCA_FAIL:-}" == "ps" ]]; then
+        _ps_reads=$(( $(cat "$STUB_STATE/orca-ps-reads" 2>/dev/null || echo 0) + 1 ))
+        printf '%s\n' "$_ps_reads" > "$STUB_STATE/orca-ps-reads"
+        if [[ "${STUB_ORCA_FAIL:-}" == "ps" || " ${STUB_ORCA_PS_FAILS:-} " == *" $_ps_reads "* ]]; then
           echo "error: worktree ps failed" >&2
           exit 1
         fi

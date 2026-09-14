@@ -20,7 +20,7 @@ Between passes it sleeps for `pollIntervalSeconds`.
 ### Guard rails
 
 - **Worker budget** — never more than `maxWorkers` live workers. Checked before *every* issue dispatch, not once per pass, so a candidate arriving at a full budget waits for a later pass rather than being dropped. It governs **issue dispatch only**: the PR phase spends no worktree, no checkout and no agent, so a long-running issue does not stall the pull requests behind it.
-- **Fail closed** — if the worktree inventory can't be read, the budget is treated as full and the sweep is skipped. A budget that failed open would dispatch a fresh `maxWorkers` on top of the workers it couldn't see.
+- **Fail closed** — the worktree inventory is part of runtime readiness: *ready* means Orca is reachable **and** `orca worktree ps` reads. A pass never starts on an inventory that could not be read, so neither the budget nor the sweep ever guesses at workers it couldn't see. An unreadable inventory is re-read with a one-second sleep between reads, with no `orca open`, for `AGENT_LOOP_RUNTIME_WAIT_SECONDS` sleeps, and then the loop dies into a [death record](#when-the-loop-dies) naming it.
 - **PID lock** — one loop per machine.
 - **Startup reclaim** — an issue left claimed with no live worker (crash, failed dispatch) is handed back to `ready-for-agent` when the loop next starts, **unless it declares the `to-tickets` verb, which is never reclaimed** — a decomposition produces issues rather than a pull request, so neither of the two questions below can be asked of it, and handing one back means decomposing it a second time. Close-out is therefore the only path that clears a spec's claim. Liveness is not the whole question for the rest, though: a worker that **finished** leaves no process behind either, and reading that as "nobody has worked on it" is what once had two workers rebuild the same feature into two branches. So an issue whose branch already carries an **open** pull request stays claimed, and the issue phase asks the same question a second time — a ready label applied by hand never passes through the reclaim at all. **Merged** pull requests deliberately do not count: those are close-out's, and close-out runs first in both orderings. **Closed-unmerged** ones deliberately do not count either — abandoning a pull request should return its issue to the loop. Both callers fail closed: a read that will not answer skips the reclaim, or the issue phase, rather than risking a duplicate.
 - **Log rotation** — one generation, capped at 5 MiB. A loop left running for weeks must not fill the disk.
@@ -469,6 +469,8 @@ The fail-closed reads and writes decided in #124 — the queries each phase make
 
 The transient half is deliberately unbounded: a failed read carries no durable origin to measure a clock from, so the skip is the exit, and every pass-end line carries **`failures=`** — after `refusals=` — counting the family's failures that pass. `skips=` is unchanged. If the escalation's own comment or flag is refused, the loop dies: a permission lost everywhere sorts itself into the refused-read answer.
 
+An unreadable worker inventory is **not** in the family. It is the one failed read that already has a bounded clock to ride — runtime readiness — so it re-reads on that clock with no `orca open` and dies at `AGENT_LOOP_RUNTIME_WAIT_SECONDS` with `fatal: orca runtime did not become ready within Ns: worker inventory unreadable`, rather than silently skipping passes with no bound.
+
 ### Environment overrides
 
 For tests and troubleshooting:
@@ -477,7 +479,7 @@ For tests and troubleshooting:
 |---|---|---|
 | `AGENT_LOOP_CONFIG` | `agent-loop.config.json` beside the script | Config path. |
 | `AGENT_LOOP_LOG_MAX_BYTES` | `5242880` | Log size cap before rotation. |
-| `AGENT_LOOP_RUNTIME_WAIT_SECONDS` | `300` | How long to wait for the Orca runtime. One poll interval: a runtime back within it never costs a restart, and one that is not ends the loop into a [death record](#when-the-loop-dies). |
+| `AGENT_LOOP_RUNTIME_WAIT_SECONDS` | `300` | How long to wait for the Orca runtime to be ready — reachable, and its worktree inventory reading. One poll interval: a runtime back within it never costs a restart, and one that is not ends the loop into a [death record](#when-the-loop-dies). |
 
 ---
 

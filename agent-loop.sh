@@ -1110,53 +1110,93 @@ runtime_reachable() {
   [[ "$(orca status --json 2>/dev/null | jq -r '.result.runtime.reachable // false')" == "true" ]]
 }
 
-# Ensure the Orca runtime is reachable, starting it if needed. Re-checked
-# before every pass: an Orca restart mid-run must not turn every later pass
-# into a stream of failed dispatches.
+# Ready means what this loop actually depends on, which is more than `orca
+# status` says: the runtime is reachable **and** `orca worktree ps` reads. This
+# is the file's only inventory read, so a ready runtime always leaves a snapshot
+# behind it. A failure leaves `RUNTIME_UNREADY_REASON` naming the half that
+# failed: `unreachable` or `inventory`.
+RUNTIME_UNREADY_REASON=''
+runtime_ready() {
+  if ! runtime_reachable; then
+    RUNTIME_UNREADY_REASON=unreachable
+    return 1
+  fi
+  if ! load_worktree_inventory; then
+    RUNTIME_UNREADY_REASON=inventory
+    return 1
+  fi
+}
+
+# Ensure the Orca runtime is ready, starting it if it is not reachable.
+# Re-checked before every pass: an Orca restart mid-run must not turn every later
+# pass into a stream of failed dispatches.
+#
+# **`worker inventory unreadable` is not a member of the failure family**
+# (#124), and the reason is a fact rather than a preference: it is the one wait
+# in the family where a bound with an origin already exists. A family member's
+# transient skip is unbounded because a failed read carries no origin, and
+# manufacturing one would cost a write. This wait needs neither — the readiness
+# loop below is its origin — and it is the widest-blast wait in the file: one
+# unreadable `orca worktree ps` used to fail the budget closed and skip the
+# sweep, so a pass dispatched nothing and swept nothing, logged exactly like the
+# narrowest skip and repeated with no bound. `runtime_reachable` asked `orca
+# status` while the loop depends on `worktree ps`, and the gap between those two
+# reads was the whole of the case, so it is closed in the predicate rather than
+# papered over with a clock of its own.
+#
+# - **During:** re-read on the readiness clock, with **no `orca open`**. Status
+#   already says the runtime is up, so starting it answers nothing, and an
+#   action taken to break the loop's own wait is argued rather than inherited
+#   (#121).
+# - **Bound:** `RUNTIME_WAIT_SECONDS`, with the wait loop as its origin. Nothing
+#   is remembered between passes, and nothing needs to be.
+# - **Expiry:** `die`, which files a death record once the loop is passing
+#   (#129). The line names the inventory, so its reader goes looking for why
+#   Orca answers `status` but not `worktree ps`; the not-reachable line is kept
+#   verbatim.
+#
+# Rejected on #124: `die` on the first failed read, which kills the daemon over
+# one hiccup that costs nothing to re-read; and a family row with
+# `class=transient`, which leaves the pass silently doing nothing.
 ensure_runtime() {
-  runtime_reachable && return 0
-  log "orca runtime not reachable, starting it"
-  orca open --json >/dev/null 2>&1 || log "orca open failed, waiting in case it comes up anyway"
+  runtime_ready && return 0
+  if [[ "$RUNTIME_UNREADY_REASON" == unreachable ]]; then
+    log "orca runtime not reachable, starting it"
+    orca open --json >/dev/null 2>&1 || log "orca open failed, waiting in case it comes up anyway"
+  else
+    log "worker inventory unreadable, waiting on runtime readiness"
+  fi
   local waited=0
   while (( waited < RUNTIME_WAIT_SECONDS )); do
-    if runtime_reachable; then
+    if runtime_ready; then
       log "orca runtime ready"
       return 0
     fi
     sleep 1
     waited=$((waited + 1))
   done
-  die "orca runtime did not become ready within ${RUNTIME_WAIT_SECONDS}s"
+  local why=''
+  if [[ "$RUNTIME_UNREADY_REASON" == inventory ]]; then
+    why=': worker inventory unreadable'
+  fi
+  die "orca runtime did not become ready within ${RUNTIME_WAIT_SECONDS}s$why"
 }
 
 # --- worktree inventory ------------------------------------------------------
 
-# One `orca worktree ps` read, cached in ORCA_PS: the worker budget, the startup
-# reclaim and the branch check all ask their question of the same snapshot. A
-# failed read leaves the last good snapshot alone and returns non-zero, because
-# "I could not look" and "nothing is running" must never read the same.
-#
-# `ORCA_PS_LOADED` says whether `$ORCA_PS` holds a snapshot; `ORCA_PS_ATTEMPTED`
-# says whether anything has tried to take one since the last try.
-#
-# Close-out's second entry path asks a liveness question, and close-out runs
-# once at startup before any pass has loaded a snapshot — so it loads its own
-# when nobody has, and reuses the pass's when there is one. Reading a stale or
-# unset inventory would answer *nobody is on it* about a worker that is, which
-# is the one answer that path must never get wrong. The attempt flag is what
-# keeps a runtime that will not answer from being asked once per claimed spec:
-# the first failure is the answer for all of them.
+# One `orca worktree ps` read, cached in ORCA_PS, and taken by readiness and
+# nothing else (#124): the worker budget, the sweep, close-out, the startup
+# reclaim and the branch check all ask their question of the snapshot readiness
+# took, so none of them has an unreadable branch of its own. A failed read leaves
+# the last good snapshot alone and returns non-zero, because "I could not look"
+# and "nothing is running" must never read the same — and readiness dies rather
+# than hand that stale snapshot to anyone.
 ORCA_PS=''
-ORCA_PS_LOADED=false
-ORCA_PS_ATTEMPTED=false
 load_worktree_inventory() {
   local response
-  ORCA_PS_LOADED=false
-  ORCA_PS_ATTEMPTED=true
   response=$(orca worktree ps --json 2>/dev/null) || return 1
-  jq -e '.result.worktrees' <<< "$response" >/dev/null 2>&1 || return 1
+  jq -e '.result.worktrees | arrays' <<< "$response" >/dev/null 2>&1 || return 1
   ORCA_PS="$response"
-  ORCA_PS_LOADED=true
 }
 
 # Every worktree Orca knows, one `<live|idle>\t<path>` line each. An agent that
@@ -1484,11 +1524,10 @@ issue_has_live_worker() {
 # claim.**
 reclaim_stale_claims() {
   # A reclaim on an inventory we could not read would hand back issues that do
-  # have workers, so an unreadable inventory skips the reclaim entirely.
-  if ! load_worktree_inventory; then
-    log "worker inventory unreadable, skipping startup reclaim"
-    return 0
-  fi
+  # have workers, so it asks the snapshot start-up readiness took, which dies
+  # rather than hand over one it could not read (#124). Nothing dispatches
+  # before the reclaim, so the only drift that snapshot can carry is a worker
+  # that has finished since — read as live, which keeps its claim.
 
   local i github numbers number verb prnumber
   for (( i = 0; i < PROJECT_COUNT; i++ )); do
@@ -5515,19 +5554,10 @@ closeout_claims() {
 # children* beneath a panel listing 8 children is a conclusion on its own.
 closeout_claim() {
   local github="$1" number="$2" issue total wore
-  # Close-out runs at startup before any pass has taken a snapshot, so it takes
-  # its own then — once, because a failed attempt is the answer for every spec
-  # after it. **Fails closed**: an inventory that will not answer leaves the
-  # spec claimed, because reading it as *nobody is on it* would unclaim a
-  # decomposition in flight. The line is per issue, because it is per issue that
-  # something was left undone.
-  if ! $ORCA_PS_LOADED; then
-    if $ORCA_PS_ATTEMPTED || ! load_worktree_inventory; then
-      log "worker inventory unreadable, leaving $github#$number claimed"
-      SKIPS=$((SKIPS + 1))
-      return 0
-    fi
-  fi
+  # The liveness question below is asked of the snapshot readiness took —
+  # start-up's, or the pass's — so it is never asked of an inventory that could
+  # not be read, which would answer *nobody is on it* and unclaim a
+  # decomposition in flight (#124).
 
   # `/to-tickets` publishes its issues one at a time in dependency order, so
   # `total > 0` goes true on the **first** one. Without this guard a pass
@@ -5752,8 +5782,9 @@ current_drift() {
 
 # --- pass --------------------------------------------------------------------
 
-# Run one complete pass: load the worktree inventory, run closeout, issue, and
-# PR phases, then sweep finished worktrees. Logs pass start, end, and summary.
+# Run one complete pass: run closeout, issue, and PR phases on the worktree
+# inventory readiness took, then sweep finished worktrees. Logs pass start, end,
+# and summary.
 run_pass() {
   log "pass start"
   DISPATCHES=0
@@ -5771,28 +5802,18 @@ run_pass() {
   # head still matches as a substring.
   FAILURES=0
   WRITE_ESCALATED_OBJECTS=""
-  # A budget that failed open would dispatch a fresh maxWorkers on top of the
-  # workers it failed to see.
-  local inventory=true
-  if load_worktree_inventory; then
-    ACTIVE_WORKERS=$(count_active_workers)
-  else
-    inventory=false
-    log "worker inventory unreadable, treating the budget as full for this pass"
-    ACTIVE_WORKERS="$MAX_WORKERS"
-  fi
+  # Counted off the snapshot the readiness check before this pass took, so the
+  # budget has no unreadable branch to fail open or closed through: the pass
+  # never starts on an inventory readiness could not read (#124).
+  ACTIVE_WORKERS=$(count_active_workers)
   # Close-out first: an issue whose pull request has merged must be off the
   # board before the issue phase looks at the backlog again.
   closeout_phase
   issue_phase
   pr_phase
-  if $inventory; then
-    # The snapshot is the one the pass opened with, so a worker that finished
-    # mid-pass is swept by the next pass rather than this one.
-    sweep_worktrees
-  else
-    log "worker inventory unreadable, skipping the sweep"
-  fi
+  # The snapshot is the one the pass opened with, so a worker that finished
+  # mid-pass is swept by the next pass rather than this one.
+  sweep_worktrees
   # `build=` and `drift=` are appended rather than led, and both are emitted
   # every pass even when they agree. A field that appeared only under drift
   # would leave a bare pass line ambiguous between *current* and *a build too
@@ -5826,9 +5847,9 @@ load_config
 # by hand could rotate that log out from under the daemon.
 if [[ -n "$BRANCH_REPORT" ]]; then
   LOG_PATH=""
+  # Readiness took the inventory the report reads.
   ensure_runtime
   load_repos
-  load_worktree_inventory || die "could not read the Orca worktree inventory"
   branch_report "$BRANCH_REPORT"
   exit 0
 fi

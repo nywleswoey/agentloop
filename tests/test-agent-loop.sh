@@ -44,7 +44,7 @@ setup() {
   export STUB_ORCA_STATUS=ready STUB_ISSUES=none STUB_ORCA_PS=idle
   export STUB_CLAIMED=none STUB_WORKTREES=none STUB_DIRTY="" STUB_UNPUSHED=""
   export STUB_WORLD=none STUB_MERGED=none
-  unset AGENT_LOOP_LOG_MAX_BYTES AGENT_LOOP_RUNTIME_WAIT_SECONDS STUB_ORCA_READY_READS STUB_GH_FAIL STUB_GH_ERROR STUB_GH_PARTIAL STUB_GH_STDERR STUB_ORCA_FAIL STUB_GIT_FAIL STUB_TAIL_FAIL
+  unset AGENT_LOOP_LOG_MAX_BYTES AGENT_LOOP_RUNTIME_WAIT_SECONDS STUB_ORCA_READY_READS STUB_ORCA_PS_FAILS STUB_GH_FAIL STUB_GH_ERROR STUB_GH_PARTIAL STUB_GH_STDERR STUB_ORCA_FAIL STUB_GIT_FAIL STUB_TAIL_FAIL
   # Multi-pass cases number their passes from here.
   PASS_N=0
   # Unfrozen unless a case says otherwise, so the stub `date` is the real one
@@ -318,6 +318,58 @@ check_grep "orca open --json" "$STUB_CALLS"
 # the daemon starts Orca before it validates orcaRepoIds against it.
 check_grep "validated nywleswoey/automation -> orca repo repo-aaa" "$OUT"
 check_grep "pass start" "$OUT"
+
+# --- an unreadable worker inventory waits on readiness (#124) -----------------
+
+# *Ready* is what the loop depends on, not only what `orca status` says: a
+# runtime that answers status but not `worktree ps` is not ready. That wait
+# re-reads on the runtime clock with no `orca open` — status already says the
+# runtime is up — and dies at its bound. Reads are numbered from start-up's, so
+# under --once read 1 is start-up's readiness and read 2 the pass's.
+
+setup "an unreadable inventory re-reads on the readiness clock and dies at its bound"
+export AGENT_LOOP_RUNTIME_WAIT_SECONDS=1 STUB_ORCA_FAIL=ps
+run_once
+check_status 1 "$STATUS"
+check_grep "worker inventory unreadable, waiting on runtime readiness" "$OUT"
+check_grep "fatal: orca runtime did not become ready within 1s: worker inventory unreadable" "$OUT"
+check "the inventory is read once, then once per second of the bound" \
+  test "$(grep -cF 'orca worktree ps' "$STUB_CALLS")" -eq 2
+check_no_grep "orca open" "$STUB_CALLS"
+check "no pass ran" test "$(grep -cF 'pass start' "$OUT")" -eq 0
+
+# A truthy non-array is just as unreadable to the consumers that enumerate it.
+setup "a truthy non-array inventory waits on readiness and dies at its bound"
+export AGENT_LOOP_RUNTIME_WAIT_SECONDS=1 STUB_ORCA_PS=malformed
+run_once
+check_status 1 "$STATUS"
+check_grep "worker inventory unreadable, waiting on runtime readiness" "$OUT"
+check_grep "fatal: orca runtime did not become ready within 1s: worker inventory unreadable" "$OUT"
+check "the malformed inventory is re-read on the readiness clock" \
+  test "$(grep -cF 'orca worktree ps' "$STUB_CALLS")" -eq 2
+check_no_grep "orca open" "$STUB_CALLS"
+check "no pass ran on malformed inventory" test "$(grep -cF 'pass start' "$OUT")" -eq 0
+
+# Twins either side of the bound's edge pin the clock to the second rather than
+# to roughly its length: a 2s bound re-reads at 0s and at 1s, and never at 2s.
+setup "an inventory that reads again in the bound's last second carries on"
+export AGENT_LOOP_RUNTIME_WAIT_SECONDS=2 STUB_ORCA_PS_FAILS="1 2"
+run_once
+check_status 0 "$STATUS"
+check_grep "worker inventory unreadable, waiting on runtime readiness" "$OUT"
+check_grep "orca runtime ready" "$OUT"
+check_no_grep "fatal:" "$OUT"
+check_no_grep "orca open" "$STUB_CALLS"
+check_grep "pass end" "$OUT"
+
+setup "an inventory that would read again only at the bound dies"
+export AGENT_LOOP_RUNTIME_WAIT_SECONDS=2 STUB_ORCA_PS_FAILS="1 2 3"
+run_once
+check_status 1 "$STATUS"
+check_grep "fatal: orca runtime did not become ready within 2s: worker inventory unreadable" "$OUT"
+check "the bound re-reads nothing at its own edge" \
+  test "$(grep -cF 'orca worktree ps' "$STUB_CALLS")" -eq 3
+check_no_grep "orca open" "$STUB_CALLS"
 
 # --- log rotation ------------------------------------------------------------
 
@@ -1400,13 +1452,28 @@ check_grep "issue nywleswoey/automation#17 skipped: could not read its blockers 
 check_no_grep "issue edit" "$STUB_CALLS"
 check_no_grep "worktree create" "$STUB_CALLS"
 
-setup "an unreadable worker inventory fails the budget closed"
-export STUB_ISSUES=workable STUB_ORCA_FAIL=ps
+# The budget has no unreadable branch left to fail closed through: a pass never
+# starts on an inventory readiness could not read (#124).
+setup "an inventory that stops reading before a pass dies at the readiness bound, dispatching nothing"
+export STUB_ISSUES=workable AGENT_LOOP_RUNTIME_WAIT_SECONDS=1 STUB_ORCA_PS_FAILS="2 3"
+run_once
+check_status 1 "$STATUS"
+check_grep "fatal: orca runtime did not become ready within 1s: worker inventory unreadable" "$OUT"
+check "no pass ran" test "$(grep -cF 'pass start' "$OUT")" -eq 0
+check_no_grep "treating the budget as full" "$OUT"
+check_no_grep "issue edit" "$STUB_CALLS"
+check_no_grep "worktree create" "$STUB_CALLS"
+check_no_grep "orca open" "$STUB_CALLS"
+
+setup "an inventory that reads again inside the bound runs the pass on readiness's snapshot"
+export STUB_ISSUES=workable AGENT_LOOP_RUNTIME_WAIT_SECONDS=1 STUB_ORCA_PS_FAILS="2"
 run_once
 check_status 0 "$STATUS"
-check_grep "worker inventory unreadable, treating the budget as full for this pass" "$OUT"
-check_grep "issue nywleswoey/automation#17 deferred: worker budget full (3/3)" "$OUT"
-check_no_grep "worktree create" "$STUB_CALLS"
+check_grep "orca runtime ready" "$OUT"
+check_grep "worktree create" "$STUB_CALLS"
+check_grep "pass end dispatches=1" "$OUT"
+check "the pass reads no inventory of its own" \
+  test "$(grep -cF 'orca worktree ps' "$STUB_CALLS")" -eq 3
 
 setup "a failed dispatch is logged and the pass continues"
 export STUB_ISSUES=workable STUB_ORCA_FAIL=create
@@ -1519,11 +1586,12 @@ check_status 0 "$STATUS"
 check_no_grep "--add-label ready-for-agent" "$STUB_CALLS"
 check_no_grep "reclaimed" "$OUT"
 
-setup "an unreadable inventory skips the reclaim rather than reclaiming blindly"
-export STUB_CLAIMED=mixed STUB_ORCA_FAIL=ps
+setup "an unreadable inventory at start-up dies before the reclaim hands anything back"
+export STUB_CLAIMED=mixed STUB_ORCA_FAIL=ps AGENT_LOOP_RUNTIME_WAIT_SECONDS=1
 run_once
-check_status 0 "$STATUS"
-check_grep "worker inventory unreadable, skipping startup reclaim" "$OUT"
+check_status 1 "$STATUS"
+check_grep "fatal: orca runtime did not become ready within 1s: worker inventory unreadable" "$OUT"
+check_no_grep "skipping startup reclaim" "$OUT"
 check_no_grep "--add-label ready-for-agent" "$STUB_CALLS"
 
 setup "a failed claimed-issue query is logged and startup continues"
@@ -1734,11 +1802,13 @@ check_status 0 "$STATUS"
 check_grep "sweep failed for /tmp/stub/automation/agent-loop-issue-31, leaving it in place class=transient" "$OUT"
 check_grep "pass end dispatches=0 skips=0 sweeps=0 refusals=0 failures=1" "$OUT"
 
-setup "an unreadable inventory skips the sweep rather than sweeping blindly"
-export STUB_ORCA_FAIL=ps
+setup "an inventory that stops reading before a pass dies rather than sweeping blindly"
+export STUB_ORCA_PS=sweep STUB_DIRTY="$SWEEP_DIRTY" STUB_UNPUSHED="$SWEEP_UNPUSHED"
+export AGENT_LOOP_RUNTIME_WAIT_SECONDS=1 STUB_ORCA_PS_FAILS="2 3"
 run_once
-check_status 0 "$STATUS"
-check_grep "worker inventory unreadable, skipping the sweep" "$OUT"
+check_status 1 "$STATUS"
+check_grep "fatal: orca runtime did not become ready within 1s: worker inventory unreadable" "$OUT"
+check_no_grep "skipping the sweep" "$OUT"
 check_no_grep "worktree rm" "$STUB_CALLS"
 
 # --- pr phase: scope --------------------------------------------------------------
@@ -4701,14 +4771,16 @@ check_status 0 "$STATUS"
 check_grep "claimed-issue query failed: nywleswoey/automation class=transient" "$OUT"
 check_grep "pass end" "$OUT"
 
-setup "an unreadable inventory leaves a claimed spec alone rather than unclaiming it blindly"
+setup "an unreadable inventory at start-up dies before close-out touches a claimed spec"
 # Reading an unloadable inventory as *nobody is on it* would unclaim a
-# decomposition in flight, so the second entry path fails closed the way every
-# other liveness question does.
-export STUB_CLAIMED=specs STUB_ORCA_FAIL=ps
+# decomposition in flight. Close-out asks its liveness question of readiness's
+# snapshot, so there is no unreadable inventory left for it to be asked of
+# (#124).
+export STUB_CLAIMED=specs STUB_ORCA_FAIL=ps AGENT_LOOP_RUNTIME_WAIT_SECONDS=1
 run_once
-check_status 0 "$STATUS"
-check_grep "worker inventory unreadable, leaving nywleswoey/automation#92 claimed" "$OUT"
+check_status 1 "$STATUS"
+check_grep "fatal: orca runtime did not become ready within 1s: worker inventory unreadable" "$OUT"
+check_no_grep "leaving nywleswoey/automation#92 claimed" "$OUT"
 check_no_grep "--add-label agent-decomposed" "$STUB_CALLS"
 
 # --- which build is running ---------------------------------------------------

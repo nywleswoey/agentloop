@@ -1,0 +1,9 @@
+{
+  "id": "stub-worktree-ps",
+  "ok": true,
+  "result": {
+    "worktrees": {
+      "unexpected": "object"
+    }
+  }
+}
