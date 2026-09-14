@@ -46,6 +46,11 @@
 #                            over the top — reported closed once a close has
 #                            landed on it, and wearing the labels its edits left
 #                            it with, so a second pass sees what the first did
+#   api /repos/.../issues/<number>/comments
+#                            that number's comments: every free-text comment
+#                            the loop has posted there this case, authored by
+#                            the token's identity, and `[]` before the first —
+#                            which is what a marker-gated record reads back
 #   api /repos/.../issues/<number>/dependencies/blocked_by
 #                            the issue's blockers, from blocked-<number>.json
 #                            when that fixture exists and `[]` otherwise
@@ -65,7 +70,8 @@
 #   pr comment <number> --body-file <path>
 #                            a pull-request comment carrying free text; the file
 #                            is copied whole to $STUB_STATE/pr-body-<number>.txt
-#                            so a test can compare it byte for byte
+#                            so a test can compare it byte for byte, and kept
+#                            for that number's comment read
 #   pr edit <number> --add-label / --remove-label <name>
 #                            a label add or a label removal, recorded by its
 #                            argv. Both flags are accepted, together as well as
@@ -74,7 +80,8 @@
 #                            an issue comment carrying free text — the refusal's
 #                            record; the file is copied whole to
 #                            $STUB_STATE/issue-body-<number>.txt so a test can
-#                            compare it byte for byte
+#                            compare it byte for byte, and kept for that
+#                            number's comment read
 #   issue edit <number> --add-label / --remove-label
 #                            a label swap, recorded by its argv and as an
 #                            ordered delta in $STUB_STATE/labels-<number>, which
@@ -113,8 +120,11 @@
 #
 # $STUB_GH_FAIL names a command that must fail: "issues", "claim", "prs",
 # "pr-state", "merged", "issue", "body", "close", "blockers", "labels",
-# "pr-comment", "pr-edit", "comment-edit", "issue-comment", "issue-create" or
-# "merge".
+# "pr-comment", "pr-command", "pr-edit", "comment-edit", "issue-comment",
+# "issue-create" or "merge". "pr-command" fails only a pull-request
+# comment carrying a literal body — the seam's CodeRabbit commands — so a
+# refused nudge or trigger can be told apart from the free-text record that
+# flags it; "pr-comment" fails both.
 # $STUB_GH_ERROR names which rendering it fails with, from
 # fixtures/gh-error-<name>.txt. $STUB_GH_STDERR makes that
 # failure gh-axi's own rather than GitHub's — reported on stderr, with stdout
@@ -177,6 +187,18 @@ emit() {
 }
 
 emit_file() { emit "$(cat "$1")"; }
+
+# Every free-text comment the loop posts on a number, one file each, in order.
+# GitHub numbers issues and pull requests from one sequence, so one directory
+# per number serves both. Kept so a later read of that number's comments answers
+# with what the loop has actually said there, rather than with a fixture that
+# cannot know.
+record_comment() {
+  local dir="$STUB_STATE/comments-$1" count
+  mkdir -p "$dir"
+  count=$(find "$dir" -type f | wc -l | tr -d ' ')
+  cp "$2" "$dir/$count.txt"
+}
 
 # A label-query answer, with every label edit the loop has since made replayed
 # over it — the same replay the single-issue read does, for the same reason. A
@@ -260,6 +282,7 @@ if [[ "${1:-}" == "pr" ]]; then
         echo "stub gh-axi: pr comment needs --body or --body-file" >&2
         exit 1
       fi
+      [[ -z "$body" ]] || fail_if pr-command 404
       fail_if pr-comment 404
       if [[ -n "$file" ]]; then
         # Copied whole so a test can compare it byte for byte rather than
@@ -267,6 +290,7 @@ if [[ "${1:-}" == "pr" ]]; then
         # argv line cannot carry faithfully.
         [[ -f "$file" ]] || { echo "stub gh-axi: no such --body-file: $file" >&2; exit 1; }
         cp "$file" "$STUB_STATE/pr-body-$number.txt"
+        record_comment "$number" "$file"
       fi
       printf 'comment:\n  pr: %s\n  created: true\n' "$number"
       exit 0
@@ -313,6 +337,7 @@ if [[ "${1:-}" == "issue" ]]; then
         # the argv line cannot carry faithfully.
         [[ -f "$file" ]] || { echo "stub gh-axi: no such --body-file: $file" >&2; exit 1; }
         cp "$file" "$STUB_STATE/issue-body-$number.txt"
+        record_comment "$number" "$file"
       fi
       printf 'comment:\n  issue: %s\n  created: true\n' "$number"
       exit 0
@@ -525,6 +550,23 @@ if [[ "$path" == /repos/*/*/pulls/*/merge ]]; then
   # and an unread file here would be the first thing to trip the transient
   # case's assertion that a failed merge leaves the state directory empty.
   emit '{"sha":"11ee66e511ee66e511ee66e511ee66e511ee66e5","merged":true,"message":"Pull Request successfully merged"}'
+  exit 0
+fi
+
+# One number's comments, the read a marker-gated record is gated on. Above the
+# single-issue arm below for the same reason the comment edit is: a bash glob
+# matches `/` like any other character, and that arm would answer this with an
+# issue fixture named `comments`.
+if [[ "$path" == /repos/*/*/issues/*/comments ]]; then
+  number="${path%/comments}"
+  number="${number##*/}"
+  dir="$STUB_STATE/comments-$number"
+  if [[ -d "$dir" && -n "$(ls "$dir")" ]]; then
+    # In posting order: the files are numbered, and a glob sorts `10` before `2`.
+    emit "$(ls "$dir" | sort -n | while read -r f; do jq -Rs '{user: {login: "nywleswoey"}, body: .}' "$dir/$f"; done | jq -sc '.')"
+  else
+    emit '[]'
+  fi
   exit 0
 fi
 

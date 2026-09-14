@@ -458,6 +458,17 @@ Nothing supervises the loop, so a death is only noticed if something says so. A 
 
 The lock is released before the write, so a restart never meets `already running` behind a hung write. The write is a single attempt built from memory and the local log alone — no GitHub, Orca or git read — and if it fails, `death record failed: …` in the log is the only record. Ctrl-C, SIGTERM, SIGHUP, `--once` and every start-up failure write nothing: someone is at the keyboard for those. Close the issue once the loop is back.
 
+### When a read or write fails
+
+The fail-closed reads and writes decided in #124 — the queries each phase makes, and the claim, release, refusal swap, checklist tick, close, unclaim, decomposition swap, retraction, nudge, trigger, dispatch and sweep — go through one of two entry points in `agent-loop.sh`, `read_failed` and `write_failed`, so `grep` over those two names is the family's whole list. The handover's own delivery writes (its comment and its label chase) and the refusal's record stay outside it, reported on their own lines as before. What a failure *means* is decided in one place, `gh_error_class` in `gh.sh`, and its verdict is carried to the line:
+
+| Class | Read | Write |
+|---|---|---|
+| `transient` — a 5xx, a rate limit, a torn response, and every git or Orca failure, which carry no text to classify | logged with `class=transient`, skipped, re-derived next pass | logged with `class=transient`, skipped, written again next pass |
+| `refused` — any other HTTP status, or a suffix-less `FORBIDDEN`/`VALIDATION_ERROR` | **the loop dies**, and the fatal line names the project: a token scope, a config entry or a renamed repository is fixed in one edit, not served on two projects of three | the issue or pull request it targeted gets **`agent-escalated` and one comment** saying what GitHub said, and the flag comes off on its own the pass the write lands |
+
+The transient half is deliberately unbounded: a failed read carries no durable origin to measure a clock from, so the skip is the exit, and every pass-end line carries **`failures=`** — after `refusals=` — counting the family's failures that pass. `skips=` is unchanged. If the escalation's own comment or flag is refused, the loop dies: a permission lost everywhere sorts itself into the refused-read answer.
+
 ### Environment overrides
 
 For tests and troubleshooting:

@@ -109,7 +109,9 @@ gh_json() {
 
   # Multiple pages: combine into a single JSON array.
   [[ "$page_count" -gt 0 ]] || return 1
-  printf '%s' "$decoded_pages" | jq -s 'add'
+  # A here-string rather than a pipe, on the project's wrapper rule: nothing is
+  # piped into `jq`, so no failure can be consumed by the last stage.
+  jq -s 'add' <<< "$decoded_pages"
 }
 
 # One GraphQL document, with any variables it declares as trailing `--field`

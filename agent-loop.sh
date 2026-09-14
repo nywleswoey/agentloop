@@ -347,6 +347,7 @@ OWN_LABELS_JQ='
 # that close-out reports one line per issue rather than a total.
 SKIPS=0
 REFUSALS=0
+FAILURES=0
 
 # Print usage information to stdout showing command syntax, options, environment
 # variables, and required tools. Called when --help is passed or on argument errors.
@@ -431,6 +432,288 @@ die() {
   FATAL_MESSAGE="$*"
   log "fatal: $*"
   exit 1
+}
+
+# --- the failure family --------------------------------------------------------
+
+# A read that did not answer or a write that did not land, as decided in #124.
+# **Membership is a call to `read_failed` or `write_failed`**, so `grep` over
+# those two names is the family's whole list, and nobody joins it by typing
+# `log ...; SKIPS=$((SKIPS + 1))` the way all twenty-three sites used to.
+#
+# **What a failure means is not decided here.** Each entry point takes the
+# class `gh_error_class` printed, because gh.sh is the one place that reads it
+# and it lived twice before and drifted. What changed is that the verdict now
+# reaches the call sites at all: every wrapper between the seam and the family
+# used to `|| return 1` or pipe into `jq`, and a call site saw a bare exit code.
+# So a wrapper captures its response before `jq` and passes the failure text
+# out — on stdout when it is called in a substitution, in `$FAILURE_TEXT` when
+# it is called bare — the same split gh.sh's own header draws.
+#
+# **git and Orca join without a second code path.** Neither has a classifier,
+# and their call sites classify empty text, which gh.sh already calls
+# transient for the reason that applies here too: a failure that says nothing
+# about the object says only *ask again*.
+#
+# **Two names rather than one with a kind argument**, because the two halves
+# expire differently — a refused read dies, a refused write flags its object —
+# and a kind argument would make the wrong expiry reachable by typo, silently.
+#
+# The skip accounting stays at each call site. `skips=` is unchanged by this
+# family; `failures=` is its own count, and only these two move it.
+FAILURE_TEXT=""
+
+# read_failed <class> <project> <line>
+#
+# **Transient: the skip is the exit, and the half is deliberately unbounded.**
+# A bound is a clock and a clock needs an origin, and a failed read carries
+# none — that is what makes it a failed read. Manufacturing one would take a
+# marker write for a wait that never fired in 513 passes, and that write would
+# itself be a member of this family. So the line says which kind it was, the
+# pass counts it, and the next pass re-derives from scratch.
+#
+# **Refused: `die`, with the project on the line.** A refused read is not a
+# wait but an answer — a token scope, a config entry, a repository somebody
+# renamed — and asking again next pass is re-asking a question already
+# answered. The reader's action is on none of the loop's GitHub objects, so a
+# comment there would be a handover with nothing for its reader to do. The
+# stated cost: one repository's 404 stops every other project. Taken
+# deliberately, over a loop that quietly serves two of three projects forever.
+#
+# Anything but `refused` is transient, which is the classifier's own default
+# pointing the same way.
+read_failed() {
+  local class="$1" project="$2" line="$3"
+  if [[ "$class" == "refused" ]]; then
+    die "$line class=refused project=$project"
+  fi
+  log "$line class=transient"
+  FAILURES=$((FAILURES + 1))
+}
+
+# write_failed <class> <issue|pr|-> <github> <number> <write> <line>
+#
+# The object is the issue or pull request the write targeted, named by kind,
+# repository and number, and <write> is a short name for the write itself.
+# `-` is a write with no GitHub object, which only Orca makes and which can
+# therefore only ever be transient.
+#
+# An empty <line> is a write whose caller reports it on a line of its own — the
+# pull-request chain, whose one state line per pull request is logged at the
+# bottom of the pass and carries `class=` in its tail.
+#
+# **Transient: exactly as for a read.** One failed write costs one poll
+# interval, the next pass re-derives and writes again, and the line says so.
+#
+# **Refused: `agent-escalated` and one record, on the object the write
+# targeted.** This is the one case in the family where the reader's action is
+# on a GitHub object — restore a deleted label, reopen or unlock the issue, fix
+# the branch protection — so, unlike a refused read, the record belongs there.
+# The alternatives were rejected on #124: `die` throws every other project
+# away over one object's fault, and leaving the write in the transient row
+# makes *leaving it claimed* permanent, because a refused write never lands.
+#
+# **A live flag, not a latch.** The predicate behind it is the write attempt
+# itself, which the loop makes every pass it reaches the object anyway, so the
+# flag comes off on the pass the write lands — see `withdraw_write_flag` — and
+# nothing is remembered in between.
+#
+# **One record however many passes refuse it**, gated by a marker in the
+# object's own comments, the shape the pull-request handover already uses.
+#
+# **An escalation write that is itself refused dies.** That is what makes the
+# read half and the write half one policy: a global permission loss refuses the
+# escalation too and sorts itself into the refused-read answer, while a 422 on
+# one issue's label stays on that issue with every other project still running.
+write_failed() {
+  local class="$1" kind="$2" github="$3" number="$4" write="$5" line="$6"
+  # Taken before anything below can clear it.
+  local text="$FAILURE_TEXT"
+  [[ "$class" == "refused" ]] || class=transient
+  if [[ -n "$line" ]]; then
+    log "$line class=$class"
+  fi
+  FAILURES=$((FAILURES + 1))
+  [[ "$class" == "refused" ]] || return 0
+  # Unreachable today — only Orca makes a write with no object, and Orca never
+  # classifies refused — and an answer all the same: a refused write with nowhere to
+  # put its record is an escalation that cannot be written.
+  if [[ "$kind" != "issue" && "$kind" != "pr" ]]; then
+    die "$write refused with no object to flag class=refused"
+  fi
+  escalate_refused_write "$kind" "$github" "$number" "$write" "$text"
+}
+
+# gh-axi for one write, with stdout — where a refusal GitHub rendered arrives —
+# left in `$FAILURE_TEXT` when it fails, for a caller that calls it bare.
+# stderr is dropped, as `gh_json` drops it. `swap_labels` and the writeback
+# seam do read it — merged in, or where stdout is empty — and that changes no
+# class against the real CLI: its own failures on stderr carry no status, so
+# they classify transient whichever channel they are read from.
+axi_write() {
+  local out
+  FAILURE_TEXT=""
+  out=$(gh-axi "$@" 2>/dev/null) && return 0
+  FAILURE_TEXT="$out"
+  return 1
+}
+
+# The same, for the writeback seam, whose stdout is the write's response
+# verbatim — the refusal text included — by its own contract.
+writeback_write() {
+  local out
+  FAILURE_TEXT=""
+  out=$("$SCRIPT_DIR/pr-writeback.sh" "$@" 2>/dev/null) && return 0
+  FAILURE_TEXT="$out"
+  return 1
+}
+
+# The refused write's record marker. A distinct prefix from the handover's two,
+# so no test for a standing record or a withdrawal can see it, and it names the
+# write so each refused write on one object is recorded once of its own.
+WRITE_REFUSED_MARKER_PREFIX='<!-- agent-loop-write-refused: '
+WRITE_REFUSED_MARKER_SUFFIX=' -->'
+
+# Every object a refused write escalated this pass, as ` <github>#<number> `
+# words. Read where a flag would otherwise be taken off on the pass it went up:
+# the pull-request chase, and a later write on the same issue that landed.
+#
+# **Per pass rather than per object**, because one issue can be reached twice
+# with different writes: startup runs close-out and then the reclaim over the
+# same claims, and a close refused at startup must not have its flag taken down
+# by the reclaim's release landing a moment later. Cleared at the top of every
+# pass; before the first one it holds the startup's escalations.
+WRITE_ESCALATED_OBJECTS=""
+
+# write_escalated <github> <number> — whether a refused write escalated this
+# object this pass.
+write_escalated() {
+  [[ "$WRITE_ESCALATED_OBJECTS" == *" $1#$2 "* ]]
+}
+
+write_refused_body() {
+  local kind="$1" write="$2" text="$3" noun=issue
+  [[ "$kind" == "pr" ]] && noun="pull request"
+  printf '**Escalated — GitHub refused the loop'"'"'s `%s` on this %s.**\n\n' "$write" "$noun"
+  printf 'GitHub'"'"'s answer is a durable no, so asking again every pass will not land it on its own. The loop still makes the write each pass it reaches this %s, and takes `%s` off by itself on the pass it lands. This comment is a record of that answer and stays.\n\n' "$noun" "$LABEL_ESCALATED"
+  # Four backticks, so a response carrying a fence of its own cannot close it.
+  printf 'What GitHub said, verbatim:\n\n````\n%s\n````\n\n' "${text:-gh-axi said nothing}"
+  printf '**Where to look** — a label somebody deleted, an issue or pull request locked, transferred or closed by hand, or a rule on this repository the loop'"'"'s token cannot satisfy.\n\n'
+  printf '%s%s%s\n' "$WRITE_REFUSED_MARKER_PREFIX" "$write" "$WRITE_REFUSED_MARKER_SUFFIX"
+}
+
+# escalate_refused_write <issue|pr> <github> <number> <write> <text>
+#
+# Record, then flag, in that order and for the handover's reason: a flag with no
+# record behind it is the one state the reader cannot act on, and a later pass
+# that finds the record and no flag adds the flag without posting again.
+#
+# The gate is a read of the object's comments, paged in full, rather than the
+# label: the label is shared by every kind of *a human must look*, so it cannot
+# say whether *this* refused write was recorded. The read is paid only on a
+# refused write,
+# which has not fired once in 513 passes. Both object kinds answer on the issues
+# endpoint, since GitHub numbers them from one sequence.
+#
+# Each of these writes is a member of the family in its own right, and joins it
+# through the same door with no object: a transient one is logged and counted
+# and the next pass tries again from the top; a refused one dies here.
+escalate_refused_write() {
+  local kind="$1" github="$2" number="$3" write="$4" text="$5"
+  local marker comments seen file posted=false status=0 class
+  WRITE_ESCALATED_OBJECTS+=" $github#$number "
+  marker="$WRITE_REFUSED_MARKER_PREFIX$write$WRITE_REFUSED_MARKER_SUFFIX"
+
+  if ! comments=$(gh_json "/repos/$github/issues/$number/comments" --paginate); then
+    read_failed "$(gh_error_class "$comments")" "$github" \
+      "refused-write record unreadable on $github#$number, flagging nothing this pass"
+    return 0
+  fi
+  if ! seen=$(jq -r --arg me "$ME" --arg marker "$marker" \
+       'any(.[]?; (.user.login // "") == $me and ((.body // "") | contains($marker)))' \
+       <<< "$comments" 2>/dev/null) || [[ "$seen" != "true" && "$seen" != "false" ]]; then
+    read_failed "$(gh_error_class "")" "$github" \
+      "refused-write record unreadable on $github#$number, flagging nothing this pass"
+    return 0
+  fi
+
+  if [[ "$seen" == "false" ]]; then
+    # Free text travels as a file, as every other record here does.
+    if ! file=$(mktemp "${TMPDIR:-/tmp}/agent-loop-refused-write.XXXXXX"); then
+      FAILURE_TEXT=""
+      status=1
+    elif ! write_refused_body "$kind" "$write" "$text" > "$file"; then
+      FAILURE_TEXT=""
+      status=1
+    elif [[ "$kind" == "pr" ]]; then
+      writeback_write comment --repo "$github" --pr "$number" --body-file "$file" || status=1
+    else
+      axi_write issue comment "$number" --repo "$github" --body-file "$file" || status=1
+    fi
+    [[ -z "$file" ]] || rm -f "$file"
+    if (( status != 0 )); then
+      class=$(gh_error_class "$FAILURE_TEXT")
+      [[ "$class" != "refused" ]] \
+        || die "refused-write record refused on $github#$number class=refused project=$github"
+      write_failed "$class" - "" "" record "refused-write record failed on $github#$number, flagging nothing this pass"
+      return 0
+    fi
+    posted=true
+  fi
+
+  if [[ "$kind" == "pr" ]]; then
+    writeback_write label --repo "$github" --pr "$number" --add "$LABEL_ESCALATED" || status=1
+  else
+    axi_write issue edit "$number" --repo "$github" --add-label "$LABEL_ESCALATED" || status=1
+  fi
+  if (( status != 0 )); then
+    class=$(gh_error_class "$FAILURE_TEXT")
+    [[ "$class" != "refused" ]] \
+      || die "refused-write flag refused on $github#$number class=refused project=$github"
+    write_failed "$class" - "" "" flag "refused-write flag failed on $github#$number, the record is up and the next pass adds it"
+    return 0
+  fi
+  # Said on the attempt that put the record up, and never again: the site's own
+  # line already says `class=refused` on every pass after.
+  if $posted; then
+    log "$github#$number flagged $LABEL_ESCALATED: its $write was refused"
+  fi
+}
+
+# withdraw_write_flag <github> <number> <flagged|unflagged>
+#
+# The other half of the live flag, on an issue: called where a family write on
+# it landed, with whether the issue wore the flag — the word the label streams
+# already use for a flag — read off a payload the caller
+# already holds, so steady state costs nothing and a withdrawal costs one write.
+# Pull requests need no call: the handover's label chase already takes the flag
+# off on any pass with no record standing and no refused write this pass.
+#
+# Not on a pass where a refused write escalated this same issue: a close that
+# landed would take down the flag its unclaim just raised, and a reclaim that
+# landed the flag a refused close raised at startup.
+#
+# **The flag is kind-blind**, and on an issue that is safe by construction
+# rather than by luck: every other *a human must look* kind on an issue is
+# withdrawn when the claim goes or the work delivers, which are exactly the
+# writes that call this. The line names the refused write because that is the
+# only kind that raises it on an issue today.
+#
+# The withdrawal is an escalation write, and fails like one: refused dies,
+# transient is retried by the next pass that lands the same write — and where
+# no later pass will, the flag stands until a human takes it off.
+withdraw_write_flag() {
+  local github="$1" number="$2" wore="$3" class
+  [[ "$wore" == "flagged" ]] || return 0
+  ! write_escalated "$github" "$number" || return 0
+  if axi_write issue edit "$number" --repo "$github" --remove-label "$LABEL_ESCALATED"; then
+    log "$github#$number withdrew $LABEL_ESCALATED: its refused write landed"
+    return 0
+  fi
+  class=$(gh_error_class "$FAILURE_TEXT")
+  [[ "$class" != "refused" ]] \
+    || die "refused-write flag withdrawal refused on $github#$number class=refused project=$github"
+  write_failed "$class" - "" "" withdraw "refused-write flag withdrawal failed on $github#$number"
 }
 
 # --- config ------------------------------------------------------------------
@@ -809,7 +1092,11 @@ orca_id_for_project() {
 # — but the thread rule does need a name to compare comment authors against, and
 # it is the same identity the token already carries.
 load_identity() {
-  ME=$(gh_json /user | jq -r '.login // empty') \
+  local response
+  # Captured, then `jq`, the rule every wrapper in the file follows.
+  response=$(gh_json /user) \
+    || die "could not resolve the GitHub identity behind this token"
+  ME=$(jq -r '.login // empty' <<< "$response") \
     || die "could not resolve the GitHub identity behind this token"
   [[ -n "$ME" ]] || die "could not resolve the GitHub identity behind this token"
   log "acting as $ME"
@@ -1064,23 +1351,34 @@ branch_report() {
 # GitHub's own order, which `load_open_pr_issues` then turns around into the
 # issue-keyed map the callers ask their question of.
 query_repo_open_pr_branches() {
-  local owner="${1%%/*}" name="${1##*/}" response cursor='null' page=0
+  local owner="${1%%/*}" name="${1##*/}" response cursor='null' page=0 rows='' page_rows
   # Twenty pages is two thousand open pull requests. The bound is here so a
   # cursor GitHub never stops handing back cannot spin the loop forever.
+  #
+  # The rows are held until the read is complete rather than printed per page,
+  # so a failure on a later page puts its failure text on stdout alone and the
+  # caller never classifies a page of pull requests as if it were an error.
   while (( page < 20 )); do
-    response=$(gh_graphql "{ repository(owner: \"$owner\", name: \"$name\") { pullRequests(states: OPEN, first: 100, after: $cursor, orderBy: {field: UPDATED_AT, direction: DESC}) { pageInfo { hasNextPage endCursor } nodes { number headRefName } } } }") || return 1
+    if ! response=$(gh_graphql "{ repository(owner: \"$owner\", name: \"$name\") { pullRequests(states: OPEN, first: 100, after: $cursor, orderBy: {field: UPDATED_AT, direction: DESC}) { pageInfo { hasNextPage endCursor } nodes { number headRefName } } } }"); then
+      printf '%s' "$response"
+      return 1
+    fi
     # A GraphQL error can come back as a 200 with a null repository, which would
     # otherwise read as "this repository has no open pull requests" — and read
     # that way by this caller, it would wave every claimed issue through.
     jq -e '.data.repository.pullRequests.nodes | type == "array"' <<< "$response" \
       >/dev/null 2>&1 || return 1
-    jq -r '.data.repository.pullRequests.nodes[]?
+    page_rows=$(jq -r '.data.repository.pullRequests.nodes[]?
       | select(.number != null and .headRefName != null)
-      | [ (.number | tostring), .headRefName ] | @tsv' <<< "$response"
+      | [ (.number | tostring), .headRefName ] | @tsv' <<< "$response") || return 1
+    rows+="$page_rows"$'\n'
     # Only GitHub's explicit terminal answer is a complete read. Missing or
     # malformed pagination data must not be mistaken for an empty next page.
-    jq -e '.data.repository.pullRequests.pageInfo.hasNextPage == false' <<< "$response" \
-      >/dev/null 2>&1 && return 0
+    if jq -e '.data.repository.pullRequests.pageInfo.hasNextPage == false' <<< "$response" \
+      >/dev/null 2>&1; then
+      printf '%s' "$rows"
+      return 0
+    fi
     jq -e '.data.repository.pullRequests.pageInfo.hasNextPage == true' <<< "$response" \
       >/dev/null 2>&1 || return 1
     cursor=$(jq -c '.data.repository.pullRequests.pageInfo.endCursor' <<< "$response")
@@ -1104,10 +1402,17 @@ OPEN_PR_ISSUES=''
 
 # Fails when the read failed. It never fails for an empty answer: a repository
 # with no open pull requests is a fact, and an unanswerable question is not.
+#
+# Both callers call it bare, because it fills a global, so a failure's text is
+# left in `$FAILURE_TEXT` rather than on stdout.
 load_open_pr_issues() {
   local branches prnumber branch number loaded=''
   OPEN_PR_ISSUES=''
-  branches=$(query_repo_open_pr_branches "$1") || return 1
+  FAILURE_TEXT=''
+  if ! branches=$(query_repo_open_pr_branches "$1"); then
+    FAILURE_TEXT="$branches"
+    return 1
+  fi
   while IFS=$'\t' read -r prnumber branch; do
     [[ -n "$prnumber" && -n "$branch" ]] || continue
     # The branch is the only pull-request-to-issue link there is, and it is the
@@ -1189,7 +1494,7 @@ reclaim_stale_claims() {
   for (( i = 0; i < PROJECT_COUNT; i++ )); do
     github=$(jq -r ".projects[$i].github" "$CONFIG_PATH")
     if ! numbers=$(query_claimed_issues "$github"); then
-      log "claimed-issue query failed: $github"
+      read_failed "$(gh_error_class "$numbers")" "$github" "claimed-issue query failed: $github"
       continue
     fi
     # Nothing claimed here: no second question to ask, and no read to spend
@@ -1200,11 +1505,11 @@ reclaim_stale_claims() {
     # loop polls: an unanswered read costs one interval, where a duplicate costs
     # a whole rebuild.
     if ! load_open_pr_issues "$github"; then
-      log "open-pr query failed: $github, skipping its reclaim"
+      read_failed "$(gh_error_class "$FAILURE_TEXT")" "$github" "open-pr query failed: $github, skipping its reclaim"
       continue
     fi
     # stdin is closed for the body: gh-axi must not swallow the issue list.
-    while IFS=$'\t' read -r number verb; do
+    while IFS=$'\t' read -r number verb escalation; do
       [[ -n "$number" ]] || continue
       if [[ "$verb" == "$VERB_TO_TICKETS" ]]; then
         log "left claimed $github#$number: a $VERB_TO_TICKETS issue is never reclaimed"
@@ -1214,8 +1519,12 @@ reclaim_stale_claims() {
         log "left claimed $github#$number: pull request #$prnumber already delivers it"
       elif release_issue "$github" "$number" < /dev/null; then
         log "reclaimed $github#$number: no live worker, returned to $LABEL_READY"
+        withdraw_write_flag "$github" "$number" "$escalation" < /dev/null
       else
-        log "reclaim failed for $github#$number, leaving it claimed"
+        # Refused, *leaving it claimed* is forever — the reclaim is the only
+        # thing that hands a claim back — so it flags the issue.
+        write_failed "$(gh_error_class "$FAILURE_TEXT")" issue "$github" "$number" reclaim \
+          "reclaim failed for $github#$number, leaving it claimed" < /dev/null
       fi
     done <<< "$numbers"
   done
@@ -1246,9 +1555,15 @@ reclaim_stale_claims() {
 # mystery.
 query_issues_by_label() {
   local github="$1" label="$2" owner="${1%%/*}" name="${1##*/}" response
-  response=$(gh_graphql "{ repository(owner: \"$owner\", name: \"$name\") { issues(labels: [\"$label\"], states: OPEN, first: 100) { nodes { number title url body labels(first: 100) { nodes { name } } } } } }") || return 1
+  # On a failure `$response` is gh-axi's own text, and it goes out on stdout
+  # for the call site to classify rather than being dropped at `|| return 1`.
+  if ! response=$(gh_graphql "{ repository(owner: \"$owner\", name: \"$name\") { issues(labels: [\"$label\"], states: OPEN, first: 100) { nodes { number title url body labels(first: 100) { nodes { name } } } } } }"); then
+    printf '%s' "$response"
+    return 1
+  fi
   # A GraphQL error can come back as a 200 with a null repository, which would
-  # otherwise read as "this repository has no matching issues".
+  # otherwise read as "this repository has no matching issues". There is no
+  # failure text to pass out for it, so it classifies transient.
   jq -e '.data.repository != null' <<< "$response" >/dev/null || return 1
   printf '%s' "$response"
 }
@@ -1303,10 +1618,18 @@ query_issues_by_label() {
 # would make it vanish from the phase with no skip line, no comment and no
 # label. The row is emitted so the gate can refuse it audibly.
 query_ready_issues() {
-  query_issues_by_label "$1" "$LABEL_READY" | jq -r \
+  local response
+  # Captured, then `jq`: piped, the failure text would be consumed by `jq` and
+  # `pipefail` would keep only the status.
+  if ! response=$(query_issues_by_label "$1" "$LABEL_READY"); then
+    printf '%s' "$response"
+    return 1
+  fi
+  jq -r \
     --arg implement "$VERB_IMPLEMENT" \
     --arg to_tickets "$VERB_TO_TICKETS" \
-    --arg refused "$LABEL_REFUSED" "$OWN_LABELS_JQ"'
+    --arg refused "$LABEL_REFUSED" \
+    --arg escalated "$LABEL_ESCALATED" "$OWN_LABELS_JQ"'
     def change_type:
       [.labels.nodes[]?.name | ascii_downcase | sub("^.*::"; "")]
       | map(if . == "bug" then "fix"
@@ -1317,10 +1640,12 @@ query_ready_issues() {
       | first // "feat";
     def refusal_flag:
       if ([.labels.nodes[]?.name] | index($refused)) then "flagged" else "unflagged" end;
+    def escalation_flag:
+      if ([.labels.nodes[]?.name] | index($escalated)) then "flagged" else "unflagged" end;
     .data.repository.issues.nodes[]?
-    | [.number, .url, change_type, refusal_flag, own([$implement, $to_tickets]),
+    | [.number, .url, change_type, refusal_flag, escalation_flag, own([$implement, $to_tickets]),
        ((.body // "") + "\n" | @base64), (.title // "")]
-    | @tsv'
+    | @tsv' <<< "$response"
 }
 
 # Query all claimed issues in a repository. Prints `number`, `verb`,
@@ -1339,12 +1664,26 @@ query_ready_issues() {
 # close-out to tell a decomposition from an implementation after the claim swap
 # has taken the ready label off — and it is the same intersection, in the same
 # constant order, that the ready-issue stream carries.
+#
+# **And the refused-write flag, as a third word**, for the reason the ready
+# stream carries it: the reclaim takes it down on the pass its release lands,
+# and reading it here is what makes that free. `flagged` or `unflagged`, never
+# empty, and last, so the verb before it stays whole.
 query_claimed_issues() {
-  query_issues_by_label "$1" "$LABEL_CLAIMED" | jq -r \
+  local response
+  # Captured, then `jq`, so a failure's text survives to the caller.
+  if ! response=$(query_issues_by_label "$1" "$LABEL_CLAIMED"); then
+    printf '%s' "$response"
+    return 1
+  fi
+  jq -r \
     --arg implement "$VERB_IMPLEMENT" \
-    --arg to_tickets "$VERB_TO_TICKETS" "$OWN_LABELS_JQ"'
+    --arg to_tickets "$VERB_TO_TICKETS" \
+    --arg escalated "$LABEL_ESCALATED" "$OWN_LABELS_JQ"'
     .data.repository.issues.nodes[]?
-    | [.number, own([$implement, $to_tickets])] | @tsv'
+    | [.number, own([$implement, $to_tickets]),
+       (if ([.labels.nodes[]?.name] | index($escalated)) then "flagged" else "unflagged" end)]
+    | @tsv' <<< "$response"
 }
 
 # GitHub has no "these issues block this one" field on the issue itself, so the
@@ -1368,7 +1707,10 @@ query_claimed_issues() {
 # next pass.
 read_blocker_edges() {
   local response
-  response=$(gh_json "/repos/$1/issues/$2/dependencies/blocked_by" --paginate) || return 1
+  if ! response=$(gh_json "/repos/$1/issues/$2/dependencies/blocked_by" --paginate); then
+    printf '%s' "$response"
+    return 1
+  fi
   jq -e 'type == "array"' <<< "$response" >/dev/null 2>&1 || return 1
   jq -r --arg repo "$1" \
     '.[] | [(.repository.full_name // (.repository_url | strings | sub("^https://api.github.com/repos/"; "")) // $repo), .number, .state] | @tsv' <<< "$response"
@@ -1577,8 +1919,13 @@ unverified_claims() {
 # both channels: a refusal arrives on stdout, a failure of its own on stderr.
 swap_labels() {
   local github="$1" number="$2" add="$3" remove="$4" error issue wears
+  FAILURE_TEXT=""
   error=$(gh-axi issue edit "$number" --repo "$github" --add-label "$add" --remove-label "$remove" 2>&1) \
     && return 0
+  # What the caller classifies, unflattened. Every swap caller calls it bare, so
+  # the global is live when they read it; the read-back below substitutes and
+  # the undo discards, so neither can overwrite it.
+  FAILURE_TEXT="$error"
   error="${error//$'\n'/ }"
   error="gh-axi: ${error:-said nothing}"
 
@@ -1742,7 +2089,10 @@ refuse_issue() {
   # Label first, and the swap is the one add/remove delta the claim and
   # the release already use.
   if ! swap_labels "$github" "$number" "$LABEL_REFUSED" "$LABEL_READY"; then
-    log "refusal label swap failed for $github#$number, leaving it ready"
+    # Refused, the next pass derives the same verdict and is refused again,
+    # forever, so it flags the issue.
+    write_failed "$(gh_error_class "$FAILURE_TEXT")" issue "$github" "$number" refusal-swap \
+      "refusal label swap failed for $github#$number, leaving it ready"
     return 1
   fi
 
@@ -1888,13 +2238,12 @@ issue_phase() {
 # respects the worker budget, claims issues and dispatches workers at them.
 issue_phase_project() {
   local github="$1" orca_id="$2" issues number weburl type title edges blockers worktree_id
-  local prnumber body64 body refusal missing verbs rows kv refused
+  local prnumber body64 body refusal missing verbs rows kv refused escalation blocker_text readable
 
-  # ponytail: the CLI's own error text goes to stderr, so it reaches the
-  # terminal but not the log file. Capture it into the log line if reading the
-  # log alone ever has to be enough.
+  # On a failure `$issues` holds gh-axi's failure text rather than candidates,
+  # and it is read for its class and nothing else.
   if ! issues=$(query_ready_issues "$github"); then
-    log "issue query failed: $github"
+    read_failed "$(gh_error_class "$issues")" "$github" "issue query failed: $github"
     SKIPS=$((SKIPS + 1))
     return 0
   fi
@@ -1909,16 +2258,18 @@ issue_phase_project() {
   # a phase that cannot see the open pull requests dispatches at none of this
   # repository's issues rather than risk re-dispatching at a delivered one.
   if ! load_open_pr_issues "$github"; then
-    log "open-pr query failed: $github, skipping its issue phase"
+    read_failed "$(gh_error_class "$FAILURE_TEXT")" "$github" "open-pr query failed: $github, skipping its issue phase"
     SKIPS=$((SKIPS + 1))
     return 0
   fi
 
   # stdin is closed for the body: gh-axi must not swallow the issue list.
   #
-  # The two label-derived words sit together after the type, and `body64` sits
+  # The label-derived words sit together after the type, and `body64` sits
   # between them and the title, so the title is still the remainder of the line.
-  while IFS=$'\t' read -r number weburl type refusal verbs body64 title; do
+  # `escalation` is whether the refused-write flag is up, read so the claim or
+  # the refusal that lands can take it down at no read of its own.
+  while IFS=$'\t' read -r number weburl type refusal escalation verbs body64 title; do
     [[ -n "$number" ]] || continue
 
     # First, and before the blocker read: an issue something already delivers is
@@ -1936,13 +2287,25 @@ issue_phase_project() {
     # `set -e` would otherwise take the whole pass down over one candidate.
     body=$(base64 -d <<< "$body64" 2>/dev/null) || body=""
 
-    # One condition over both halves of the split, so the count stays under the
-    # same handler the single function's failure was under: a bare assignment
+    # Both halves of the split stay under a handler, so the count is under the
+    # same one the single function's failure was under: a bare assignment
     # would put an unreadable count under `set -e` and take the daemon down
     # where the phase means to skip one issue.
-    if ! edges=$(read_blocker_edges "$github" "$number" < /dev/null) \
-      || ! blockers=$(count_open_blockers "$edges"); then
-      log "issue $github#$number skipped: could not read its blockers"
+    #
+    # Two arms rather than one condition, because only the read has failure
+    # text: on a failed read `$edges` is what gh-axi said, and a count that
+    # fails over a read that landed has nothing to classify.
+    blocker_text=""
+    readable=true
+    if ! edges=$(read_blocker_edges "$github" "$number" < /dev/null); then
+      blocker_text="$edges"
+      readable=false
+    elif ! blockers=$(count_open_blockers "$edges"); then
+      readable=false
+    fi
+    if ! $readable; then
+      read_failed "$(gh_error_class "$blocker_text")" "$github" \
+        "issue $github#$number skipped: could not read its blockers"
       SKIPS=$((SKIPS + 1))
       continue
     fi
@@ -2029,6 +2392,7 @@ issue_phase_project() {
       # it is accounted the way a lost claim is — as a skip.
       if refuse_issue "$github" "$number" "${rows[@]}" < /dev/null; then
         REFUSALS=$((REFUSALS + 1))
+        withdraw_write_flag "$github" "$number" "$escalation" < /dev/null
       else
         SKIPS=$((SKIPS + 1))
       fi
@@ -2064,16 +2428,23 @@ issue_phase_project() {
     fi
 
     if ! claim_issue "$github" "$number" < /dev/null; then
-      log "claim failed for $github#$number, leaving it ready"
+      # Refused, *leaving it ready* would be forever: the next pass claims again
+      # and is refused again. So it flags the issue.
+      write_failed "$(gh_error_class "$FAILURE_TEXT")" issue "$github" "$number" claim \
+        "claim failed for $github#$number, leaving it ready" < /dev/null
       SKIPS=$((SKIPS + 1))
       continue
     fi
     log "claimed $github#$number"
+    withdraw_write_flag "$github" "$number" "$escalation" < /dev/null
 
     # The claim is already written, so a failed dispatch leaves the issue
     # claimed with no worker. Startup reclaim hands it back.
+    #
+    # Orca passes no text, so this is transient by construction: the issue is
+    # named as the write's object, and nothing can ever flag it from here.
     if ! worktree_id=$(dispatch_issue "$orca_id" "$number" "$weburl" "$type" "$verbs" "$title" < /dev/null); then
-      log "dispatch failed for $github#$number, issue left claimed"
+      write_failed "$(gh_error_class "")" issue "$github" "$number" dispatch "dispatch failed for $github#$number, issue left claimed"
       SKIPS=$((SKIPS + 1))
       continue
     fi
@@ -2102,8 +2473,10 @@ sweep_worktrees() {
       continue
     fi
 
+    # git has no classifier and passes no text: empty text, transient, and a
+    # local read names no project because it can never be refused.
     if ! dirty=$(git -C "$path" status --porcelain 2>/dev/null); then
-      log "sweep skipped $path: could not read its status"
+      read_failed "$(gh_error_class "")" - "sweep skipped $path: could not read its status"
       continue
     fi
     if [[ -n "$dirty" ]]; then
@@ -2121,7 +2494,7 @@ sweep_worktrees() {
     # ponytail: the remote is assumed to be `origin`. Read it off the branch's
     # config if a repo with a differently named remote ever goes through the loop.
     if ! unpushed=$(git -C "$path" rev-list --count HEAD --not --remotes=origin 2>/dev/null); then
-      log "sweep skipped $path: could not read its push state"
+      read_failed "$(gh_error_class "")" - "sweep skipped $path: could not read its push state"
       continue
     fi
     if (( unpushed > 0 )); then
@@ -2139,7 +2512,9 @@ sweep_worktrees() {
       log "swept $path"
       SWEEPS=$((SWEEPS + 1))
     else
-      log "sweep failed for $path, leaving it in place"
+      # Orca passes no text, so the removal is transient by construction and
+      # names no GitHub object to flag.
+      write_failed "$(gh_error_class "")" - "" "" sweep "sweep failed for $path, leaving it in place"
     fi
   done < <(orca_worktrees)
 }
@@ -2471,7 +2846,11 @@ sweep_worktrees() {
 # request nor what it is merging into is one of them.
 query_repo_open_prs() {
   local github="$1" owner="${1%%/*}" name="${1##*/}" response
-  response=$(gh_graphql "{ repository(owner: \"$owner\", name: \"$name\") { pullRequests(states: OPEN, first: 100, orderBy: {field: UPDATED_AT, direction: DESC}) { nodes { number title url isDraft isCrossRepository author { login } baseRefName headRefName headRefOid labels(first: 50) { nodes { name } } } } } }") || return 1
+  # A failure's text goes out on stdout for the call site to classify.
+  if ! response=$(gh_graphql "{ repository(owner: \"$owner\", name: \"$name\") { pullRequests(states: OPEN, first: 100, orderBy: {field: UPDATED_AT, direction: DESC}) { nodes { number title url isDraft isCrossRepository author { login } baseRefName headRefName headRefOid labels(first: 50) { nodes { name } } } } } }"); then
+    printf '%s' "$response"
+    return 1
+  fi
   # A GraphQL error can come back as a 200 with a null repository, which would
   # otherwise read as "this repository has no open pull requests".
   jq -e '.data.repository.pullRequests.nodes | type == "array"' <<< "$response" \
@@ -2542,7 +2921,10 @@ query_repo_open_prs() {
 # couple them silently to it.
 query_pr_state() {
   local github="$1" number="$2" owner="${1%%/*}" name="${1##*/}" response
-  response=$(gh_graphql "{ repository(owner: \"$owner\", name: \"$name\") { pullRequest(number: $number) { number headRefOid mergeable mergeStateStatus files(first: 100) { totalCount nodes { path } } commits(last: 1) { nodes { commit { oid committedDate author { user { login } } statusCheckRollup { state contexts(first: 100) { nodes { __typename ... on StatusContext { context state description createdAt creator { login } } ... on CheckRun { name title status conclusion startedAt completedAt checkSuite { app { slug } } } } } } } } } reviewThreads(first: 100) { nodes { id isResolved isOutdated path line comments(first: 100) { nodes { databaseId createdAt author { login } } } } } comments(last: 100) { nodes { databaseId createdAt updatedAt body author { login } } } } } }") || return 1
+  if ! response=$(gh_graphql "{ repository(owner: \"$owner\", name: \"$name\") { pullRequest(number: $number) { number headRefOid mergeable mergeStateStatus files(first: 100) { totalCount nodes { path } } commits(last: 1) { nodes { commit { oid committedDate author { user { login } } statusCheckRollup { state contexts(first: 100) { nodes { __typename ... on StatusContext { context state description createdAt creator { login } } ... on CheckRun { name title status conclusion startedAt completedAt checkSuite { app { slug } } } } } } } } } reviewThreads(first: 100) { nodes { id isResolved isOutdated path line comments(first: 100) { nodes { databaseId createdAt author { login } } } } } comments(last: 100) { nodes { databaseId createdAt updatedAt body author { login } } } } } }"); then
+    printf '%s' "$response"
+    return 1
+  fi
   jq -e '.data.repository.pullRequest != null' <<< "$response" >/dev/null 2>&1 || return 1
   printf '%s' "$response"
 }
@@ -2935,11 +3317,11 @@ epoch_of() {
 # calling gh-axi here, because the seam is a thing a human can also run by hand
 # and because the trigger's text is the seam's own constant.
 #
-# ponytail: the seam's stdout — GitHub's answer, verbatim — and its stderr are
-# dropped; only the exit status reaches the log line. Capture them into the tail
-# if a failed trigger ever needs explaining beyond "it failed".
+# The seam's stdout — GitHub's answer, verbatim — is kept in `$FAILURE_TEXT` on
+# a failure, which is what the state line's `class=` is read from. Its stderr is
+# the seam's own prose for a human, and is dropped.
 post_autofix_trigger() {
-  "$SCRIPT_DIR/pr-writeback.sh" autofix --repo "$1" --pr "$2" --sha "$3" >/dev/null 2>&1
+  writeback_write autofix --repo "$1" --pr "$2" --sha "$3"
 }
 
 # The review nudge. Unlike the autofix trigger it records no head: *once per
@@ -2948,10 +3330,9 @@ post_autofix_trigger() {
 # the comment a bare command, which is what a nudge the operator might type by
 # hand looks like.
 #
-# ponytail: the same as the trigger's — stdout and stderr are dropped and only
-# the exit status reaches the log line.
+# Its failure text is kept the way the trigger's is.
 post_review_nudge() {
-  "$SCRIPT_DIR/pr-writeback.sh" review --repo "$1" --pr "$2" >/dev/null 2>&1
+  writeback_write review --repo "$1" --pr "$2"
 }
 
 # The one irreversible write. merge_pr <repo> <number> <assessed-commit> <method>
@@ -3189,9 +3570,11 @@ remove_escalation_label() {
 # One comment rewritten. The caller has already established that this comment is
 # one the loop itself wrote — that is the whole of the wrong-comment guard, and
 # it lives at the derivation because that is where the authorship is known.
+#
+# A failure leaves the seam's stdout — GitHub's refusal, verbatim — in
+# `$FAILURE_TEXT` for the retraction's classification.
 edit_comment() {
-  "$SCRIPT_DIR/pr-writeback.sh" edit --repo "$1" --comment "$2" \
-    --body-file "$3" >/dev/null 2>&1
+  writeback_write edit --repo "$1" --comment "$2" --body-file "$3"
 }
 
 # The flag chasing the marker, in whichever direction it has to go. <want> is
@@ -3331,6 +3714,9 @@ escalate() {
 # chase would put the label back, and the retraction would have undone itself.
 retract() {
   local github="$1" head="$2" comment="$3" kind="$4" body status=0
+  # Cleared, so a body file that could not be made reads as empty text rather
+  # than as whatever an earlier write left behind.
+  FAILURE_TEXT=""
   body=$(mktemp "${TMPDIR:-/tmp}/agent-loop-retraction.XXXXXX") || return 1
   if ! retraction_body "$head" "$kind" > "$body"; then
     rm -f "$body"
@@ -3411,6 +3797,14 @@ consume_record() {
   # Nothing to record. Either a record stands whose claim the pass has just
   # disproved, or there is no record and the flag may be left over from one.
   if [[ "$stands" != "true" ]]; then
+    # **Except a flag a refused write raised this pass.** That flag has no
+    # handover record behind it by design — its record is the refused write's
+    # own — so chasing it off here would undo the escalation on the pass it
+    # went up and flap it every pass after. On the pass the write lands this
+    # guard is down and the chase withdraws it, which is the live flag working.
+    if write_escalated "$github" "$number"; then
+      return 0
+    fi
     chase_label "$github" "$number" off "$labelled" || SKIPS=$((SKIPS + 1))
     HANDOVER_KV="$CHASE_KV"
     return 0
@@ -3421,7 +3815,14 @@ consume_record() {
     # The record still stands and the flag is still on it, which is the right
     # pair to fail into: the next pass re-derives, finds the same record false,
     # and retracts again. Nothing was said that has to be unsaid.
-    HANDOVER_KV="handover=retract-failed rc=$status"
+    #
+    # Unless GitHub refused the edit, when *retracts again* is forever and the
+    # pull request holds behind a record the loop knows is false. Then it gets
+    # the refused write's record too; the flag it needs is already on.
+    local class
+    class=$(gh_error_class "$FAILURE_TEXT")
+    HANDOVER_KV="handover=retract-failed rc=$status class=$class"
+    write_failed "$class" pr "$github" "$number" retract ""
     SKIPS=$((SKIPS + 1))
     return 0
   fi
@@ -4073,7 +4474,7 @@ pr_phase_project() {
   local github="$1" method="$2" numbers number labelled
   REPO_MERGE_SPENT=false
   if ! numbers=$(query_repo_open_prs "$github"); then
-    log "pr query failed: $github"
+    read_failed "$(gh_error_class "$numbers")" "$github" "pr query failed: $github"
     SKIPS=$((SKIPS + 1))
     return 0
   fi
@@ -4106,10 +4507,10 @@ pr_phase_one() {
   local now read_at head_epoch status_epoch trigger_epoch pending_epoch nudge_epoch
   local signal_epoch first_epoch status_answered status_stands answer_refused ask signal_kv declined_rows
   local spent in_flight age status needs_review route origin stalled_reason
-  local state review kv merge_out merge_status stands withheld
+  local state review kv merge_out merge_status stands withheld class
 
   if ! response=$(query_pr_state "$github" "$number"); then
-    log "pr state query failed: $github#$number"
+    read_failed "$(gh_error_class "$response")" "$github" "pr state query failed: $github#$number"
     SKIPS=$((SKIPS + 1))
     return 0
   fi
@@ -4160,7 +4561,9 @@ pr_phase_one() {
   # appear newer than the head.
   head_epoch=$(epoch_of "$head_date") || head_epoch=""
   if [[ -z "$head" || -z "$head_epoch" ]]; then
-    log "pr state unreadable: $github#$number"
+    # The read landed and would not parse, so GitHub said nothing to classify:
+    # empty text, and transient by gh.sh's own rule.
+    read_failed "$(gh_error_class "")" "$github" "pr state unreadable: $github#$number"
     SKIPS=$((SKIPS + 1))
     return 0
   fi
@@ -4693,7 +5096,12 @@ pr_phase_one() {
           # re-derives, finds the pull request still needing a review and
           # still un-nudged, and writes again. The poll interval is the
           # backoff.
-          kv="$kv action=failed rc=$status"
+          #
+          # A refused nudge would be re-asked forever on that argument, so it
+          # flags the pull request instead; the state line carries the class.
+          class=$(gh_error_class "$FAILURE_TEXT")
+          kv="$kv action=failed rc=$status class=$class"
+          write_failed "$class" pr "$github" "$number" nudge ""
           SKIPS=$((SKIPS + 1))
         fi
       fi
@@ -4715,7 +5123,11 @@ pr_phase_one() {
         # again. The poll interval is the whole of the backoff. It still counts
         # against the pass, because `pass end` is where a run that achieved
         # nothing is supposed to say so.
-        kv="$kv action=failed rc=$status"
+        #
+        # Refused, *fires again* is forever, so it flags the pull request.
+        class=$(gh_error_class "$FAILURE_TEXT")
+        kv="$kv action=failed rc=$status class=$class"
+        write_failed "$class" pr "$github" "$number" trigger ""
         SKIPS=$((SKIPS + 1))
       fi
     fi
@@ -4724,7 +5136,9 @@ pr_phase_one() {
     # `defer` is silent by design and re-derived next pass.
     state=assessable
     if ! risk_gate "$head" "$head_date" "$head_epoch" "$now" "$response"; then
-      log "pr gate unreadable: $github#$number"
+      # Same as the unreadable state above: a parse of a read that landed, with
+      # nothing GitHub said to classify.
+      read_failed "$(gh_error_class "")" "$github" "pr gate unreadable: $github#$number"
       SKIPS=$((SKIPS + 1))
       return 0
     fi
@@ -4885,7 +5299,10 @@ pr_phase_one() {
 # `updated:>`, if a loop ever falls that far behind.
 query_merged_prs() {
   local response
-  response=$(gh_graphql "{ search(query: \"is:pr is:merged author:$ME sort:updated-desc\", type: ISSUE, first: 100) { nodes { ... on PullRequest { number headRefName repository { nameWithOwner } } } } }") || return 1
+  if ! response=$(gh_graphql "{ search(query: \"is:pr is:merged author:$ME sort:updated-desc\", type: ISSUE, first: 100) { nodes { ... on PullRequest { number headRefName repository { nameWithOwner } } } } }"); then
+    printf '%s' "$response"
+    return 1
+  fi
   jq -e '.data.search.nodes | type == "array"' <<< "$response" >/dev/null 2>&1 || return 1
   jq -r '.data.search.nodes[]
     | select(.number != null)
@@ -4918,7 +5335,10 @@ issue_for_branch() {
 # loop's to touch.
 query_issue() {
   local github="$1" number="$2" response
-  response=$(gh_json "/repos/$github/issues/$number") || return 1
+  if ! response=$(gh_json "/repos/$github/issues/$number"); then
+    printf '%s' "$response"
+    return 1
+  fi
   jq -e 'type == "object" and has("state") and (has("pull_request") | not)' <<< "$response" \
     >/dev/null 2>&1 || return 1
   printf '%s' "$response"
@@ -4936,8 +5356,9 @@ query_issue() {
 update_description() {
   local github="$1" number="$2" file status
   file="$(dirname "$LOG_PATH")/agent-loop-body-$number.md"
+  FAILURE_TEXT=""
   printf '%s' "$3" > "$file" || return 1
-  gh-axi issue edit "$number" --repo "$github" --body-file "$file" >/dev/null 2>&1
+  axi_write issue edit "$number" --repo "$github" --body-file "$file"
   status=$?
   rm -f "$file"
   return "$status"
@@ -4951,9 +5372,12 @@ update_description() {
 # differs — a reworded copy at one caller would be a lie at the other.
 unclaim_issue() {
   local github="$1" number="$2"
-  gh-axi issue edit "$number" --repo "$github" --remove-label "$LABEL_CLAIMED" >/dev/null 2>&1 \
-    && return 0
-  log "unclaim failed for $github#$number, leaving the label on a closed issue"
+  axi_write issue edit "$number" --repo "$github" --remove-label "$LABEL_CLAIMED" && return 0
+  # Refused, *picked up by the next pass* is forever, so it flags the issue —
+  # the one write whose object is already closed, and still the object whose
+  # label the reader has to take off.
+  write_failed "$(gh_error_class "$FAILURE_TEXT")" issue "$github" "$number" unclaim \
+    "unclaim failed for $github#$number, leaving the label on a closed issue"
   return 1
 }
 
@@ -4966,7 +5390,8 @@ unclaim_issue() {
 # work the loop has quietly forgotten.
 close_issue() {
   local github="$1" number="$2"
-  gh-axi issue close "$number" --repo "$github" >/dev/null 2>&1 || return 1
+  # A failed close leaves its text in `$FAILURE_TEXT`; nothing after it runs.
+  axi_write issue close "$number" --repo "$github" || return 1
   # The close landed, so the close-out succeeded; a lost unclaim has already
   # said so on its own line and the next pass will try it again.
   unclaim_issue "$github" "$number" || :
@@ -4996,7 +5421,10 @@ closeout_phase() {
       closeout_one "$github" "$prnumber" "$branch" < /dev/null
     done <<< "$prs"
   else
-    log "merged-pr query failed"
+    # The search is global rather than per repository, so a refused search is
+    # every configured project's at once, and the fatal line names them all.
+    read_failed "$(gh_error_class "$prs")" \
+      "$(jq -r '[.projects[].github] | join(",")' "$CONFIG_PATH")" "merged-pr query failed"
     SKIPS=$((SKIPS + 1))
   fi
   closeout_claims
@@ -5032,7 +5460,7 @@ closeout_claims() {
   for (( i = 0; i < PROJECT_COUNT; i++ )); do
     github=$(jq -r ".projects[$i].github" "$CONFIG_PATH")
     if ! rows=$(query_claimed_issues "$github"); then
-      log "claimed-issue query failed: $github"
+      read_failed "$(gh_error_class "$rows")" "$github" "claimed-issue query failed: $github"
       SKIPS=$((SKIPS + 1))
       continue
     fi
@@ -5040,7 +5468,10 @@ closeout_claims() {
     # asking it.
     [[ -n "$rows" ]] || continue
     # stdin is closed for the body: gh-axi must not swallow the issue list.
-    while IFS=$'\t' read -r number verb; do
+    #
+    # The flag word is read so the verb stays whole and is otherwise unused
+    # here: the spec's own REST read carries its labels.
+    while IFS=$'\t' read -r number verb _escalation; do
       [[ -n "$number" ]] || continue
       # **Verb scope**, and it is load-bearing rather than tidy: without it this
       # fires on any claimed issue that happens to have children — a wayfinder
@@ -5083,7 +5514,7 @@ closeout_claims() {
 # as a sub-issue list with a progress bar, and a comment saying *I found 8
 # children* beneath a panel listing 8 children is a conclusion on its own.
 closeout_claim() {
-  local github="$1" number="$2" issue total
+  local github="$1" number="$2" issue total wore
   # Close-out runs at startup before any pass has taken a snapshot, so it takes
   # its own then — once, because a failed attempt is the answer for every spec
   # after it. **Fails closed**: an inventory that will not answer leaves the
@@ -5106,7 +5537,7 @@ closeout_claim() {
   ! issue_has_live_worker "$number" || return 0
 
   if ! issue=$(query_issue "$github" "$number"); then
-    log "close-out query failed: $github#$number"
+    read_failed "$(gh_error_class "$issue")" "$github" "close-out query failed: $github#$number"
     SKIPS=$((SKIPS + 1))
     return 0
   fi
@@ -5122,8 +5553,14 @@ closeout_claim() {
   # spec is now in no loop query at all. Steady-state cost zero.
   if swap_labels "$github" "$number" "$LABEL_DECOMPOSED" "$LABEL_CLAIMED"; then
     log "decomposed $github#$number: $total sub-issues, unclaimed and flagged $LABEL_DECOMPOSED, left open"
+    wore=$(jq -r --arg esc "$LABEL_ESCALATED" \
+      'if any(.labels[]?.name; . == $esc) then "flagged" else "unflagged" end' <<< "$issue") \
+      || wore=unflagged
+    withdraw_write_flag "$github" "$number" "$wore"
   else
-    log "decomposition close-out failed for $github#$number, leaving it claimed"
+    # Refused, *leaving it claimed* is forever, so it flags the spec.
+    write_failed "$(gh_error_class "$FAILURE_TEXT")" issue "$github" "$number" decomposition-swap \
+      "decomposition close-out failed for $github#$number, leaving it claimed"
     SKIPS=$((SKIPS + 1))
   fi
 }
@@ -5135,7 +5572,7 @@ closeout_claim() {
 # (branch names no issue) and issues the loop never claimed.
 closeout_one() {
   local github="$1" prnumber="$2" branch="$3"
-  local number issue state description ticked
+  local number issue state description ticked wore
 
   # A branch that names no issue is a pull request I opened by hand.
   number=$(issue_for_branch "$branch") || return 0
@@ -5145,7 +5582,7 @@ closeout_one() {
   [[ -n "$(orca_id_for_project "$github")" ]] || return 0
 
   if ! issue=$(query_issue "$github" "$number"); then
-    log "close-out query failed: $github#$number"
+    read_failed "$(gh_error_class "$issue")" "$github" "close-out query failed: $github#$number"
     SKIPS=$((SKIPS + 1))
     return 0
   fi
@@ -5164,6 +5601,12 @@ closeout_one() {
   jq -e --arg claimed "$LABEL_CLAIMED" 'any(.labels[]?.name; . == $claimed)' <<< "$issue" \
     >/dev/null || return 0
   state=$(jq -r '.state' <<< "$issue")
+  # Whether a refused write's flag is up, off the read already in hand.
+  # A payload `query_issue` already vetted; the fallback is for `set -e`, and
+  # reads as no flag, which withdraws nothing.
+  wore=$(jq -r --arg esc "$LABEL_ESCALATED" \
+    'if any(.labels[]?.name; . == $esc) then "flagged" else "unflagged" end' <<< "$issue") \
+    || wore=unflagged
 
   # The trailing newlines a body ends with are part of it: `-j` stops jq adding
   # one of its own, and the sentinel stops command substitution eating the ones
@@ -5176,8 +5619,13 @@ closeout_one() {
   # Nothing left to tick is no write at all, rather than an identical rewrite
   # every pass.
   if [[ "$ticked" != "$description" ]]; then
+    # A refused tick flags the issue even though the close goes ahead: the
+    # reader's action — tick it by hand — is real. Once the close lands this
+    # write is never attempted again, so that flag stands until a human takes it
+    # off, the one place a refused write's flag outlives its write.
     update_description "$github" "$number" "$ticked" \
-      || log "checklist update failed for $github#$number, closing it out anyway"
+      || write_failed "$(gh_error_class "$FAILURE_TEXT")" issue "$github" "$number" checklist \
+           "checklist update failed for $github#$number, closing it out anyway"
   fi
 
   # GitHub got there first: it closed the issue at merge, on the strength of a
@@ -5191,6 +5639,7 @@ closeout_one() {
   if [[ "$state" != "open" ]]; then
     if unclaim_issue "$github" "$number"; then
       log "closed out $github#$number: pull request #$prnumber merged, issue already closed"
+      withdraw_write_flag "$github" "$number" "$wore"
     else
       SKIPS=$((SKIPS + 1))
     fi
@@ -5202,8 +5651,12 @@ closeout_one() {
   # close costs a duplicate worker.
   if close_issue "$github" "$number"; then
     log "closed out $github#$number: pull request #$prnumber merged"
+    withdraw_write_flag "$github" "$number" "$wore"
   else
-    log "close failed for $github#$number, leaving it claimed"
+    # A refused close is the forever-channel: *leaving it claimed* argues one
+    # failed close, and a refused one never lands, so it flags the issue.
+    write_failed "$(gh_error_class "$FAILURE_TEXT")" issue "$github" "$number" close \
+      "close failed for $github#$number, leaving it claimed"
     SKIPS=$((SKIPS + 1))
   fi
 }
@@ -5309,6 +5762,15 @@ run_pass() {
   # Appended after `sweeps` on the pass-end line, so every existing assertion on
   # that line still matches as a substring and no test had to be edited.
   REFUSALS=0
+  # Every member of the failure family that did not die, counted by the two
+  # entry points and by nothing else (#124). Its own field rather than a share
+  # of `skips=`, which mixes the family with waits that are not failures at all
+  # — the blocker skip, the budget defer, the sweep's non-failure rows — and so
+  # cannot answer *did anything fail to read or write this pass*. After
+  # `refusals=`, on that field's own precedent: every assertion on the line's
+  # head still matches as a substring.
+  FAILURES=0
+  WRITE_ESCALATED_OBJECTS=""
   # A budget that failed open would dispatch a fresh maxWorkers on top of the
   # workers it failed to see.
   local inventory=true
@@ -5339,7 +5801,7 @@ run_pass() {
   local drift
   drift=$(current_drift)
   LAST_DRIFT="$drift"
-  log "pass end dispatches=$DISPATCHES skips=$SKIPS sweeps=$SWEEPS refusals=$REFUSALS build=$BUILD drift=$drift"
+  log "pass end dispatches=$DISPATCHES skips=$SKIPS sweeps=$SWEEPS refusals=$REFUSALS failures=$FAILURES build=$BUILD drift=$drift"
 }
 
 # --- main --------------------------------------------------------------------
