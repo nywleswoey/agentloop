@@ -1,12 +1,164 @@
 {
-  "id": "stub-worktree-ps",
+  "id": "00000000-0000-4000-8000-000000000000",
   "ok": true,
   "result": {
     "worktrees": [
-      { "worktreeId": "repo-aaa::/tmp/stub/automation/main", "path": "/tmp/stub/automation/main", "agents": [] },
-      { "worktreeId": "repo-aaa::/tmp/stub/automation/my-own-checkout", "path": "/tmp/stub/automation/my-own-checkout", "agents": [ { "state": "working", "agentType": "claude" } ] },
-      { "worktreeId": "repo-aaa::/tmp/stub/automation/agent-loop-issue-11", "path": "/tmp/stub/automation/agent-loop-issue-11", "agents": [ { "state": "done", "agentType": "claude" } ] },
-      { "worktreeId": "repo-bbb::", "path": null, "agents": [] }
-    ]
+      {
+        "workspaceKind": "git",
+        "worktreeId": "repo-aaa::/tmp/stub/automation/main",
+        "repoId": "repo-aaa",
+        "hostId": "local",
+        "terminalPlatform": "darwin",
+        "repo": "automation",
+        "path": "/tmp/stub/automation/main",
+        "branch": "refs/heads/main",
+        "isArchived": false,
+        "isMainWorktree": true,
+        "hasHostSidebarActivity": false,
+        "worktreeInstanceId": "00000000-0000-4000-8000-000000000001",
+        "parentWorktreeId": null,
+        "childWorktreeIds": [],
+        "displayName": "main",
+        "workspaceStatus": "in-progress",
+        "sortOrder": 1789300000000,
+        "lastActivityAt": 1789300000000,
+        "linkedIssue": null,
+        "linkedPR": null,
+        "linkedLinearIssue": null,
+        "linkedGitLabMR": null,
+        "linkedGitLabIssue": null,
+        "comment": "",
+        "isPinned": false,
+        "isActive": false,
+        "unread": false,
+        "liveTerminalCount": 0,
+        "hasAttachedPty": false,
+        "lastOutputAt": null,
+        "preview": "",
+        "status": "inactive",
+        "agents": []
+      },
+      {
+        "workspaceKind": "git",
+        "worktreeId": "repo-aaa::/tmp/stub/automation/my-own-checkout",
+        "repoId": "repo-aaa",
+        "hostId": "local",
+        "terminalPlatform": "darwin",
+        "repo": "automation",
+        "path": "/tmp/stub/automation/my-own-checkout",
+        "branch": "refs/heads/my-own-checkout",
+        "isArchived": false,
+        "isMainWorktree": false,
+        "hasHostSidebarActivity": false,
+        "worktreeInstanceId": "00000000-0000-4000-8000-000000000002",
+        "parentWorktreeId": null,
+        "childWorktreeIds": [],
+        "displayName": "my-own-checkout",
+        "workspaceStatus": "in-progress",
+        "sortOrder": 1789300600000,
+        "lastActivityAt": 1789300600000,
+        "createdAt": 1789300600000,
+        "creatorProvenance": {
+          "kind": "host"
+        },
+        "linkedIssue": null,
+        "linkedPR": null,
+        "linkedLinearIssue": null,
+        "linkedGitLabMR": null,
+        "linkedGitLabIssue": null,
+        "comment": "",
+        "isPinned": false,
+        "isActive": false,
+        "unread": false,
+        "liveTerminalCount": 1,
+        "hasAttachedPty": true,
+        "lastOutputAt": 1789300660000,
+        "preview": "",
+        "status": "active",
+        "agents": [
+          {
+            "paneKey": "00000000-0000-4000-8000-000000000102:00000000-0000-4000-8000-000000000202",
+            "parentPaneKey": null,
+            "state": "working",
+            "agentType": "claude",
+            "prompt": "stub prompt",
+            "taskTitle": null,
+            "displayName": null,
+            "lastAssistantMessage": null,
+            "toolName": null,
+            "toolInput": null,
+            "interrupted": false,
+            "stateStartedAt": 1789300630000,
+            "updatedAt": 1789300660000
+          }
+        ]
+      },
+      {
+        "workspaceKind": "git",
+        "worktreeId": "repo-aaa::/tmp/stub/automation/agent-loop-issue-11",
+        "repoId": "repo-aaa",
+        "hostId": "local",
+        "terminalPlatform": "darwin",
+        "repo": "automation",
+        "path": "/tmp/stub/automation/agent-loop-issue-11",
+        "branch": "refs/heads/agent-loop-issue-11",
+        "isArchived": false,
+        "isMainWorktree": false,
+        "hasHostSidebarActivity": false,
+        "worktreeInstanceId": "00000000-0000-4000-8000-000000000003",
+        "parentWorktreeId": null,
+        "childWorktreeIds": [],
+        "displayName": "agent-loop-issue-11",
+        "workspaceStatus": "in-progress",
+        "sortOrder": 1789301200000,
+        "lastActivityAt": 1789301200000,
+        "createdAt": 1789301200000,
+        "creatorProvenance": {
+          "kind": "host"
+        },
+        "linkedIssue": null,
+        "linkedPR": null,
+        "linkedLinearIssue": null,
+        "linkedGitLabMR": null,
+        "linkedGitLabIssue": null,
+        "comment": "",
+        "isPinned": false,
+        "isActive": false,
+        "unread": false,
+        "liveTerminalCount": 1,
+        "hasAttachedPty": true,
+        "lastOutputAt": 1789301260000,
+        "preview": "",
+        "status": "active",
+        "agents": [
+          {
+            "paneKey": "00000000-0000-4000-8000-000000000103:00000000-0000-4000-8000-000000000203",
+            "parentPaneKey": null,
+            "state": "done",
+            "agentType": "claude",
+            "prompt": "stub prompt",
+            "taskTitle": null,
+            "displayName": null,
+            "lastAssistantMessage": null,
+            "toolName": null,
+            "toolInput": null,
+            "interrupted": false,
+            "stateStartedAt": 1789301230000,
+            "updatedAt": 1789301260000
+          }
+        ]
+      }
+    ],
+    "hostScope": {
+      "hostIds": [
+        "local"
+      ],
+      "omittedHostIds": []
+    },
+    "totalCount": 3,
+    "truncated": false
+  },
+  "_meta": {
+    "runtimeId": "stub-runtime"
   }
 }

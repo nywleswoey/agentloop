@@ -1199,16 +1199,42 @@ load_worktree_inventory() {
   ORCA_PS="$response"
 }
 
-# Every worktree Orca knows, one `<live|idle>\t<path>` line each. An agent that
-# is `working` or `waiting` is live; `waiting` counts because a worker parked
-# for my confirmation still holds its branch and owes me an answer — it is not
-# finished. `orca terminal list` is not used for this: it cannot tell a busy
-# terminal from an idle shell.
+# Every worktree Orca knows, one `<live|idle>\t<createdAt>\t<worktreeId>\t<path>`
+# line each. An agent that is `working` or `waiting` is live; `waiting` counts
+# because a worker parked for my confirmation still holds its branch and owes me
+# an answer — it is not finished. `orca terminal list` is not used for this: it
+# cannot tell a busy terminal from an idle shell.
+#
+# **`createdAt` is the one durable origin the sweep and the reclaim can put a
+# clock on** (#130, declared by #136). It is the worktree's, in epoch-ms, and
+# the loop remembers nothing between passes, so an origin has to be a fact some
+# read already carries — this read carries it. The agent's `stateStartedAt` sits
+# right beside it and is never used: it resets on every transition, so a clock
+# against it restarts each time a worker goes `working` → `waiting` → `working`.
+#
+# `createdAt` is absent exactly on the main worktree (`isMainWorktree`, captured
+# against Orca 1.4.200 in docs/orca-worktree-ps-capture.md), which
+# `is_loop_worktree` already excludes. Anywhere else, absent or unparseable, it
+# projects as `-` rather than as an empty field — `read` collapses adjacent tabs,
+# so an empty column would shift the path into it — and never as a number: a
+# guessed origin is a bound that silently vanishes. What `-` means is each
+# consumer's to decide, in its own fail-closed direction, and on its own line.
+# The upper limit rejects anything past year 2286, which is garbage rather than
+# an instant, and keeps the value inside shell arithmetic.
+#
+# `worktreeId` is `<orcaRepoId>::<path>`, and config maps `orcaRepoId` to
+# `github`, so `${worktree_id%%::*}` names a worktree's repository with no new
+# read. The path stays last so that `read` hands it any whitespace it carries.
 orca_worktrees() {
   jq -r '.result.worktrees[]?
     | select(.path != null)
     | [ (if any(.agents[]?.state; . == "working" or . == "waiting")
-         then "live" else "idle" end), .path ]
+         then "live" else "idle" end),
+        (if (.createdAt | type) == "number" and .createdAt > 0 and .createdAt < 1e13
+         then (.createdAt | floor | tostring) else "-" end),
+        (if (.worktreeId | type) == "string" and .worktreeId != ""
+         then .worktreeId else "-" end),
+        .path ]
     | @tsv' <<< "$ORCA_PS"
 }
 
@@ -1224,7 +1250,7 @@ resolve_path() {
 worktree_state() {
   local target="" state path
   target=$(resolve_path "$1")
-  while IFS=$'\t' read -r state path; do
+  while IFS=$'\t' read -r state _ _ path; do
     if [[ "$(resolve_path "$path")" == "$target" ]]; then
       printf '%s' "$state"
       return 0
@@ -1245,7 +1271,7 @@ is_loop_worktree() {
 # in a worktree whose directory name matches.
 count_live_workers() {
   local state path count=0
-  while IFS=$'\t' read -r state path; do
+  while IFS=$'\t' read -r state _ _ path; do
     [[ "$state" == "live" ]] || continue
     if [[ "${path##*/}" =~ $1 ]]; then
       count=$((count + 1))
@@ -2502,7 +2528,7 @@ issue_phase_project() {
 # left exactly where it is, with a line saying why.
 sweep_worktrees() {
   local state path dirty unpushed
-  while IFS=$'\t' read -r state path; do
+  while IFS=$'\t' read -r state _ _ path; do
     # Ownership is asked first: a worktree of mine is out of scope before any
     # other question is put to it, and before git is run against it at all.
     is_loop_worktree "$path" || continue
