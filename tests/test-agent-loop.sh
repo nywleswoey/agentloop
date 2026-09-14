@@ -44,7 +44,7 @@ setup() {
   export STUB_ORCA_STATUS=ready STUB_ISSUES=none STUB_ORCA_PS=idle
   export STUB_CLAIMED=none STUB_WORKTREES=none STUB_DIRTY="" STUB_UNPUSHED=""
   export STUB_WORLD=none STUB_MERGED=none
-  unset AGENT_LOOP_LOG_MAX_BYTES AGENT_LOOP_RUNTIME_WAIT_SECONDS STUB_ORCA_READY_READS STUB_GH_FAIL STUB_GH_PARTIAL STUB_GH_STDERR STUB_ORCA_FAIL STUB_GIT_FAIL STUB_TAIL_FAIL
+  unset AGENT_LOOP_LOG_MAX_BYTES AGENT_LOOP_RUNTIME_WAIT_SECONDS STUB_ORCA_READY_READS STUB_GH_FAIL STUB_GH_ERROR STUB_GH_PARTIAL STUB_GH_STDERR STUB_ORCA_FAIL STUB_GIT_FAIL STUB_TAIL_FAIL
   # Multi-pass cases number their passes from here.
   PASS_N=0
   # Unfrozen unless a case says otherwise, so the stub `date` is the real one
@@ -707,6 +707,22 @@ check_grep "claim failed for nywleswoey/automation#45, leaving it ready" "$OUT"
 check_no_grep "worktree create" "$STUB_CALLS"
 check_grep "pass end dispatches=0 skips=1" "$OUT"
 
+setup "a refused claim whose flag is refused too dies"
+# Every label edit is refused, so the escalation's own flag write is refused
+# as well — the shape of a global permission loss, which sorts itself into the
+# refused-read answer rather than leaving a record with no flag on every issue.
+export STUB_ISSUES=swap STUB_GH_FAIL=claim STUB_GH_ERROR=404
+run_once
+check_status 1 "$STATUS"
+check_grep "claim failed for nywleswoey/automation#45, leaving it ready class=refused" "$OUT"
+# The record went up first — its write is a comment, which was not refused —
+# and the flag after it is what died.
+check_grep "gh-axi issue comment 45 --repo nywleswoey/automation --body-file" "$STUB_CALLS"
+check_grep "gh-axi issue edit 45 --repo nywleswoey/automation --add-label agent-escalated" "$STUB_CALLS"
+check_grep "fatal: refused-write flag refused on nywleswoey/automation#45 class=refused project=nywleswoey/automation" "$OUT"
+check_no_grep "pass end" "$OUT"
+check_no_grep "worktree create" "$STUB_CALLS"
+
 setup "a claim gh-axi fails on its own still carries the error text"
 # gh-axi's own failures go to stderr with stdout empty; the old swap sent both
 # channels to /dev/null, and a fix that kept only stdout would log nothing here.
@@ -1013,7 +1029,7 @@ export STUB_ISSUES=verbless STUB_GH_FAIL=claim
 run_once
 check_status 0 "$STATUS"
 check_grep "issue nywleswoey/automation#17 refused verb=- edges=ok" "$OUT"
-check_grep "refusal label swap failed for nywleswoey/automation#17, leaving it ready" "$OUT"
+check_grep "refusal label swap failed for nywleswoey/automation#17, leaving it ready class=transient" "$OUT"
 check_no_grep "gh-axi issue comment 17" "$STUB_CALLS"
 check_no_grep "worktree create" "$STUB_CALLS"
 check_grep "pass end dispatches=0 skips=1 sweeps=1 refusals=0" "$OUT"
@@ -1306,7 +1322,7 @@ export STUB_ISSUES=claim-blocked STUB_GH_FAIL=claim
 run_once
 check_status 0 "$STATUS"
 check_grep "issue nywleswoey/automation#69 refused verb=implement edges=missing:nywleswoey/automation#71" "$OUT"
-check_grep "refusal label swap failed for nywleswoey/automation#69, leaving it ready" "$OUT"
+check_grep "refusal label swap failed for nywleswoey/automation#69, leaving it ready class=transient" "$OUT"
 check_no_grep "issue comment 69" "$STUB_CALLS"
 # The counter counts issues that left the ready queue. This one did not, so it is
 # accounted the way a lost claim is — as a skip the next pass looks at again.
@@ -1370,14 +1386,17 @@ setup "a GraphQL error body is a failed query, not an empty backlog"
 export STUB_ISSUES=error
 run_once
 check_status 0 "$STATUS"
-check_grep "issue query failed: nywleswoey/automation" "$OUT"
-check_grep "pass end dispatches=0 skips=1 sweeps=1" "$OUT"
+# A 200 carrying an `errors` block has no `error:`/`code:` lines to classify, so
+# it is transient: it skips exactly as it did, says so on its line, and is the
+# one failure the pass counts (#124).
+check_grep "issue query failed: nywleswoey/automation class=transient" "$OUT"
+check_grep "pass end dispatches=0 skips=1 sweeps=1 refusals=0 failures=1" "$OUT"
 
 setup "a blocker read that will not answer skips the issue rather than guessing"
 export STUB_ISSUES=workable STUB_GH_FAIL=blockers
 run_once
 check_status 0 "$STATUS"
-check_grep "issue nywleswoey/automation#17 skipped: could not read its blockers" "$OUT"
+check_grep "issue nywleswoey/automation#17 skipped: could not read its blockers class=transient" "$OUT"
 check_no_grep "issue edit" "$STUB_CALLS"
 check_no_grep "worktree create" "$STUB_CALLS"
 
@@ -1394,8 +1413,10 @@ export STUB_ISSUES=workable STUB_ORCA_FAIL=create
 run_once
 check_status 0 "$STATUS"
 check_grep "$CLAIM_CALL" "$STUB_CALLS"
-check_grep "dispatch failed for nywleswoey/automation#17" "$OUT"
-check_grep "pass end dispatches=0 skips=1 sweeps=1" "$OUT"
+# Orca has no classifier and passes no text, so it joins the family through
+# the same empty-text rule as a torn GitHub response: transient (#124).
+check_grep "dispatch failed for nywleswoey/automation#17, issue left claimed class=transient" "$OUT"
+check_grep "pass end dispatches=0 skips=1 sweeps=1 refusals=0 failures=1" "$OUT"
 
 # --- worktree inventory: the branch report -------------------------------------
 
@@ -1509,7 +1530,7 @@ setup "a failed claimed-issue query is logged and startup continues"
 export STUB_CLAIMED=mixed STUB_GH_FAIL=issues
 run_once
 check_status 0 "$STATUS"
-check_grep "claimed-issue query failed: nywleswoey/automation" "$OUT"
+check_grep "claimed-issue query failed: nywleswoey/automation class=transient" "$OUT"
 check_grep "pass start" "$OUT"
 
 # --- an open pull request already delivers the issue ---------------------------
@@ -1616,14 +1637,14 @@ setup "a reclaim that cannot ask about open pull requests reclaims nothing"
 export STUB_CLAIMED=17 STUB_GH_FAIL=prs
 run_once
 check_status 0 "$STATUS"
-check_grep "open-pr query failed: nywleswoey/automation, skipping its reclaim" "$OUT"
+check_grep "open-pr query failed: nywleswoey/automation, skipping its reclaim class=transient" "$OUT"
 check_no_grep "--add-label ready-for-agent" "$STUB_CALLS"
 
 setup "an issue phase that cannot ask about open pull requests dispatches nothing"
 export STUB_ISSUES=workable STUB_GH_FAIL=prs
 run_once
 check_status 0 "$STATUS"
-check_grep "open-pr query failed: nywleswoey/automation, skipping its issue phase" "$OUT"
+check_grep "open-pr query failed: nywleswoey/automation, skipping its issue phase class=transient" "$OUT"
 check_no_grep "issue edit" "$STUB_CALLS"
 check_no_grep "worktree create" "$STUB_CALLS"
 
@@ -1671,9 +1692,11 @@ setup "a git that will not answer the push question leaves the worktree alone"
 export STUB_ORCA_PS=sweep STUB_GIT_FAIL=rev-list
 run_once
 check_status 0 "$STATUS"
-check_grep "sweep skipped /tmp/stub/automation/agent-loop-issue-31: could not read its push state" "$OUT"
+check_grep "sweep skipped /tmp/stub/automation/agent-loop-issue-31: could not read its push state class=transient" "$OUT"
 check_no_grep "worktree rm" "$STUB_CALLS"
-check_grep "pass end dispatches=0 skips=0 sweeps=0" "$OUT"
+# git has no classifier and passes no text, so each of the three idle, clean
+# loop worktrees is one transient failure; the two live ones are never asked.
+check_grep "pass end dispatches=0 skips=0 sweeps=0 refusals=0 failures=3" "$OUT"
 
 setup "a loop worker parked waiting for my confirmation is left alone and logged"
 export STUB_ORCA_PS=sweep STUB_DIRTY="$SWEEP_DIRTY" STUB_UNPUSHED="$SWEEP_UNPUSHED"
@@ -1708,8 +1731,8 @@ export STUB_ORCA_PS=sweep STUB_ORCA_FAIL=rm
 export STUB_DIRTY="$SWEEP_DIRTY" STUB_UNPUSHED="$SWEEP_UNPUSHED"
 run_once
 check_status 0 "$STATUS"
-check_grep "sweep failed for /tmp/stub/automation/agent-loop-issue-31, leaving it in place" "$OUT"
-check_grep "pass end dispatches=0 skips=0 sweeps=0" "$OUT"
+check_grep "sweep failed for /tmp/stub/automation/agent-loop-issue-31, leaving it in place class=transient" "$OUT"
+check_grep "pass end dispatches=0 skips=0 sweeps=0 refusals=0 failures=1" "$OUT"
 
 setup "an unreadable inventory skips the sweep rather than sweeping blindly"
 export STUB_ORCA_FAIL=ps
@@ -2806,6 +2829,48 @@ export STUB_GH_FAIL=""
 run_once
 check_status 0 "$STATUS"
 check_grep "#401 401a401a401a401a401a401a401a401a401a401a assessable review=terminal threads=0 autofix=unspent verdict=merge risk=ok checks=ok mergeability=ok blast=ok action=deferred bound=retraction handover=retracted label=removed" "$OUT"
+
+setup "a refused trigger keeps the flag it raised on a pull request with no record"
+# #601 at its new head wears the flag with no record behind it, which the chase
+# takes down on any other pass. On this one the trigger is refused and the
+# refused write raises that same flag, so taking it off would undo the
+# escalation on the pass it went up — and put it back on the next, forever.
+export STUB_WORLD=escalation/pass4 STUB_NOW=2026-08-27T14:05:00Z STUB_GH_FAIL=pr-command STUB_GH_ERROR=404
+run_once
+check_status 0 "$STATUS"
+check_grep "pr nywleswoey/automation#601 601b601b601b601b601b601b601b601b601b601b needs-autofix review=terminal threads=2 autofix=unspent action=failed rc=1 class=refused" "$OUT"
+check_grep "nywleswoey/automation#601 flagged agent-escalated: its trigger was refused" "$OUT"
+check_grep "<!-- agent-loop-write-refused: trigger -->" "$STUB_STATE/pr-body-601.txt"
+check_grep "gh-axi pr edit 601 --repo nywleswoey/automation --add-label agent-escalated" "$STUB_CALLS"
+check_no_grep "--remove-label agent-escalated" "$STUB_CALLS"
+check_no_grep "label=removed" "$OUT"
+
+setup "a refused retraction flags its pull request once and the flag comes off when it lands"
+# The same world with a 404 on the edit: a retraction GitHub durably refuses
+# never lands, so the loop would hold this pull request behind a false record
+# forever. The pull request gets the refused write's own record and the flag.
+export STUB_WORLD=unlatch/pass2 STUB_NOW=2026-08-27T11:40:00Z STUB_GH_FAIL=comment-edit STUB_GH_ERROR=404
+run_once
+check_status 0 "$STATUS"
+check_grep "#401 401a401a401a401a401a401a401a401a401a401a assessable review=terminal threads=0 autofix=unspent verdict=merge risk=ok checks=ok mergeability=ok blast=ok action=deferred bound=retraction handover=retract-failed rc=1 class=refused" "$OUT"
+check_grep "nywleswoey/automation#401 flagged agent-escalated: its retract was refused" "$OUT"
+check_grep "gh-axi api /repos/nywleswoey/automation/issues/401/comments" "$STUB_CALLS"
+check_grep "gh-axi pr comment 401 --repo nywleswoey/automation --body-file" "$STUB_CALLS"
+check_grep "gh-axi pr edit 401 --repo nywleswoey/automation --add-label agent-escalated" "$STUB_CALLS"
+check_grep "<!-- agent-loop-write-refused: retract -->" "$STUB_STATE/pr-body-401.txt"
+check_no_grep "--remove-label" "$STUB_CALLS"
+check_grep "refusals=0 failures=1" "$OUT"
+# A second refused attempt reads the record back and posts nothing.
+run_once
+check_status 0 "$STATUS"
+check "the record was posted once across both attempts" \
+  test "$(grep -cF 'gh-axi pr comment 401 --repo nywleswoey/automation --body-file' "$STUB_CALLS")" -eq 1
+check_no_grep "--remove-label" "$STUB_CALLS"
+# The retraction lands, and the chase takes the flag down with the record.
+export STUB_GH_FAIL=""
+run_once
+check_status 0 "$STATUS"
+check_grep "handover=retracted label=removed" "$OUT"
 
 # --- pr phase: what the latch does with a record it did not just write -------------
 
@@ -4020,11 +4085,30 @@ setup "a failed per-pull-request read leaves that pull request alone"
 export STUB_WORLD=states STUB_GH_FAIL=pr-state STUB_NOW=2026-08-27T12:00:00Z
 run_once
 check_status 0 "$STATUS"
-check_grep "pr state query failed: nywleswoey/automation#203" "$OUT"
+check_grep "pr state query failed: nywleswoey/automation#203 class=transient" "$OUT"
 check_no_grep "body @coderabbitai autofix" "$STUB_CALLS"
+# Every pull request in the world failed its read, and each one is a failure of
+# its own; `skips=` still counts them exactly as it did.
+check "every failed read is counted in failures=" \
+  test "$(grep -F 'pass end' "$OUT" | sed -n 's/.*skips=\([0-9]*\).*failures=\([0-9]*\).*/\1 \2/p')" = "$(grep -cF 'pr state query failed' "$OUT") $(grep -cF 'pr state query failed' "$OUT")"
+
+setup "a refused read dies, and the fatal line names the project"
+# A 404 is an answer rather than a wait — a renamed repository, a token scope —
+# so asking again next pass would be re-asking a question already answered.
+export STUB_WORLD=states STUB_GH_FAIL=pr-state STUB_GH_ERROR=404 STUB_NOW=2026-08-27T12:00:00Z
+run_once
+check_status 1 "$STATUS"
+check_grep "fatal: pr state query failed: nywleswoey/automation#203 class=refused project=nywleswoey/automation" "$OUT"
+check_no_grep "pass end" "$OUT"
+# The pass stopped at the first refused read rather than skipping to the next.
+check "no later pull request was read" \
+  test "$(grep -cF 'statusCheckRollup' "$STUB_CALLS")" -eq 1
 
 setup "a failed trigger is recorded on the state line and re-fired next pass"
-export STUB_WORLD=states STUB_GH_FAIL=pr-comment STUB_NOW=2026-08-27T12:00:00Z
+# A 500, named rather than left to the handler's default 404: this case is the
+# transient half, where the skip is the exit. A refused write flags its object
+# instead, and has cases of its own.
+export STUB_WORLD=states STUB_GH_FAIL=pr-comment STUB_GH_ERROR=500 STUB_NOW=2026-08-27T12:00:00Z
 run_once
 check_status 0 "$STATUS"
 check_grep "#204 204d204d204d204d204d204d204d204d204d204d needs-autofix review=terminal threads=2 autofix=unspent action=failed rc=1" "$OUT"
@@ -4335,7 +4419,7 @@ setup "a failed checklist update is logged and the issue is closed anyway"
 export STUB_MERGED=set STUB_GH_FAIL=body
 run_once
 check_status 0 "$STATUS"
-check_grep "checklist update failed for nywleswoey/automation#17, closing it out anyway" "$OUT"
+check_grep "checklist update failed for nywleswoey/automation#17, closing it out anyway class=transient" "$OUT"
 check_grep "$CLOSE_17" "$STUB_CALLS"
 check_grep "closed out nywleswoey/automation#17: pull request #201 merged" "$OUT"
 
@@ -4343,9 +4427,120 @@ setup "a failed close is logged and the pass continues"
 export STUB_MERGED=set STUB_GH_FAIL=close
 run_once
 check_status 0 "$STATUS"
-check_grep "close failed for nywleswoey/automation#17, leaving it claimed" "$OUT"
+check_grep "close failed for nywleswoey/automation#17, leaving it claimed class=transient" "$OUT"
 check_grep "pass start" "$OUT"
 check_grep "pass end" "$OUT"
+check_no_grep "--add-label agent-escalated" "$STUB_CALLS"
+
+setup "a refused write flags its object with one comment, and a second attempt adds none"
+# A 404 on the close is an answer, not a wait: retried every pass it would stay
+# claimed forever, which is the forever-channel #124 closes. So the issue the
+# write targeted gets the flag and one record of why, and every other project
+# keeps running.
+#
+# Close-out runs twice in a --once run — at startup and again in the pass — so
+# one run attempts the close twice, and the second attempt is the second pass
+# the marker gate exists for.
+export STUB_MERGED=set STUB_GH_FAIL=close STUB_GH_ERROR=404
+run_once
+check_status 0 "$STATUS"
+check "the close was attempted on both close-outs" \
+  test "$(grep -cF 'gh-axi issue close 17 --repo nywleswoey/automation' "$STUB_CALLS")" -eq 2
+check_grep "close failed for nywleswoey/automation#17, leaving it claimed class=refused" "$OUT"
+check "exactly one comment across both attempts" \
+  test "$(grep -cF 'gh-axi issue comment 17 --repo nywleswoey/automation --body-file' "$STUB_CALLS")" -eq 1
+check_grep "gh-axi issue edit 17 --repo nywleswoey/automation --add-label agent-escalated" "$STUB_CALLS"
+# Record first, then flag, as the handover does: a flag with no record behind
+# it is the one state the reader cannot act on.
+check "the comment is posted before the flag goes on" \
+  test "$(call_line 'gh-axi issue comment 17 ')" -lt "$(call_line 'gh-axi issue edit 17 --repo nywleswoey/automation --add-label agent-escalated')"
+# The gate is a read of the object's own comments, not a memory of this run.
+check_grep "gh-axi api /repos/nywleswoey/automation/issues/17/comments" "$STUB_CALLS"
+check "the flag is said once, on the attempt that posted the record" \
+  test "$(grep -cF 'nywleswoey/automation#17 flagged agent-escalated' "$OUT")" -eq 1
+REFUSED_RECORD="$STUB_STATE/issue-body-17.txt"
+check "the record was captured" test -f "$REFUSED_RECORD"
+check_grep "<!-- agent-loop-write-refused: close -->" "$REFUSED_RECORD"
+# What GitHub said, verbatim: the only clue the reader has to the cause.
+check_grep 'error: "gh: Not Found (HTTP 404)"' "$REFUSED_RECORD"
+check_no_grep "fatal:" "$OUT"
+check_no_grep "--remove-label agent-escalated" "$STUB_CALLS"
+
+# The write lands. The flag is live, not a latch: its predicate is the write
+# attempt, so it comes off on the pass the close goes through, and the record
+# stays as the event it was.
+export STUB_GH_FAIL=""
+run_once
+check_status 0 "$STATUS"
+check_grep "closed out nywleswoey/automation#17: pull request #201 merged" "$OUT"
+check_grep "gh-axi issue edit 17 --repo nywleswoey/automation --remove-label agent-escalated" "$STUB_CALLS"
+check_grep "nywleswoey/automation#17 withdrew agent-escalated: its refused write landed" "$OUT"
+check "the flag came off after the close landed" \
+  test "$(call_line 'gh-axi issue close 17 --repo nywleswoey/automation')" -lt "$(call_line '17 --repo nywleswoey/automation --remove-label agent-escalated')"
+check "the record was never posted again" \
+  test "$(grep -cF 'gh-axi issue comment 17 --repo nywleswoey/automation --body-file' "$STUB_CALLS")" -eq 1
+check "the flag came off once" \
+  test "$(grep -cF 'issue edit 17 --repo nywleswoey/automation --remove-label agent-escalated' "$STUB_CALLS")" -eq 1
+
+# --- a refused write's flag comes off on the pass the write lands ------------
+
+# Each issue below starts wearing the flag a refused write would have raised —
+# seeded through the stub's own label log, which every read of the issue
+# replays — and the write that was refused now lands. The flag is live over the
+# write attempt, so it comes off on that same pass and nowhere else.
+
+setup "a reclaim that lands does not take down the flag a refused close raised"
+# Startup runs close-out and then the reclaim over the same claims. A close
+# refused at startup flags #17, and the reclaim then hands #17 back — a landed
+# write on the same issue, but not the refused one. The flag must survive it,
+# or it comes down with the close still refused and goes up again next pass.
+export STUB_CLAIMED=17 STUB_MERGED=set STUB_GH_FAIL=close STUB_GH_ERROR=404
+run_once
+check_status 0 "$STATUS"
+check_grep "close failed for nywleswoey/automation#17, leaving it claimed class=refused" "$OUT"
+check_grep "reclaimed nywleswoey/automation#17" "$OUT"
+check_grep "gh-axi issue edit 17 --repo nywleswoey/automation --add-label agent-escalated" "$STUB_CALLS"
+check_no_grep "17 --repo nywleswoey/automation --remove-label agent-escalated" "$STUB_CALLS"
+
+setup "a claim that lands takes down the flag a refused claim raised"
+export STUB_ISSUES=swap
+printf '+agent-escalated\n' > "$STUB_STATE/labels-45"
+run_once
+check_status 0 "$STATUS"
+check_grep "claimed nywleswoey/automation#45" "$OUT"
+check_grep "gh-axi issue edit 45 --repo nywleswoey/automation --remove-label agent-escalated" "$STUB_CALLS"
+check_grep "nywleswoey/automation#45 withdrew agent-escalated: its refused write landed" "$OUT"
+check "the flag came off after the claim landed" \
+  test "$(call_line "$SWAP_CLAIM")" -lt "$(call_line '45 --repo nywleswoey/automation --remove-label agent-escalated')"
+
+setup "a refusal whose swap lands takes down the flag a refused swap raised"
+export STUB_ISSUES=verbless
+printf '+agent-escalated\n' > "$STUB_STATE/labels-17"
+run_once
+check_status 0 "$STATUS"
+check_grep "gh-axi issue edit 17 --repo nywleswoey/automation --add-label agent-refused --remove-label ready-for-agent" "$STUB_CALLS"
+check_grep "gh-axi issue edit 17 --repo nywleswoey/automation --remove-label agent-escalated" "$STUB_CALLS"
+check_grep "nywleswoey/automation#17 withdrew agent-escalated: its refused write landed" "$OUT"
+
+setup "a reclaim that lands takes down the flag a refused reclaim raised"
+export STUB_CLAIMED=mixed STUB_ORCA_PS=busy
+printf '+agent-escalated\n' > "$STUB_STATE/labels-21"
+run_once
+check_status 0 "$STATUS"
+check_grep "reclaimed nywleswoey/automation#21" "$OUT"
+check_grep "gh-axi issue edit 21 --repo nywleswoey/automation --remove-label agent-escalated" "$STUB_CALLS"
+# #1 is reclaimed on the same pass and never wore the flag, so nothing comes off it.
+check "only the flagged issue loses a flag" \
+  test "$(grep -cF -- '--remove-label agent-escalated' "$STUB_CALLS")" -eq 1
+
+setup "a decomposition swap that lands takes down the flag a refused swap raised"
+export STUB_CLAIMED=specs STUB_ORCA_PS=idle
+printf '+agent-escalated\n' > "$STUB_STATE/labels-92"
+run_once
+check_status 0 "$STATUS"
+check_grep "decomposed nywleswoey/automation#92: 5 sub-issues, unclaimed and flagged agent-decomposed, left open" "$OUT"
+check_grep "gh-axi issue edit 92 --repo nywleswoey/automation --remove-label agent-escalated" "$STUB_CALLS"
+check_grep "nywleswoey/automation#92 withdrew agent-escalated: its refused write landed" "$OUT"
 
 setup "a failed unclaim leaves a closed issue for the next close-out to finish"
 # Every label edit fails, so every unclaim does. Close-out runs twice in a
@@ -4364,7 +4559,7 @@ setup "a failed unclaim leaves a closed issue for the next close-out to finish"
 export STUB_MERGED=set STUB_GH_FAIL=claim
 run_once
 check_status 0 "$STATUS"
-check_grep "unclaim failed for nywleswoey/automation#17, leaving the label on a closed issue" "$OUT"
+check_grep "unclaim failed for nywleswoey/automation#17, leaving the label on a closed issue class=transient" "$OUT"
 check_grep "closed out nywleswoey/automation#17: pull request #201 merged" "$OUT"
 check_grep "unclaim failed for nywleswoey/automation#44, leaving the label on a closed issue" "$OUT"
 check_no_grep "closed out nywleswoey/automation#44" "$OUT"
@@ -4378,7 +4573,7 @@ setup "a failed merged-pr query is logged and the pass continues"
 export STUB_MERGED=set STUB_GH_FAIL=merged
 run_once
 check_status 0 "$STATUS"
-check_grep "merged-pr query failed" "$OUT"
+check_grep "merged-pr query failed class=transient" "$OUT"
 check_no_grep "gh-axi issue close" "$STUB_CALLS"
 check_grep "pass end dispatches=0 skips=1 sweeps=1" "$OUT"
 
@@ -4386,7 +4581,7 @@ setup "a failed issue read is logged and the pass continues"
 export STUB_MERGED=set STUB_GH_FAIL=issue
 run_once
 check_status 0 "$STATUS"
-check_grep "close-out query failed: nywleswoey/automation#17" "$OUT"
+check_grep "close-out query failed: nywleswoey/automation#17 class=transient" "$OUT"
 check_no_grep "gh-axi issue close" "$STUB_CALLS"
 
 setup "no merged pull requests means no close-out traffic"
@@ -4478,7 +4673,7 @@ setup "a child count that will not answer leaves the spec claimed"
 export STUB_CLAIMED=specs STUB_ORCA_PS=idle STUB_GH_FAIL=issue
 run_once
 check_status 0 "$STATUS"
-check_grep "close-out query failed: nywleswoey/automation#92" "$OUT"
+check_grep "close-out query failed: nywleswoey/automation#92 class=transient" "$OUT"
 check_no_grep "--add-label agent-decomposed" "$STUB_CALLS"
 check_no_grep "decomposed nywleswoey/automation#92" "$OUT"
 
@@ -4486,7 +4681,7 @@ setup "a failed decomposition close-out is logged and the spec stays claimed"
 export STUB_CLAIMED=specs STUB_ORCA_PS=idle STUB_GH_FAIL=claim
 run_once
 check_status 0 "$STATUS"
-check_grep "decomposition close-out failed for nywleswoey/automation#92, leaving it claimed" "$OUT"
+check_grep "decomposition close-out failed for nywleswoey/automation#92, leaving it claimed class=transient" "$OUT"
 check_no_grep "decomposed nywleswoey/automation#92: 5" "$OUT"
 
 setup "a merged-pr query that fails does not silence the second entry path"
@@ -4496,14 +4691,14 @@ setup "a merged-pr query that fails does not silence the second entry path"
 export STUB_CLAIMED=specs STUB_ORCA_PS=idle STUB_MERGED=set STUB_GH_FAIL=merged
 run_once
 check_status 0 "$STATUS"
-check_grep "merged-pr query failed" "$OUT"
+check_grep "merged-pr query failed class=transient" "$OUT"
 check_grep "decomposed nywleswoey/automation#92: 5 sub-issues, unclaimed and flagged agent-decomposed, left open" "$OUT"
 
 setup "a claimed-issue query close-out cannot make is logged and the pass continues"
 export STUB_CLAIMED=specs STUB_GH_FAIL=issues
 run_once
 check_status 0 "$STATUS"
-check_grep "claimed-issue query failed: nywleswoey/automation" "$OUT"
+check_grep "claimed-issue query failed: nywleswoey/automation class=transient" "$OUT"
 check_grep "pass end" "$OUT"
 
 setup "an unreadable inventory leaves a claimed spec alone rather than unclaiming it blindly"
@@ -4525,7 +4720,7 @@ check_no_grep "--add-label agent-decomposed" "$STUB_CALLS"
 setup "the pass-end line names the build and reports no drift on a matching checkout"
 run_once
 check_status 0 "$STATUS"
-check_grep "pass end dispatches=0 skips=0 sweeps=1 refusals=0 build=headsha0 drift=none" "$OUT"
+check_grep "pass end dispatches=0 skips=0 sweeps=1 refusals=0 failures=0 build=headsha0 drift=none" "$OUT"
 check "build is measured before startup closeout" \
   test "$(call_line "git -C $ROOT rev-parse HEAD")" -lt "$(call_line "is:pr is:merged")"
 
@@ -4535,7 +4730,7 @@ setup "a dirty script directory stops build= naming a commit and leaves drift un
 export STUB_DIRTY="$ROOT"
 run_once
 check_status 0 "$STATUS"
-check_grep "refusals=0 build=headsha0-dirty drift=unknown" "$OUT"
+check_grep "refusals=0 failures=0 build=headsha0-dirty drift=unknown" "$OUT"
 
 setup "an unreadable checkout leaves both fields claiming nothing"
 # Every read here is fail-safe: a field that cannot answer says so rather than
@@ -4543,13 +4738,16 @@ setup "an unreadable checkout leaves both fields claiming nothing"
 export STUB_GIT_FAIL=rev-parse
 run_once
 check_status 0 "$STATUS"
-check_grep "refusals=0 build=unknown drift=unknown" "$OUT"
+check_grep "refusals=0 failures=0 build=unknown drift=unknown" "$OUT"
 
 setup "a status read that fails is read as dirty rather than clean"
 export STUB_GIT_FAIL=status
 run_once
 check_status 0 "$STATUS"
-check_grep "refusals=0 build=headsha0-dirty drift=unknown" "$OUT"
+# The same failing status read reaches the sweep's one done loop worktree in the
+# default inventory, which is a transient failure of its own.
+check_grep "sweep skipped /tmp/stub/automation/agent-loop-issue-11: could not read its status class=transient" "$OUT"
+check_grep "refusals=0 failures=1 build=headsha0-dirty drift=unknown" "$OUT"
 
 setup "a longer short abbreviation does not report drift when the full head is unchanged"
 printf '1111111111111111111111111111111111111111' > "$STUB_STATE/git-head"

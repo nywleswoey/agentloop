@@ -13,12 +13,14 @@
 # ones no stub run will ever produce as a side effect. Reaching into the
 # function is what makes the table checkable rather than sampled.
 #
-# `gh_json` and `gh_graphql` are deliberately *not* tested here. They have no
-# behaviour independent of the two scripts that call them and are covered
-# through both suites, which is also what keeps them from drifting back into
-# two copies. The one exception is the hand-off between them and the
-# classifier — that GH_ERROR carries the text the table reads — which has no
-# other home and is asserted at the end.
+# `gh_json` and `gh_graphql` are otherwise covered through the two scripts that
+# call them, which is also what keeps them from drifting back into two copies.
+# The exception is the hand-off between them and the classifier — that the
+# failure text the table reads comes out of them at all, on both channels, and
+# classifies the way a caller will read it — which has no other home and is
+# asserted at the end. Since #124 every failed read and write in agent-loop.sh
+# is classified off exactly that text, so it is this file's contract rather
+# than a detail of the merge.
 #
 # Usage:
 #   ./tests/test-gh.sh
@@ -301,5 +303,59 @@ GH_ERROR="$(render 'Pull Request is still a draft (HTTP 405)' UNKNOWN)"
 gh_graphql "$QUERY" >/dev/null 2>&1
 check "a successful gh_graphql clears a refusal left by an earlier call" \
   test -z "$GH_ERROR"
+
+# --- what a caller classifies, in the shape it calls ---------------------------
+
+CURRENT="a failure's text classifies the same from either channel"
+echo "== $CURRENT"
+
+# The family's call sites substitute their reads, so stdout is the channel they
+# classify from; a bare call reads GH_ERROR. A refusal must read refused from
+# both, or a renamed repository is retried forever through one of them.
+export STUB_GH_FAIL=prs STUB_GH_ERROR=404
+VIA_STDOUT="$(gh_graphql "$QUERY" 2>/dev/null)" || true
+check "a refused GraphQL read classifies refused from stdout" \
+  test "$(gh_error_class "$VIA_STDOUT")" = refused
+GH_ERROR=""
+gh_graphql "$QUERY" >/dev/null 2>&1
+check "and from GH_ERROR" test "$(gh_error_class)" = refused
+
+export STUB_GH_ERROR=500
+VIA_STDOUT="$(gh_graphql "$QUERY" 2>/dev/null)" || true
+check "a 5xx GraphQL read classifies transient from stdout" \
+  test "$(gh_error_class "$VIA_STDOUT")" = transient
+
+# A paged REST read goes through the same capture, so its refusal survives too.
+export STUB_GH_FAIL=blockers STUB_GH_ERROR=404
+VIA_STDOUT="$(gh_json /repos/nywleswoey/automation/issues/17/dependencies/blocked_by --paginate 2>/dev/null)" || true
+check "a refused paged read classifies refused from stdout" \
+  test "$(gh_error_class "$VIA_STDOUT")" = refused
+unset STUB_GH_ERROR
+
+CURRENT="a failure with no text of GitHub's classifies transient"
+echo "== $CURRENT"
+
+# gh-axi's own failure goes to stderr with stdout empty, and gh_json drops
+# stderr: there is no status to read, so a caller classifying it gets the
+# default rather than a refusal the fixture's bytes would otherwise imply.
+export STUB_GH_FAIL=prs STUB_GH_ERROR=404 STUB_GH_STDERR=1
+VIA_STDOUT="$(gh_graphql "$QUERY" 2>/dev/null)" && check "a failure on stderr still fails" false
+check "a failure gh-axi reports on stderr passes no text" test -z "$VIA_STDOUT"
+check "and classifies transient" test "$(gh_error_class "$VIA_STDOUT")" = transient
+unset STUB_GH_FAIL STUB_GH_ERROR STUB_GH_STDERR
+
+# A 200 carrying an `errors` block: GitHub refused the document and gh-axi
+# succeeded, so there are no `error:`/`code:` lines to forward.
+export STUB_ISSUES=error
+ERROR_QUERY='{ repository(owner: "nywleswoey", name: "automation") { issues(labels: ["ready-for-agent"], states: OPEN, first: 100) { nodes { number } } } }'
+GH_ERROR="sentinel"
+if VIA_STDOUT="$(gh_graphql "$ERROR_QUERY" 2>/dev/null)"; then
+  check "an errors block fails the read" false
+else
+  check "an errors block fails the read" true
+fi
+check "an errors block passes no text" test -z "$VIA_STDOUT"
+check "and classifies transient" test "$(gh_error_class "$VIA_STDOUT")" = transient
+unset STUB_ISSUES
 
 report

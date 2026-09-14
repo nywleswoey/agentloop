@@ -43,3 +43,12 @@ _Avoid_: done, handled
 **Landed**:
 A delivered issue whose pull request has merged. Unlike delivery, landing is never undone.
 _Avoid_: delivered (when a merge is meant)
+
+### Failures
+
+**Transient**:
+A failed read or write that says nothing durable about its object — a 5xx, a rate limit, a torn response, any git or Orca failure. Skipped, and asked again next pass.
+
+**Refused**:
+A failed read or write GitHub answered with a durable no, as `gh_error_class` classifies it. A refused read ends the loop; a refused write flags its object.
+_Avoid_: refusal (that is CodeRabbit's answer to a nudge), and *refused issue* (that is the issue gate's `agent-refused`, counted in `refusals=`)
