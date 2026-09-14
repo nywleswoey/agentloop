@@ -1786,6 +1786,27 @@ check_no_grep "path:/tmp/stub/automation/main" "$STUB_CALLS"
 check_no_grep "sweep skipped /tmp/stub/automation/my-own-checkout" "$OUT"
 check_no_grep "git -C /tmp/stub/automation/my-own-checkout status" "$STUB_CALLS"
 
+# The origins fixture is the captured shape with `createdAt` broken four ways a
+# consumer must survive: absent, a string, null, and negative — and, on the
+# negative one, an empty `worktreeId`, which `read` would otherwise collapse
+# into the path's column. A last row with a null path is the hand-cut one the
+# idle fixture used to carry, kept here because no capture produces it. Nothing
+# spends the column yet (#156), so the only behaviour to pin is that none of
+# them reaches the inventory's consumers as a crash, a lost row, or a shifted
+# path.
+setup "a worktree with no readable createdAt is still swept, skipped and counted"
+export STUB_ORCA_PS=origins STUB_ISSUES=workable
+write_config "nywleswoey/automation" "repo-aaa" 300 2
+run_once
+check_status 0 "$STATUS"
+check_grep "swept /tmp/stub/automation/agent-loop-issue-31" "$OUT"
+check_grep "swept /tmp/stub/automation/agent-loop-issue-32" "$OUT"
+check_grep "sweep skipped /tmp/stub/automation/agent-loop-pr-34: its agent is still going" "$OUT"
+check_grep "sweep skipped /tmp/stub/automation/agent-loop-pr-35: its agent is still going" "$OUT"
+check_grep "deferred: worker budget full (2/2)" "$OUT"
+check_no_grep "path:/tmp/stub/automation/main" "$STUB_CALLS"
+check_grep "pass end dispatches=0 skips=1 sweeps=2" "$OUT"
+
 setup "the sweep runs after the dispatches, at the end of the pass"
 export STUB_ORCA_PS=sweep STUB_ISSUES=workable
 export STUB_DIRTY="$SWEEP_DIRTY" STUB_UNPUSHED="$SWEEP_UNPUSHED"
