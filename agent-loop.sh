@@ -2032,11 +2032,21 @@ reclaim_claim() {
 # declaring none. That fails closed — a stalled issue you can see — and no
 # repository is near the limit. Named here so it is not rediscovered as a
 # mystery.
+#
+# **Oldest first, server-side** (#123). The order goes in the query rather than
+# a local sort because `first: 100` is applied there, before any local sort
+# could run: the oldest hundred are kept rather than an arbitrary hundred, and
+# the same issues stop winning every pass. Creation time, not when the issue
+# became ready — that would cost a timeline read per candidate per pass — so an
+# old issue labelled ready today jumps the queue, once. The claimed read
+# inherits the order; the reclaim walks all of them regardless. The cap's canary
+# is not here: `log` writes to stdout, and this function's stdout is the
+# response. It sits in `issue_phase_project`.
 query_issues_by_label() {
   local github="$1" label="$2" owner="${1%%/*}" name="${1##*/}" response
   # On a failure `$response` is gh-axi's own text, and it goes out on stdout
   # for the call site to classify rather than being dropped at `|| return 1`.
-  if ! response=$(gh_graphql "{ repository(owner: \"$owner\", name: \"$name\") { issues(labels: [\"$label\"], states: OPEN, first: 100) { nodes { number title url body labels(first: 100) { nodes { name } } } } } }"); then
+  if ! response=$(gh_graphql "{ repository(owner: \"$owner\", name: \"$name\") { issues(labels: [\"$label\"], states: OPEN, first: 100, orderBy: {field: CREATED_AT, direction: ASC}) { nodes { number title url body labels(first: 100) { nodes { name } } } } } }"); then
     printf '%s' "$response"
     return 1
   fi
@@ -2718,6 +2728,7 @@ issue_phase() {
 issue_phase_project() {
   local github="$1" orca_id="$2" issues number weburl type title edges blockers worktree_id
   local prnumber body64 body refusal missing verbs rows kv refused escalation blocker_text readable
+  local position=0 candidates
 
   # On a failure `$issues` holds gh-axi's failure text rather than candidates,
   # and it is read for its class and nothing else.
@@ -2730,6 +2741,19 @@ issue_phase_project() {
   # An empty backlog has no second question to ask, and no read to spend asking
   # it.
   [[ -n "$issues" ]] || return 0
+
+  # One candidate per line — the body rides base64'd, so no field breaks one.
+  candidates=$(( $(wc -l <<< "$issues") ))
+
+  # **The truncation canary** (#123). Past `first: 100` the rest are not
+  # deferred, they are never seen: no line, no skip, no position. The loop cannot
+  # name the issues it cannot see, so a log line is the whole surface, and the
+  # fix — pagination was rejected against an observed depth of 14 — is written
+  # the day it fires. Exactly 100 with nothing cut off reads as a false positive,
+  # which is the honest direction to err.
+  if (( candidates >= 100 )); then
+    log "issue queue $github truncated: $candidates candidates (cap 100)"
+  fi
 
   # The second door onto an issue. The reclaim guards the first, but a ready
   # label applied by hand reaches this phase without passing through the reclaim
@@ -2750,6 +2774,9 @@ issue_phase_project() {
   # the refusal that lands can take it down at no read of its own.
   while IFS=$'\t' read -r number weburl type refusal escalation verbs body64 title; do
     [[ -n "$number" ]] || continue
+    # Every candidate counts towards the position, whatever becomes of it, so
+    # the deferred line's `queue=` is its place in the whole ordered queue.
+    position=$((position + 1))
 
     # First, and before the blocker read: an issue something already delivers is
     # not worth a second call to find out whether it is also blocked.
@@ -2891,6 +2918,11 @@ issue_phase_project() {
       fi
     fi
 
+    # **Deliberately unclocked, and the loop writes nothing** (#123). A native
+    # dependency edge the operator declared is the whole record: it renders on
+    # GitHub's own issue page, and the exit — closing the blocker — is the move
+    # they set up themselves. A handover would tell its reader what that page
+    # already says, and the count is enough to say *go look*.
     if (( blockers > 0 )); then
       log "issue $github#$number skipped: blocked by $blockers open blocker"
       SKIPS=$((SKIPS + 1))
@@ -2900,8 +2932,18 @@ issue_phase_project() {
     # Checked before every dispatch, not once per pass: each dispatch spends a
     # slot, and a candidate that arrives at a full budget waits for a later pass
     # rather than being dropped.
+    #
+    # **Its bound is an ordering, not a clock** (#123). The issue lost on
+    # allocation, so a handover at expiry could only say *I have been busy* to a
+    # reader who can wait or raise `maxWorkers`. Within a project the queue is
+    # oldest first, so the wait is at most the older ready issues ahead of it and
+    # the position can only improve, but for an older issue labelled ready later,
+    # which jumps ahead once; `queue=` is that bound, spent where it can
+    # be seen. Across projects it is deliberately unbounded: the budget is
+    # global and `projects` is walked in array order, which is a declared
+    # priority. The bound holds only while slots keep freeing — that is #122's.
     if (( ACTIVE_WORKERS >= MAX_WORKERS )); then
-      log "issue $github#$number deferred: worker budget full ($ACTIVE_WORKERS/$MAX_WORKERS)"
+      log "issue $github#$number deferred: worker budget full ($ACTIVE_WORKERS/$MAX_WORKERS) queue=$position/$candidates"
       SKIPS=$((SKIPS + 1))
       continue
     fi

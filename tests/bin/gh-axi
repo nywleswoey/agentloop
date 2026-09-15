@@ -17,7 +17,9 @@
 #                            Dispatched on:
 #                              issues(labels: ["ready-for-agent"])
 #                                the ready-issue query, answered from
-#                                issues-$STUB_ISSUES.json (default: none)
+#                                issues-$STUB_ISSUES.json (default: none),
+#                                or from $STUB_ISSUES itself when it is an
+#                                absolute path — a queue too deep to commit
 #                              issues(labels: ["agent-in-progress"])
 #                                the claimed-issue query close-out and the
 #                                reclaim make, from claimed-$STUB_CLAIMED.json
@@ -497,7 +499,9 @@ if [[ "$path" == "graphql" || "$path" == "/graphql" ]]; then
       ;;
     *'issues(labels:'*)
       fail_if issues
-      emit_issues "$STUB_FIXTURES/issues-${STUB_ISSUES:-none}.json" \
+      issues_fixture="$STUB_FIXTURES/issues-${STUB_ISSUES:-none}.json"
+      [[ "${STUB_ISSUES:-}" == /* ]] && issues_fixture="$STUB_ISSUES"
+      emit_issues "$issues_fixture" \
         "$(sed -n 's/.*issues(labels: \["\([^"]*\)"\].*/\1/p' <<< "$query")"
       ;;
     *)
