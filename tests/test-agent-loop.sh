@@ -1909,13 +1909,15 @@ check "exactly one worktree was removed" test "$(grep -cF 'worktree rm' "$STUB_C
 check_grep "pass end dispatches=0 skips=0 sweeps=1" "$OUT"
 
 setup "a dirty loop worktree is left alone and logged"
+# Nothing is claimed, so #32's tree holds no claim.
 export STUB_ORCA_PS=sweep STUB_DIRTY="$SWEEP_DIRTY" STUB_UNPUSHED="$SWEEP_UNPUSHED"
 run_once
 check_status 0 "$STATUS"
-check_grep "sweep skipped /tmp/stub/automation/agent-loop-issue-32: uncommitted changes" "$OUT"
+check_grep "sweep skipped /tmp/stub/automation/agent-loop-issue-32: uncommitted changes, claim released" "$OUT"
 check_no_grep "path:/tmp/stub/automation/agent-loop-issue-32" "$STUB_CALLS"
 
 setup "a loop worktree with commits not on the remote is left alone and logged"
+# `issue-33` is open: nothing has landed for it.
 export STUB_ORCA_PS=sweep STUB_DIRTY="$SWEEP_DIRTY" STUB_UNPUSHED="$SWEEP_UNPUSHED"
 run_once
 check_status 0 "$STATUS"
@@ -1924,6 +1926,90 @@ check_no_grep "path:/tmp/stub/automation/agent-loop-issue-33" "$STUB_CALLS"
 # Push state is read from origin's branches rather than the tracking branch: an
 # Orca checkout has no upstream, so `@{upstream}` would answer "nothing to push".
 check_grep "rev-list --count HEAD --not --remotes=origin" "$STUB_CALLS"
+# One issue read per pinned worktree, and none for a worktree that is not pinned.
+check "the pinned worktree's issue is read once" \
+  test "$(grep -cF 'gh-axi api /repos/nywleswoey/automation/issues/33 --full' "$STUB_CALLS")" -eq 1
+check_no_grep "gh-axi api /repos/nywleswoey/automation/issues/31 " "$STUB_CALLS"
+check_no_grep "gh-axi api /repos/nywleswoey/automation/issues/32 " "$STUB_CALLS"
+check_grep "pass end dispatches=0 skips=0 sweeps=1 refusals=0 failures=0" "$OUT"
+
+# #125 Row A, on #135's captured removal. `issue-31` is closed as completed —
+# landed — `issue-32` is closed as not planned, and `issue-33` is open, so of
+# three pinned worktrees only #31's goes.
+setup "a landed loop worktree with commits not on the remote is swept, naming the branch Orca kept"
+export STUB_ORCA_PS=sweep STUB_DIRTY="" STUB_ORCA_RM_PRESERVED=1
+export STUB_UNPUSHED="/tmp/stub/automation/agent-loop-issue-31 /tmp/stub/automation/agent-loop-issue-32 $SWEEP_UNPUSHED"
+run_once
+check_status 0 "$STATUS"
+check_grep "orca worktree rm --worktree path:/tmp/stub/automation/agent-loop-issue-31 --json" "$STUB_CALLS"
+check_no_grep "--force" "$STUB_CALLS"
+# The branch and head are the removal's own response, not derived from the path.
+check_grep "swept /tmp/stub/automation/agent-loop-issue-31: nywleswoey/automation#31 has landed, its 2 commits not on the remote kept on branch nywleswoey/wf135-capture-unpushed at 04e4351f4b2f13b7f364c1566b5634dd4803c844" "$OUT"
+check_grep "sweep skipped /tmp/stub/automation/agent-loop-issue-32: 2 commits not on the remote" "$OUT"
+check_no_grep "path:/tmp/stub/automation/agent-loop-issue-32" "$STUB_CALLS"
+check_grep "sweep skipped /tmp/stub/automation/agent-loop-issue-33: 2 commits not on the remote" "$OUT"
+check_no_grep "path:/tmp/stub/automation/agent-loop-issue-33" "$STUB_CALLS"
+check "exactly one worktree was removed" test "$(grep -cF 'worktree rm' "$STUB_CALLS")" -eq 1
+# No GitHub record: the landed issue is read and never written to.
+check_no_grep "issue comment" "$STUB_CALLS"
+check_no_grep "issue edit 31 " "$STUB_CALLS"
+check_grep "pass end dispatches=0 skips=0 sweeps=1 refusals=0 failures=0" "$OUT"
+
+setup "a failed removal of a landed worktree carries its stderr and names no branch"
+export STUB_ORCA_PS=sweep STUB_ORCA_FAIL=rm STUB_ORCA_RM_PRESERVED=1
+export STUB_UNPUSHED="/tmp/stub/automation/agent-loop-issue-31"
+run_once
+check_status 0 "$STATUS"
+check_grep "sweep failed for /tmp/stub/automation/agent-loop-issue-31, leaving it in place: error: worktree rm failed class=transient" "$OUT"
+check_no_grep "has landed" "$OUT"
+check_no_grep "swept /tmp/stub/automation/agent-loop-issue-31" "$OUT"
+
+setup "a landed read that fails keeps the pinned worktree and counts a failure"
+export STUB_ORCA_PS=sweep STUB_DIRTY="$SWEEP_DIRTY" STUB_UNPUSHED="$SWEEP_UNPUSHED" STUB_GH_FAIL=issue
+run_once
+check_status 0 "$STATUS"
+check_grep "sweep skipped /tmp/stub/automation/agent-loop-issue-33: 2 commits not on the remote, could not read whether nywleswoey/automation#33 has landed class=transient" "$OUT"
+check_no_grep "path:/tmp/stub/automation/agent-loop-issue-33" "$STUB_CALLS"
+check_grep "pass end dispatches=0 skips=0 sweeps=1 refusals=0 failures=1" "$OUT"
+
+# #144: a dirty tree is never removed, and its line names what the reclaim makes
+# of it. #32's `createdAt` is 1789301800000, so the default worker bound runs
+# out after 1789388200.
+setup "a dirty tree inside the worker bound holds its claim, and past it releases it"
+export STUB_ORCA_PS=sweep STUB_DIRTY="$SWEEP_DIRTY" STUB_CLAIMED=32
+replay none 1789388200
+check_status 0 "$STATUS"
+check_grep "left claimed nywleswoey/automation#32: a dirty worktree holds it" "$PASS_LOG"
+check_grep "sweep skipped /tmp/stub/automation/agent-loop-issue-32: uncommitted changes, holding its claim" "$PASS_LOG"
+# Past the bound the reclaim's release is made to fail, so the claim is still
+# read as held and it is the bound alone that releases it.
+export STUB_GH_FAIL=claim
+replay none 1789388201
+check_status 0 "$STATUS"
+check_grep "reclaim failed for nywleswoey/automation#32, leaving it claimed" "$PASS_LOG"
+check_grep "sweep skipped /tmp/stub/automation/agent-loop-issue-32: uncommitted changes, claim released" "$PASS_LOG"
+check_no_grep "worktree rm --worktree path:/tmp/stub/automation/agent-loop-issue-32" "$STUB_CALLS"
+
+setup "a dirty tree with no configured repository behind it logs no disposition"
+# The worktrees are all `repo-aaa`'s, and this config names only `repo-bbb`.
+write_config "nywleswoey/other" "repo-bbb"
+export STUB_ORCA_PS=sweep STUB_DIRTY="$SWEEP_DIRTY"
+run_once
+check_status 0 "$STATUS"
+check "the dirty line is bare" \
+  grep -qE 'sweep skipped /tmp/stub/automation/agent-loop-issue-32: uncommitted changes$' "$OUT"
+check_no_grep "uncommitted changes," "$OUT"
+
+setup "a dirty tree is never removed, even once its issue has landed"
+# #31 is landed, dirty and pinned all at once: the dirty skip comes first, so its
+# issue is never read and nothing reaches the removal.
+export STUB_ORCA_PS=sweep STUB_ORCA_RM_PRESERVED=1
+export STUB_DIRTY="/tmp/stub/automation/agent-loop-issue-31" STUB_UNPUSHED="/tmp/stub/automation/agent-loop-issue-31"
+run_once
+check_status 0 "$STATUS"
+check_grep "sweep skipped /tmp/stub/automation/agent-loop-issue-31: uncommitted changes, claim released" "$OUT"
+check_no_grep "worktree rm --worktree path:/tmp/stub/automation/agent-loop-issue-31 " "$STUB_CALLS"
+check_no_grep "gh-axi api /repos/nywleswoey/automation/issues/31 " "$STUB_CALLS"
 
 setup "a git that will not answer the push question leaves the worktree alone"
 export STUB_ORCA_PS=sweep STUB_GIT_FAIL=rev-list
@@ -1989,7 +2075,8 @@ export STUB_ORCA_PS=sweep STUB_ORCA_FAIL=rm
 export STUB_DIRTY="$SWEEP_DIRTY" STUB_UNPUSHED="$SWEEP_UNPUSHED"
 run_once
 check_status 0 "$STATUS"
-check_grep "sweep failed for /tmp/stub/automation/agent-loop-issue-31, leaving it in place class=transient" "$OUT"
+# The removal's own stderr is carried onto the line rather than discarded.
+check_grep "sweep failed for /tmp/stub/automation/agent-loop-issue-31, leaving it in place: error: worktree rm failed class=transient" "$OUT"
 check_grep "pass end dispatches=0 skips=0 sweeps=0 refusals=0 failures=1" "$OUT"
 
 # --- a worker that is still going (#122) ----------------------------------------

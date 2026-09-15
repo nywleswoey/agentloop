@@ -125,8 +125,8 @@ case "$cmd" in
         # preserved arm carries `preservedBranch`, which the real CLI returns
         # for *every* worktree holding a commit the base does not — pushed,
         # unpushed or squash-merged alike. Set STUB_ORCA_RM_PRESERVED=1 to get
-        # it; nothing reads the removal's stdout yet, because `agent-loop.sh`
-        # sends it to /dev/null.
+        # it; the sweep reads it when it removes a worktree
+        # whose issue has landed.
         if [[ -n "${STUB_ORCA_RM_PRESERVED:-}" ]]; then
           cat "$STUB_FIXTURES/orca-worktree-rm-preserved.json"
         else

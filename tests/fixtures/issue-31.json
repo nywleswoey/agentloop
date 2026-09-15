@@ -1,0 +1,2 @@
+{ "number": 31, "state": "closed", "state_reason": "completed", "labels": [ { "name": "bug" } ],
+  "body": "Landed: its pull request merged and close-out closed it.\n" }

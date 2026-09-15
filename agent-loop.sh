@@ -2939,10 +2939,10 @@ issue_phase_project() {
 
 # Orca reaps nothing, so each pass ends with the loop sweeping up after itself.
 # A worktree is removed only when the loop created it, its agent has finished,
-# its tree is clean, and everything committed is on the remote. Anything else is
-# left exactly where it is, with a line saying why.
+# its tree is clean, and everything committed is on the remote or its issue has
+# landed. Anything else is left exactly where it is, with a line saying why.
 sweep_worktrees() {
-  local state created worktree_id path dirty unpushed disposition verdict github number flag reason prnumber
+  local state created worktree_id path dirty unpushed disposition verdict github number flag reason prnumber issue
   while IFS=$'\t' read -r state created worktree_id path; do
     # Ownership is asked first: a worktree of mine is out of scope before any
     # other question is put to it, and before git is run against it at all.
@@ -2996,8 +2996,14 @@ sweep_worktrees() {
       read_failed "$(gh_error_class "")" - "sweep skipped $path: could not read its status"
       continue
     fi
+    # **Never removed, delivered or landed or not** (#144). No pull request
+    # carries uncommitted work and Orca retains commits only, so this skip is the
+    # working tree's one guard. Untracked files count: one may be a new source
+    # file nobody `git add`ed. The line goes down every pass and names what the
+    # reclaim makes of the tree, so `grep` tells the one it waits on from the one
+    # that only costs disk.
     if [[ -n "$dirty" ]]; then
-      log "sweep skipped $path: uncommitted changes"
+      log "sweep skipped $path: uncommitted changes$(dirty_disposition "$created" "$worktree_id" "$path")"
       continue
     fi
 
@@ -3015,25 +3021,141 @@ sweep_worktrees() {
       continue
     fi
     if (( unpushed > 0 )); then
+      # **Pinned, and swept once its issue has landed** (#125 Row A, #135). Orca
+      # keeps the local branch of any worktree ahead of its base — unpushed,
+      # pushed and squash-merged alike, all captured — so for landed work this
+      # skip protected nothing the removal does not, and it was the one wait
+      # whose exit was never the loop's own. Landed and not delivered, because
+      # landing is never undone.
+      #
+      # One issue read per pinned worktree per pass, and none for any other: a
+      # pin is rare, the read is self-contained where the pass's per-project
+      # pull-request maps are not, and a failed read falls closed into exactly
+      # the skip below. No GitHub record: there is nothing for a reader to do.
+      #
+      # **Not landed keeps the skip**, and its exit is the reclaim's retry: the
+      # redispatch delivers, the pull request merges, and this worktree
+      # graduates into the removal. **Named residual:** a worktree whose name
+      # carries no issue number can be read for nothing, and stays pinned until a
+      # human removes it.
+      if number=$(issue_for_branch "${path##*/}") \
+         && github=$(project_for_orca_id "${worktree_id%%::*}"); then
+        if ! issue=$(query_issue "$github" "$number" < /dev/null); then
+          read_failed "$(gh_error_class "$issue")" "$github" \
+            "sweep skipped $path: $unpushed commits not on the remote, could not read whether $github#$number has landed"
+          continue
+        fi
+        # Close-out closes an issue on the pass its pull request merges, and a
+        # merge's closing keyword closes it as completed too, so a completed
+        # close is the landing. Closed as not planned is not.
+        #
+        # **Named residual:** an issue closed as completed by hand, with nothing
+        # merged, reads as landed. One issue read cannot see the merge — close-out
+        # closes by its own hand, so no closing pull request is recorded on the
+        # issue — and the cost is bounded by the branch Orca keeps. Rejected:
+        # keying on close-out's merged-pull-request search, which is one page,
+        # global and not kept for the pass — #125's rejected cross-phase map.
+        if jq -e '.state == "closed" and .state_reason == "completed"' <<< "$issue" >/dev/null 2>&1; then
+          sweep_landed_worktree "$path" "$github" "$number" "$unpushed"
+          continue
+        fi
+      fi
       log "sweep skipped $path: $unpushed commits not on the remote"
       continue
     fi
 
-    # No --force: the removal refuses a dirty tree outright and preserves a
-    # branch that carries commits, and the checks above are belt and braces on
-    # top of that. What it removes goes to a trash directory, not to nothing.
-    #
-    # ponytail: the CLI's own error text goes to stderr and is dropped here.
-    # Capture it into the log line if a refused removal ever needs explaining.
-    if orca worktree rm --worktree "path:$path" --json >/dev/null 2>&1; then
+    if remove_worktree "$path"; then
       log "swept $path"
       SWEEPS=$((SWEEPS + 1))
-    else
-      # Orca passes no text, so the removal is transient by construction and
-      # names no GitHub object to flag.
-      write_failed "$(gh_error_class "")" - "" "" sweep "sweep failed for $path, leaving it in place"
     fi
   done < <(orca_worktrees)
+}
+
+# remove_worktree <path> — the sweep's one removal, its JSON response left in
+# REMOVAL_RESPONSE for a caller that names what Orca kept.
+#
+# No --force. That does not guard the working tree: nothing captured says Orca
+# refuses a dirty one, and the sweep's `uncommitted changes` skip precedes every
+# call, so Orca never sees one. What the removal does keep is the local branch
+# of any worktree ahead of its base (#135), and that branch is the only thing
+# that survives it. Orca's trash directory is empty at rest and recovers
+# nothing.
+#
+# A failure logs its own line, with the removal's stderr on it, so a sweep that
+# failed says why. Orca's text carries no status, so the failure is transient by
+# construction and names no GitHub object to flag.
+#
+# The response is left in a global rather than on stdout for `FAILURE_TEXT`'s
+# reason: the helper is called bare, because its status is the answer and its
+# failure line is its own, and a command substitution would run it in a
+# subshell where `write_failed`'s count is lost.
+REMOVAL_RESPONSE=''
+remove_worktree() {
+  local path="$1" errfile err=''
+  REMOVAL_RESPONSE=''
+  errfile=$(mktemp "${TMPDIR:-/tmp}/agent-loop-sweep.XXXXXX") || errfile=/dev/null
+  if REMOVAL_RESPONSE=$(orca worktree rm --worktree "path:$path" --json 2>"$errfile" < /dev/null); then
+    [[ "$errfile" == /dev/null ]] || rm -f "$errfile"
+    return 0
+  fi
+  if [[ "$errfile" != /dev/null ]]; then
+    # One line, whatever the CLI wrote: the log is line-oriented.
+    err=$(tr -s '\n\t' '  ' < "$errfile")
+    err="${err% }"
+    rm -f "$errfile"
+  fi
+  write_failed "$(gh_error_class "")" - "" "" sweep \
+    "sweep failed for $path, leaving it in place${err:+: $err}"
+  return 1
+}
+
+# sweep_landed_worktree <path> <github> <number> <unpushed> — the removal of a
+# pinned worktree whose issue has landed, on its own line. It is the one removal
+# that leans on Orca's retention rather than on the loop's own proof, so the
+# line names the branch and head the commits were left on, read off the
+# removal's response rather than derived, and anything abandoned stays findable
+# from the log alone.
+sweep_landed_worktree() {
+  local path="$1" github="$2" number="$3" unpushed="$4" kept
+  remove_worktree "$path" || return 0
+  SWEEPS=$((SWEEPS + 1))
+  kept=$(jq -r '.result.preservedBranch
+    | select(type == "object" and (.branchName | type) == "string" and (.head | type) == "string")
+    | "\(.branchName) at \(.head)"' <<< "$REMOVAL_RESPONSE" 2>/dev/null) || kept=''
+  if [[ -n "$kept" ]]; then
+    log "swept $path: $github#$number has landed, its $unpushed commits not on the remote kept on branch $kept"
+  else
+    # Never captured: every worktree ahead of its base came back with the
+    # branch named. Said rather than guessed at if Orca ever changes that.
+    log "swept $path: $github#$number has landed, and the removal named no branch it kept"
+  fi
+}
+
+# dirty_disposition <createdAt> <worktreeId> <path> — the suffix the sweep's
+# `uncommitted changes` line carries (#144): `, holding its claim` while the
+# reclaim would still count this tree as a worker — inside
+# `workerTimeoutSeconds` of its `createdAt`, or with no `createdAt` at all, the
+# bound `claim_hold` puts on each matching tree — and `, claim released` past
+# that bound or once the claim is gone. Past the bound it is this tree that
+# releases the claim: a claim still held by something else — an open pull
+# request, a spec's exemption, a sibling worktree — is not this line's. Empty
+# when the tree names no issue or no configured repository, and when that
+# repository's claims could not be read this pass, since then there is no claim
+# to speak of. Pure: it reads only the claims close-out left for the pass, after
+# any the reclaim dropped.
+dirty_disposition() {
+  local created="$1" worktree_id="$2" path="$3" github number
+  number=$(issue_for_branch "${path##*/}") || return 0
+  github=$(project_for_orca_id "${worktree_id%%::*}") || return 0
+  [[ "$PASS_CLAIMS_READ" == *" $github "* ]] || return 0
+  if ! claim_flag "$github" "$number" >/dev/null; then
+    printf ', claim released'
+  # `createdAt` is epoch-ms; the bound is in seconds.
+  elif [[ "$created" == "-" ]] || (( PASS_NOW - created / 1000 <= WORKER_TIMEOUT )); then
+    printf ', holding its claim'
+  else
+    printf ', claim released'
+  fi
 }
 
 # --- pr phase ----------------------------------------------------------------
