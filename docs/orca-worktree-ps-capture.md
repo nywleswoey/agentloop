@@ -165,3 +165,9 @@ Three fixtures depart from a capture, on purpose:
 `orca-ps-gone.json` is a capture-derived fixture like the rest: one idle worker,
 #40, cut from `orca-ps-idle.json`'s #11 row with the same path-derived fields
 substituted.
+
+`orca-ps-dispatched.json` is `orca-ps-gone.json`'s row with the same
+path-derived fields substituted again, for `agent-loop-issue-17-2` — the
+worktree the stub's `worktree create` answers a dispatch with — so the reclaim's
+grace and dirty-tree cases can follow a dispatch into the next pass's inventory
+(#158).

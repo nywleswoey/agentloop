@@ -579,10 +579,10 @@ WRITE_REFUSED_MARKER_SUFFIX=' -->'
 # the pull-request chase, and a later write on the same issue that landed.
 #
 # **Per pass rather than per object**, because one issue can be reached twice
-# with different writes: startup runs close-out and then the reclaim over the
-# same claims, and a close refused at startup must not have its flag taken down
-# by the reclaim's release landing a moment later. Cleared at the top of every
-# pass; before the first one it holds the startup's escalations.
+# with different writes: close-out's merged path and then the reclaim run over
+# the same claims, and a close refused on the merged path must not have its flag
+# taken down by the reclaim's release landing a moment later. Cleared at the top
+# of every pass.
 WRITE_ESCALATED_OBJECTS=""
 
 # write_escalated <github> <number> — whether a refused write escalated this
@@ -691,7 +691,7 @@ escalate_refused_write() {
 #
 # Not on a pass where a refused write escalated this same issue: a close that
 # landed would take down the flag its unclaim just raised, and a reclaim that
-# landed the flag a refused close raised at startup.
+# landed the flag a refused close raised earlier in the same pass.
 #
 # **The flag is kind-blind**, and on an issue that is safe by construction
 # rather than by luck: every other *a human must look* kind on an issue is
@@ -1194,8 +1194,8 @@ ensure_runtime() {
 # --- worktree inventory ------------------------------------------------------
 
 # One `orca worktree ps` read, cached in ORCA_PS, and taken by readiness and
-# nothing else (#124): the worker budget, the sweep, close-out, the startup
-# reclaim and the branch check all ask their question of the snapshot readiness
+# nothing else (#124): the worker budget, the sweep, close-out, the reclaim and
+# the branch check all ask their question of the snapshot readiness
 # took, so none of them has an unreadable branch of its own. A failed read leaves
 # the last good snapshot alone and returns non-zero, because "I could not look"
 # and "nothing is running" must never read the same — and readiness dies rather
@@ -1429,9 +1429,15 @@ branch_report() {
 # the read follows the cursor to the end, and a repository too busy even for
 # that fails closed rather than answering off a list known to be partial.
 #
-# ponytail: a second read of a list the PR phase reads again later in the pass.
-# Not worth sharing until a repository is busy enough to notice: the reclaim
-# runs before any pass at all, so there is no earlier read for it to share.
+# **The reclaim pays for this read again, on purpose** (#136). It runs in
+# close-out, ahead of the budget and the issue phase, which share one read of
+# their own later in the same pass. Sharing the reclaim's read with them would
+# be wrong, not merely awkward: a cached map is older than a fresh one, and
+# older fails open here — a pull request opened in between reads as *nothing
+# delivers this issue*, which is the duplicate this read pages to the end to
+# prevent. The callers also skip differently, the reclaim its reclaim and the
+# issue phase its whole phase, and one shared failed read would take out both.
+#
 # Prints one `<pull request>\t<branch>` line per open pull request — the pair in
 # GitHub's own order, which `load_open_pr_issues` then turns around into the
 # issue-keyed map the callers ask their question of.
@@ -1485,26 +1491,20 @@ query_repo_open_pr_branches() {
 # makes that belt-and-braces rather than the only thing holding.
 OPEN_PR_ISSUES=''
 
-# Fails when the read failed. It never fails for an empty answer: a repository
-# with no open pull requests is a fact, and an unanswerable question is not.
+# Both fail when the read failed. Neither fails for an empty answer: a
+# repository with no open pull requests is a fact, and an unanswerable question
+# is not.
 #
-# Both callers call it bare, because it fills a global, so a failure's text is
-# left in `$FAILURE_TEXT` rather than on stdout.
-load_open_pr_issues() {
-  local branches prnumber branch number loaded='' kept=''
+# Every caller calls them bare, because they fill a global, so a failure's text
+# is left in `$FAILURE_TEXT` rather than on stdout.
+#
+# read_open_pr_issues <github> — a fresh read, kept for nobody. The reclaim's,
+# because a read it shared would be older than the one it guards: see
+# `query_repo_open_pr_branches`.
+read_open_pr_issues() {
+  local branches prnumber branch number loaded=''
   OPEN_PR_ISSUES=''
   FAILURE_TEXT=''
-  # **Once per repository per pass.** The worker budget asks this read before
-  # the issue phase does (#122), and both are answered by the one read; a failed
-  # read is not kept, so the next caller asks again.
-  if [[ "$PASS_OPEN_PRS_READ" == *" $1 "* ]]; then
-    while IFS=$'\t' read -r branch number prnumber; do
-      [[ "$branch" == "$1" ]] || continue
-      loaded+="$number"$'\t'"$prnumber"$'\n'
-    done <<< "$PASS_OPEN_PRS"
-    OPEN_PR_ISSUES="$loaded"
-    return 0
-  fi
   if ! branches=$(query_repo_open_pr_branches "$1"); then
     FAILURE_TEXT="$branches"
     return 1
@@ -1518,9 +1518,31 @@ load_open_pr_issues() {
     # and one an editor expanded would leave every line unsplittable — read back
     # as an issue number that matches nothing, which fails open.
     loaded+="$number"$'\t'"$prnumber"$'\n'
-    kept+="$1"$'\t'"$number"$'\t'"$prnumber"$'\n'
   done <<< "$branches"
   OPEN_PR_ISSUES="$loaded"
+}
+
+# load_open_pr_issues <github> — the pass's read, kept for the pass.
+load_open_pr_issues() {
+  local github number prnumber loaded='' kept=''
+  # **Once per repository per pass.** The worker budget asks this read before
+  # the issue phase does (#122), and both are answered by the one read; a failed
+  # read is not kept, so the next caller asks again.
+  if [[ "$PASS_OPEN_PRS_READ" == *" $1 "* ]]; then
+    OPEN_PR_ISSUES=''
+    FAILURE_TEXT=''
+    while IFS=$'\t' read -r github number prnumber; do
+      [[ "$github" == "$1" ]] || continue
+      loaded+="$number"$'\t'"$prnumber"$'\n'
+    done <<< "$PASS_OPEN_PRS"
+    OPEN_PR_ISSUES="$loaded"
+    return 0
+  fi
+  read_open_pr_issues "$1" || return 1
+  while IFS=$'\t' read -r number prnumber; do
+    [[ -n "$number" ]] || continue
+    kept+="$1"$'\t'"$number"$'\t'"$prnumber"$'\n'
+  done <<< "$OPEN_PR_ISSUES"
   PASS_OPEN_PRS+="$kept"
   PASS_OPEN_PRS_READ+=" $1 "
 }
@@ -1579,7 +1601,9 @@ PASS_CLAIMS_READ=''
 PASS_OPEN_PRS=''
 PASS_OPEN_PRS_READ=''
 PASS_OPEN_PRS_FAILED=''
-WORKERS_NOW=0
+# The pass's clock, read once at the top of the pass: the reclaim's grace, its
+# dirty-tree bound and the worker bound are all measured against it.
+PASS_NOW=0
 
 # forget_claim <github> <number> — a claim close-out dropped this pass, after
 # the read that recorded it.
@@ -1630,13 +1654,12 @@ project_for_orca_id() {
   return 1
 }
 
-# The pass's clock, and the delivery reads the budget needs before the issue
-# phase runs. Asked after close-out, whose claim read it depends on. A delivery
-# read is made only for a repository holding a claimed loop worker that is live,
-# or whose issue wears the flag, since those are the only workers it decides.
+# The delivery reads the budget needs before the issue phase runs. Asked after
+# close-out, whose claim read it depends on. A delivery read is made only for a
+# repository holding a claimed loop worker that is live, or whose issue wears
+# the flag, since those are the only workers it decides.
 load_worker_facts() {
   local state path worktree_id github number flag tried=''
-  WORKERS_NOW=$(date -u +%s)
   while IFS=$'\t' read -r state _ worktree_id path; do
     is_loop_worktree "$path" || continue
     number=$(issue_for_branch "${path##*/}") || continue
@@ -1689,7 +1712,7 @@ worker_disposition() {
     return 0
   fi
   # `createdAt` is epoch-ms; the bound is in seconds.
-  age=$(( WORKERS_NOW - created / 1000 ))
+  age=$(( PASS_NOW - created / 1000 ))
   if (( age > WORKER_TIMEOUT )); then
     printf 'expired\t%s\t%s\t%s\t%s#%s is claimed with no pull request, live %ss of %ss, past its bound' \
       "$github" "$number" "$flag" "$github" "$number" "$age" "$WORKER_TIMEOUT"
@@ -1803,7 +1826,7 @@ withdraw_hung_worker_flag() {
   write_failed "$class" - "" "" withdraw "hung-worker flag withdrawal failed on $github#$number"
 }
 
-# --- startup reclaim ---------------------------------------------------------
+# --- the reclaim -------------------------------------------------------------
 
 # The worktree a dispatch asked for is `agent-loop-<type>-<number>-<title-slug>`,
 # and a name collision appends `-2` — so the number is anchored on both sides, or
@@ -1821,75 +1844,151 @@ issue_has_live_worker() {
   [[ "$(count_live_workers "$1" '^agent-loop-('"$ISSUE_BRANCH_TYPES"')-'"$2"'(-.*)?$')" != "0" ]]
 }
 
-# The claim label is written before the dispatch, so a crash in between leaves an
-# issue claimed with nobody on it. Startup hands every such issue back, which
-# also tidies whatever Ctrl-C left orphaned — a leftover worktree strands
-# nothing.
-#
-# Two questions, not one. A claim is only stale when **nobody is on it and
-# nothing has come of it**: liveness answers the first, an open pull request the
-# second, and either one on its own hands back work that is already delivered.
-#
-# Ahead of both sits a third, cheaper answer: **a claimed `to-tickets` issue is
-# never reclaimed.** Neither of the two questions can be asked of a
-# decomposition — it produces issues rather than a pull request, so the second
-# is answered `no` by construction — and handing a spec back means decomposing
-# it a second time, into a duplicate set of child tickets a human may approve
-# without noticing it is the second batch.
-#
-# The exemption is on the **verb** and not on the child count. *A spec that
-# already has children stays claimed* leaves the hole open: a worker that links
-# its children by prose alone leaves the count at zero, the exemption does not
-# fire, and the duplication arrives by the other door. It is also strictly
-# cheaper — the verb is already on the claimed-issue row — and strictly wider,
-# since a correctly decomposed spec is unclaimed by close-out and never reaches
-# here at all. **Close-out is therefore the only path that clears a spec's
-# claim.**
-reclaim_stale_claims() {
-  # A reclaim on an inventory we could not read would hand back issues that do
-  # have workers, so it asks the snapshot start-up readiness took, which dies
-  # rather than hand over one it could not read (#124). Nothing dispatches
-  # before the reclaim, so the only drift that snapshot can carry is a worker
-  # that has finished since — read as live, which keeps its claim.
+# How long a dispatch has to read live before the reclaim may take its worktree
+# as abandoned (#136). A constant and not a config key: it is a property
+# of how long Orca takes to start a worker, which nobody tuning it would know
+# better than the measurement, and not `2 * pollIntervalSeconds`, which would
+# weld that fact to how often the loop polls. 900 because the costs are
+# lopsided: too short is a duplicate build, too long is a claim sitting fifteen
+# minutes, against a measured baseline of eleven days.
+DISPATCH_GRACE_SECONDS=900
 
-  local i github numbers number verb prnumber
-  for (( i = 0; i < PROJECT_COUNT; i++ )); do
-    github=$(jq -r ".projects[$i].github" "$CONFIG_PATH")
-    if ! numbers=$(query_claimed_issues "$github"); then
-      read_failed "$(gh_error_class "$numbers")" "$github" "claimed-issue query failed: $github"
-      continue
-    fi
-    # Nothing claimed here: no second question to ask, and no read to spend
-    # asking it.
-    [[ -n "$numbers" ]] || continue
-    # Fail closed. A reclaim that cannot see this repository's open pull
-    # requests would hand back every issue one of them already delivers, and the
-    # loop polls: an unanswered read costs one interval, where a duplicate costs
-    # a whole rebuild.
-    if ! load_open_pr_issues "$github"; then
-      read_failed "$(gh_error_class "$FAILURE_TEXT")" "$github" "open-pr query failed: $github, skipping its reclaim"
-      continue
-    fi
-    # stdin is closed for the body: gh-axi must not swallow the issue list.
-    while IFS=$'\t' read -r number verb escalation; do
-      [[ -n "$number" ]] || continue
-      if [[ "$verb" == "$VERB_TO_TICKETS" ]]; then
-        log "left claimed $github#$number: a $VERB_TO_TICKETS issue is never reclaimed"
-      elif issue_has_live_worker "$github" "$number"; then
-        log "left claimed $github#$number: a live worker holds it"
-      elif prnumber=$(open_pr_for_issue "$number"); then
-        log "left claimed $github#$number: pull request #$prnumber already delivers it"
-      elif release_issue "$github" "$number" < /dev/null; then
-        log "reclaimed $github#$number: no live worker, returned to $LABEL_READY"
-        withdraw_write_flag "$github" "$number" "$escalation" < /dev/null
-      else
-        # Refused, *leaving it claimed* is forever — the reclaim is the only
-        # thing that hands a claim back — so it flags the issue.
-        write_failed "$(gh_error_class "$FAILURE_TEXT")" issue "$github" "$number" reclaim \
-          "reclaim failed for $github#$number, leaving it claimed" < /dev/null
+# The claim label is written before the dispatch, so a crash in between leaves an
+# issue claimed with nobody on it, and so does a worker that died, or finished
+# without a pull request. The reclaim hands every such issue back, on every pass,
+# as close-out's else-branch over the claimed set close-out already reads
+# (#136). It used to run once, at startup, and `#133`'s claim sat for eleven
+# days because nothing ran it again.
+#
+# A claim is only stale when **nobody is on it and nothing has come of it**:
+# liveness answers the first, an open pull request the second, and either one on
+# its own hands back work that is already delivered.
+#
+# **Liveness alone is not "nobody".** At startup nothing was in flight; at
+# cadence a dispatch from the pass before can still read `idle` — `#102` did for
+# a full poll interval (#137) — and handing its claim back puts a second worker
+# on work the first is building. And an agent between states after a long sleep
+# reads not live with a dirty tree, and is live again a pass later (#144). So a
+# claim is reclaimable only when every matching worktree is not live, not dirty
+# within `workerTimeoutSeconds` of its `createdAt`, and not younger than
+# DISPATCH_GRACE_SECONDS; a missing `createdAt` counts as inside both. With no
+# matching worktree at all there is nothing that could be starting up, and the
+# claim goes on the pass that sees it.
+#
+# **The expiry is `release_issue` and no record** (#121): the loop needs no human
+# to hand a claim back. A dirty tree past its bound is released the same way and
+# left on disk. There is no `agent-escalated` exemption, because that flag is
+# un-latching: it is already off by the pass the reclaim can fire.
+#
+# **A claimed `to-tickets` issue is never reclaimed.** Neither question can be
+# asked of a decomposition — it produces issues rather than a pull request, so
+# the second is answered `no` by construction — and handing a spec back means
+# decomposing it a second time, into a duplicate set of child tickets a human
+# may approve without noticing it is the second batch. The exemption is on the
+# **verb** and not on the child count: a worker that links its children by prose
+# alone leaves the count at zero, and the duplication would arrive by the other
+# door. **Close-out is therefore the only path that clears a spec's claim.**
+#
+# **Liveness is asked before the verb**, and the order is about what the line
+# means rather than what it costs: neither order saves a read. A live
+# decomposition logs `a live worker holds it` like anything else, and only a
+# spec that is exempt *and* has nobody on it logs the exemption, which is the
+# one case with a reader.
+
+# claim_hold <github> <number> — for a claim no matching worktree reads live on,
+# what still holds it, as one `<kind>\t<detail>` line — a dirty tree inside the
+# bound being a worker too:
+#   unreadable  a matching tree git would not give a status for; detail is its path
+#   dirty       a matching tree with uncommitted changes, inside the worker bound
+#   unborn      a matching worktree with no `createdAt`
+#   young       a matching worktree inside the grace; detail is its age in seconds
+#   gone        matching worktrees, all past both; detail is the youngest's age
+#   none        no matching worktree at all
+# Asked only once liveness has answered no, of the pass-start snapshot. The tree
+# is read only where it could still hold the claim: one `git status` per
+# matching worktree inside its bound.
+claim_hold() {
+  local github="$1" number="$2" pattern created worktree_id path age dirty unborn=false youngest=''
+  pattern='^agent-loop-('"$ISSUE_BRANCH_TYPES"')-'"$number"'(-.*)?$'
+  while IFS=$'\t' read -r _ created worktree_id path; do
+    [[ "${path##*/}" =~ $pattern ]] || continue
+    [[ "$(project_for_orca_id "${worktree_id%%::*}")" == "$github" ]] || continue
+    age=''
+    # `createdAt` is epoch-ms; the bounds are in seconds.
+    [[ "$created" == "-" ]] || age=$(( PASS_NOW - created / 1000 ))
+    if [[ -z "$age" ]] || (( age <= WORKER_TIMEOUT )); then
+      # git has no classifier and passes no text; the caller fails closed.
+      if ! dirty=$(git -C "$path" status --porcelain 2>/dev/null); then
+        printf 'unreadable\t%s\n' "$path"
+        return 0
       fi
-    done <<< "$numbers"
-  done
+      if [[ -n "$dirty" ]]; then
+        printf 'dirty\t%s\n' "$path"
+        return 0
+      fi
+    fi
+    if [[ -z "$age" ]]; then
+      unborn=true
+    elif [[ -z "$youngest" ]] || (( age < youngest )); then
+      youngest="$age"
+    fi
+  done < <(orca_worktrees)
+  if $unborn; then
+    printf 'unborn\t-\n'
+  elif [[ -z "$youngest" ]]; then
+    printf 'none\t-\n'
+  elif (( youngest < DISPATCH_GRACE_SECONDS )); then
+    printf 'young\t%s\n' "$youngest"
+  else
+    printf 'gone\t%s\n' "$youngest"
+  fi
+}
+
+# reclaim_claim <github> <number> <flagged|unflagged> — one claim close-out has
+# found no live worker on and no `to-tickets` verb, against the reclaim's own
+# open-pull-request read in OPEN_PR_ISSUES.
+reclaim_claim() {
+  local github="$1" number="$2" escalation="$3" prnumber hold kind='' detail='' why
+  if prnumber=$(open_pr_for_issue "$number"); then
+    log "left claimed $github#$number: pull request #$prnumber already delivers it"
+    return 0
+  fi
+  # A hold that would not answer leaves `kind` empty, which the last arm holds.
+  hold=$(claim_hold "$github" "$number") || hold=''
+  IFS=$'\t' read -r kind detail <<< "$hold"
+  case "$kind" in
+    none)   why="no worktree" ;;
+    gone)   why="worker gone $(( detail / 60 ))m after dispatch" ;;
+    dirty)
+      log "left claimed $github#$number: a dirty worktree holds it"
+      return 0
+      ;;
+    unborn)
+      log "left claimed $github#$number: a worktree with no createdAt holds it"
+      return 0
+      ;;
+    young)
+      log "left claimed $github#$number: a worktree inside the dispatch grace holds it (${detail}s of ${DISPATCH_GRACE_SECONDS}s)"
+      return 0
+      ;;
+    *)
+      # `unreadable`, or nothing at all: never a release.
+      read_failed "$(gh_error_class "")" - "left claimed $github#$number: could not read the status of ${detail:-its worktrees}"
+      return 0
+      ;;
+  esac
+  if release_issue "$github" "$number"; then
+    log "reclaimed $github#$number: $why, returned to $LABEL_READY"
+    # The claim is gone for the rest of the pass too, so the budget and the
+    # sweep do not act on it, and the flag comes off here rather than there.
+    forget_claim "$github" "$number"
+    withdraw_write_flag "$github" "$number" "$escalation"
+  else
+    # Refused, *leaving it claimed* is forever — the reclaim is the only
+    # thing that hands a claim back — so it flags the issue.
+    write_failed "$(gh_error_class "$FAILURE_TEXT")" issue "$github" "$number" reclaim \
+      "reclaim failed for $github#$number, leaving it claimed"
+  fi
 }
 
 # --- github issues -----------------------------------------------------------
@@ -1906,8 +2005,9 @@ reclaim_stale_claims() {
 # truncated.
 #
 # The claimed read used to happen once per startup. It is now once per
-# repository per pass as well, because close-out's second entry path enumerates
-# the loop's claims — which is the read that path is costed on.
+# repository per pass and never at startup, because close-out's second entry
+# path and the reclaim enumerate the loop's claims — which is the read both are
+# costed on.
 #
 # `labels(first: 100)` is what both readers derive the change type, the verb and
 # the refusal flag from. It **truncates**: an issue wearing more than one hundred
@@ -2801,7 +2901,7 @@ issue_phase_project() {
     withdraw_write_flag "$github" "$number" "$escalation" < /dev/null
 
     # The claim is already written, so a failed dispatch leaves the issue
-    # claimed with no worker. Startup reclaim hands it back.
+    # claimed with no worktree. The next pass's reclaim hands it back.
     #
     # Orca passes no text, so this is transient by construction: the issue is
     # named as the write's object, and nothing can ever flag it from here.
@@ -5820,6 +5920,10 @@ closeout_phase() {
       "$(jq -r '[.projects[].github] | join(",")' "$CONFIG_PATH")" "merged-pr query failed"
     SKIPS=$((SKIPS + 1))
   fi
+  # The merged path before the claims, not after: the reclaim hands back a
+  # claim with no worktree, and a merged issue whose worktree has already been
+  # swept is exactly that — so closing it out first is what stops it being
+  # dispatched a second time.
   closeout_claims
 }
 
@@ -5844,12 +5948,18 @@ closeout_phase() {
 # draft pull request with half a feature in it reads as delivered. Same
 # imprecision, one level up, accepted rather than overlooked.
 #
-# One GraphQL per repository per pass — a query the loop already makes at
-# startup — plus one REST read per claimed **spec**, which is bounded by
-# `maxWorkers` because a spec drops out of the claimed set the moment it is
-# flagged.
+# One GraphQL per repository per pass, plus one REST read per claimed **spec**,
+# which is bounded by `maxWorkers` because a spec drops out of the claimed set
+# the moment it is flagged, plus the reclaim's own open-pull-request read for a
+# repository with anything claimed.
+#
+# **The reclaim is this loop's else-branch** (#136): a spec's claim exits here on
+# its edges, and every other claim with nothing behind it exits through
+# `reclaim_claim`. The two partition the claimed set. Close-out precedes the
+# issue phase, so no dispatch of this pass can be raced; one from an earlier pass
+# is covered by the grace.
 closeout_claims() {
-  local i github rows number verb escalation
+  local i github rows number verb escalation reclaimable
   for (( i = 0; i < PROJECT_COUNT; i++ )); do
     github=$(jq -r ".projects[$i].github" "$CONFIG_PATH")
     if ! rows=$(query_claimed_issues "$github"); then
@@ -5863,16 +5973,34 @@ closeout_claims() {
     # Nothing claimed here: no second question to ask, and no read to spend
     # asking it.
     [[ -n "$rows" ]] || continue
+    # Fail closed. A reclaim that cannot see this repository's open pull
+    # requests would hand back every issue one of them already delivers, and the
+    # loop polls: an unanswered read costs one interval, where a duplicate costs
+    # a whole rebuild. Only the reclaim is skipped; a spec's exit reads no pull
+    # request.
+    reclaimable=true
+    if ! read_open_pr_issues "$github" < /dev/null; then
+      read_failed "$(gh_error_class "$FAILURE_TEXT")" "$github" "open-pr query failed: $github, skipping its reclaim"
+      SKIPS=$((SKIPS + 1))
+      reclaimable=false
+    fi
     # stdin is closed for the body: gh-axi must not swallow the issue list.
     #
-    # The flag word is kept for the pass and is otherwise unused here: the
-    # spec's own REST read carries its labels.
+    # The flag word is kept for the pass, and the reclaim takes a refused
+    # write's flag down with the claim it drops.
     while IFS=$'\t' read -r number verb escalation; do
       [[ -n "$number" ]] || continue
       PASS_CLAIMS+="$github"$'\t'"$number"$'\t'"$escalation"$'\n'
-      # **Verb scope**, and it is load-bearing rather than tidy: without it this
-      # fires on any claimed issue that happens to have children — a wayfinder
-      # map wearing a ready label by accident, or any epic-shaped ticket.
+      # Asked of the snapshot readiness took, so never of an inventory that
+      # could not be read, which would answer *nobody is on it* (#124).
+      if issue_has_live_worker "$github" "$number"; then
+        log "left claimed $github#$number: a live worker holds it"
+        continue
+      fi
+      # **Verb scope**, and it is load-bearing rather than tidy: without it the
+      # spec exit fires on any claimed issue that happens to have children — a
+      # wayfinder map wearing a ready label by accident, or any epic-shaped
+      # ticket.
       #
       # The verb is read here, off the claim query, rather than off the REST
       # payload the child count comes from — which was the other candidate and
@@ -5881,8 +6009,18 @@ closeout_claims() {
       # costs no request at all: one REST read per claimed *spec*, not per
       # claimed issue. The reclaim needs this row's verb anyway, so the answer
       # is already in hand.
-      [[ "$verb" == "$VERB_TO_TICKETS" ]] || continue
+      if [[ "$verb" != "$VERB_TO_TICKETS" ]]; then
+        if $reclaimable; then
+          reclaim_claim "$github" "$number" "$escalation" < /dev/null
+        fi
+        continue
+      fi
       closeout_claim "$github" "$number" < /dev/null
+      # Still claimed, so exempt with nobody on it: the one spec the exemption
+      # line has a reader for.
+      if claim_flag "$github" "$number" > /dev/null; then
+        log "left claimed $github#$number: a $VERB_TO_TICKETS issue is never reclaimed"
+      fi
     done <<< "$rows"
   done
 }
@@ -5912,17 +6050,13 @@ closeout_claims() {
 # children* beneath a panel listing 8 children is a conclusion on its own.
 closeout_claim() {
   local github="$1" number="$2" issue total wore
-  # The liveness question below is asked of the snapshot readiness took —
-  # start-up's, or the pass's — so it is never asked of an inventory that could
-  # not be read, which would answer *nobody is on it* and unclaim a
-  # decomposition in flight (#124).
-
-  # `/to-tickets` publishes its issues one at a time in dependency order, so
-  # `total > 0` goes true on the **first** one. Without this guard a pass
-  # landing in that window unclaims a spec whose worker is still running and
-  # logs that it closed it out. Orca holds a `waiting` agent as live, so a
-  # worker parked for a human's approval is held here with no new machinery.
-  ! issue_has_live_worker "$github" "$number" || return 0
+  # The caller has already asked liveness, of the snapshot readiness took, and
+  # comes here only when nobody is on it. `/to-tickets` publishes its issues one
+  # at a time in dependency order, so `total > 0` goes true on the **first**
+  # one. Without the caller's guard a pass landing in that window unclaims a spec whose
+  # worker is still running and logs that it closed it out. Orca holds a
+  # `waiting` agent as live, so a worker parked for a human's approval is held
+  # with no new machinery.
 
   if ! issue=$(query_issue "$github" "$number"); then
     read_failed "$(gh_error_class "$issue")" "$github" "close-out query failed: $github#$number"
@@ -6166,8 +6300,11 @@ run_pass() {
   PASS_OPEN_PRS=''
   PASS_OPEN_PRS_READ=''
   PASS_OPEN_PRS_FAILED=''
+  PASS_NOW=$(date -u +%s)
   # Close-out first: an issue whose pull request has merged must be off the
-  # board before the issue phase looks at the backlog again.
+  # board before the issue phase looks at the backlog again, and the reclaim it
+  # carries must run before this pass dispatches anything, so it can never race
+  # a dispatch of its own pass.
   closeout_phase
   # Counted off the snapshot the readiness check before this pass took, so the
   # budget has no unreadable branch to fail open or closed through: the pass
@@ -6230,14 +6367,11 @@ ensure_runtime
 load_repos
 validate_config
 load_identity
-# Measure before closeout or reclaim initialization: either can outlive this
-# checkout state, while BUILD must name the bytes this process actually loaded.
+# Measure before the first pass: a pass can outlive this checkout state, while
+# BUILD must name the bytes this process actually loaded. Nothing runs close-out
+# or the reclaim ahead of the passes any more: the first pass covers what
+# startup did (#136).
 measure_build
-# Before the reclaim, not after: the reclaim hands back every claim with no live
-# worker, and a merged issue whose worktree has already been swept is exactly
-# that — so closing it out first is what stops it being dispatched a second time.
-closeout_phase
-reclaim_stale_claims
 
 # The began-passing flag, set immediately before the pass loop: from here on
 # nobody is at the keyboard, so a non-zero exit files a death record (#129).

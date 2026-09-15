@@ -1578,15 +1578,15 @@ run_report hotfix
 check_status 0 "$STATUS"
 check_grep "branch hotfix nywleswoey/automation: foreign-clean /Users/stub/dev/automation-hotfix" "$OUT"
 
-# --- startup reclaim -----------------------------------------------------------
+# --- the reclaim -----------------------------------------------------------------
 
-setup "startup returns a claimed issue with no live worker to the ready label"
+setup "a claimed issue with no worktree is returned to the ready label"
 # The clock sits before #11's and #12's origins, so the worker bound does not
 # write to them either.
 export STUB_CLAIMED=mixed STUB_ORCA_PS=busy STUB_NOW=2026-08-27T12:00:00Z
 run_once
 check_status 0 "$STATUS"
-check_grep "reclaimed nywleswoey/automation#21" "$OUT"
+check_grep "reclaimed nywleswoey/automation#21: no worktree, returned to ready-for-agent" "$OUT"
 check_grep "gh-axi issue edit 21 --repo nywleswoey/automation --add-label ready-for-agent --remove-label agent-in-progress" "$STUB_CALLS"
 # #1 has no worktree either — and must not be matched by agent-loop-issue-11.
 check_grep "reclaimed nywleswoey/automation#1:" "$OUT"
@@ -1598,7 +1598,7 @@ check_no_grep "issue edit 11 " "$STUB_CALLS"
 check_no_grep "issue edit 12 " "$STUB_CALLS"
 check "exactly two issues were reclaimed" \
   test "$(grep -c -- '--add-label ready-for-agent' "$STUB_CALLS")" -eq 2
-# Reclaim runs once at startup, not once per pass.
+# One pass, one reclaim: nothing runs it ahead of the pass any more.
 check "one reclaim line per issue" test "$(grep -cF 'reclaimed nywleswoey/automation#21' "$OUT")" -eq 1
 
 setup "the reclaim asks for open claimed issues alone"
@@ -1623,10 +1623,10 @@ export STUB_CLAIMED=mixed STUB_ORCA_FAIL=ps AGENT_LOOP_RUNTIME_WAIT_SECONDS=1
 run_once
 check_status 1 "$STATUS"
 check_grep "fatal: orca runtime did not become ready within 1s: worker inventory unreadable" "$OUT"
-check_no_grep "skipping startup reclaim" "$OUT"
+check_no_grep "pass start" "$OUT"
 check_no_grep "--add-label ready-for-agent" "$STUB_CALLS"
 
-setup "a failed claimed-issue query is logged and startup continues"
+setup "a failed claimed-issue query is logged and the pass continues"
 export STUB_CLAIMED=mixed STUB_GH_FAIL=issues
 run_once
 check_status 0 "$STATUS"
@@ -1698,7 +1698,7 @@ export STUB_CLAIMED=busy STUB_ORCA_PS=busy STUB_NOW=2026-08-27T12:00:00Z
 run_once
 check_status 0 "$STATUS"
 check_grep "left claimed nywleswoey/automation#11: a live worker holds it" "$OUT"
-check_grep "reclaimed nywleswoey/other#11: no live worker, returned to ready-for-agent" "$OUT"
+check_grep "reclaimed nywleswoey/other#11: no worktree, returned to ready-for-agent" "$OUT"
 check_grep "gh-axi issue edit 11 --repo nywleswoey/other --add-label ready-for-agent --remove-label agent-in-progress" "$STUB_CALLS"
 
 setup "the issue phase skips a ready issue whose pull request is open"
@@ -1778,6 +1778,118 @@ export STUB_ISSUES=none
 run_once
 check_status 0 "$STATUS"
 check_no_grep "open-pr query failed" "$OUT"
+check_no_grep "pullRequests(states: OPEN, first: 100, after: null" "$STUB_CALLS"
+
+# --- the reclaim runs every pass (#136, corrected by #144) ------------------------
+
+OPEN_PR_READ='pullRequests(states: OPEN, first: 100, after: null, orderBy: {field: UPDATED_AT, direction: DESC}) { pageInfo { hasNextPage endCursor } nodes { number headRefName }'
+
+setup "the reclaim runs on every pass, after the pass starts, and adds no pass-end field"
+# #11 is a claimed spec with a live worker. Liveness is asked before the verb, so
+# a healthy decomposition says who holds it and never announces its exemption.
+export STUB_CLAIMED=spec-live STUB_ORCA_PS=busy STUB_NOW=2026-08-27T12:00:00Z
+write_config "nywleswoey/automation" "repo-aaa" 1
+start_loop
+check "two passes ran" await_count "pass end" 2
+stop_loop TERM
+check_status 0 "$STATUS"
+check "the hold is read on every pass" \
+  test "$(grep -cF 'left claimed nywleswoey/automation#11: a live worker holds it' "$OUT")" -ge 2
+check "no reclaim line comes before the first pass starts" \
+  test "$(grep -nF 'left claimed' "$OUT" | head -1 | cut -d: -f1)" -gt "$(grep -nF 'pass start' "$OUT" | head -1 | cut -d: -f1)"
+check_no_grep "a to-tickets issue is never reclaimed" "$OUT"
+check_no_grep "reclaims=" "$OUT"
+
+setup "the reclaim's open-pull-request read is its own, and only a project with claims pays it"
+# Not shared with the issue phase: a map older than the dispatch it guards fails
+# open. #1 and #21 are claimed, so the reclaim reads once and the issue phase
+# reads again.
+export STUB_CLAIMED=mixed STUB_ORCA_PS=busy STUB_ISSUES=workable STUB_NOW=2026-08-27T12:00:00Z
+run_once
+check_status 0 "$STATUS"
+check "the open pull requests are read twice" test "$(grep -cF "$OPEN_PR_READ" "$STUB_CALLS")" -eq 2
+check "the reclaim's read precedes the issue phase's" \
+  test "$(call_line "$OPEN_PR_READ")" -lt "$(call_line 'labels: ["ready-for-agent"]')"
+export STUB_CLAIMED=none
+: > "$STUB_CALLS"
+run_once
+check_status 0 "$STATUS"
+check "nothing claimed, one read" test "$(grep -cF "$OPEN_PR_READ" "$STUB_CALLS")" -eq 1
+
+# `orca-ps-dispatched` is the worktree the dispatch below is answered with, as
+# the next pass's inventory carries it: `agent-loop-issue-17-2`, its agent
+# already `done` — the first state #130 observed on a fresh dispatch — and its
+# `createdAt` 1789301200000. DISPATCH_GRACE_SECONDS is 900.
+setup "a worker gone inside the dispatch grace is left claimed, and one gone past it is reclaimed"
+export STUB_ISSUES=workable
+replay none 1789301200
+check_status 0 "$STATUS"
+check_grep "dispatched nywleswoey/automation#17" "$PASS_LOG"
+check "the dispatch precedes the sweep" test "$(call_line 'worktree create')" -lt "$(call_line 'worktree rm')"
+export STUB_ISSUES=none STUB_CLAIMED=17 STUB_ORCA_PS=dispatched
+replay none 1789302099
+check_status 0 "$STATUS"
+check_grep "left claimed nywleswoey/automation#17: a worktree inside the dispatch grace holds it (899s of 900s)" "$PASS_LOG"
+check_no_grep "reclaimed" "$PASS_LOG"
+check_no_grep "--add-label ready-for-agent" "$STUB_CALLS"
+replay none 1789302101
+check_status 0 "$STATUS"
+check_grep "reclaimed nywleswoey/automation#17: worker gone 15m after dispatch, returned to ready-for-agent" "$PASS_LOG"
+check_grep "gh-axi issue edit 17 --repo nywleswoey/automation --add-label ready-for-agent --remove-label agent-in-progress" "$STUB_CALLS"
+# A retry, not a handover: no record.
+check_no_grep "issue comment 17 " "$STUB_CALLS"
+
+# Mutant twins on a configured bound, so a hard-coded 86400 fails one of them.
+# Both instants are past the grace, so only the dirty tree can hold the claim.
+setup "a dirty worktree holds its claim inside the worker bound, and past it the claim goes and the tree stays"
+export STUB_CLAIMED=17 STUB_ORCA_PS=dispatched STUB_DIRTY=/tmp/stub/automation/agent-loop-issue-17-2
+write_config "nywleswoey/automation" "repo-aaa" 300 3 5400 3600 squash 5400 1000
+replay none 1789302199
+check_status 0 "$STATUS"
+check_grep "left claimed nywleswoey/automation#17: a dirty worktree holds it" "$PASS_LOG"
+check_grep "git -C /tmp/stub/automation/agent-loop-issue-17-2 status --porcelain" "$STUB_CALLS"
+check "the reclaim reads the tree before the issue phase" \
+  test "$(call_line 'git -C /tmp/stub/automation/agent-loop-issue-17-2 status --porcelain')" -lt "$(call_line 'labels: ["ready-for-agent"]')"
+check_no_grep "--add-label ready-for-agent" "$STUB_CALLS"
+replay none 1789302201
+check_status 0 "$STATUS"
+check_grep "reclaimed nywleswoey/automation#17: worker gone 16m after dispatch, returned to ready-for-agent" "$PASS_LOG"
+check_no_grep "issue comment 17 " "$STUB_CALLS"
+check_no_grep "path:/tmp/stub/automation/agent-loop-issue-17-2" "$STUB_CALLS"
+check_grep "sweep skipped /tmp/stub/automation/agent-loop-issue-17-2: uncommitted changes" "$PASS_LOG"
+
+# `orca-ps-origins` carries #31 idle with a null `createdAt`, far past any bound.
+setup "a worktree with no createdAt leaves its claim in place"
+export STUB_CLAIMED=31 STUB_ORCA_PS=origins STUB_NOW=1799999999
+run_once
+check_status 0 "$STATUS"
+check_grep "left claimed nywleswoey/automation#31: a worktree with no createdAt holds it" "$OUT"
+check_no_grep "--add-label ready-for-agent" "$STUB_CALLS"
+
+setup "a dirty worktree with no createdAt counts as dirty inside the bound"
+export STUB_CLAIMED=31 STUB_ORCA_PS=origins STUB_NOW=1799999999 STUB_DIRTY=/tmp/stub/automation/agent-loop-issue-31
+run_once
+check_status 0 "$STATUS"
+check_grep "left claimed nywleswoey/automation#31: a dirty worktree holds it" "$OUT"
+check_no_grep "--add-label ready-for-agent" "$STUB_CALLS"
+
+setup "a tree the reclaim cannot read holds its claim"
+export STUB_CLAIMED=31 STUB_ORCA_PS=origins STUB_NOW=1799999999 STUB_GIT_FAIL=status
+run_once
+check_status 0 "$STATUS"
+check_grep "left claimed nywleswoey/automation#31: could not read the status of /tmp/stub/automation/agent-loop-issue-31 class=transient" "$OUT"
+check_no_grep "--add-label ready-for-agent" "$STUB_CALLS"
+
+setup "a claim whose pull request closed unmerged is reclaimed"
+# #145's claimed door. Closing #401 unmerged takes it out of every open read, and
+# the issue goes back to the loop through the reclaim.
+export STUB_CLAIMED=17
+replay open-issue-branch 2026-08-27T12:00:00Z
+check_status 0 "$STATUS"
+check_grep "left claimed nywleswoey/automation#17: pull request #401 already delivers it" "$PASS_LOG"
+replay none 2026-08-27T12:05:00Z
+check_status 0 "$STATUS"
+check_grep "reclaimed nywleswoey/automation#17: no worktree, returned to ready-for-agent" "$PASS_LOG"
 
 # --- worktree sweep -------------------------------------------------------------
 
@@ -1909,9 +2021,9 @@ check_no_grep "issue edit 21 " "$STUB_CALLS"
 check_no_grep "issue comment" "$STUB_CALLS"
 check_no_grep "worktree rm" "$STUB_CALLS"
 # The delivery read is the issue phase's own, made once in the pass for the
-# repository; the other read is the startup reclaim's.
-check "the open pull requests are read once in the pass and once at startup" \
-  test "$(grep -cF 'pullRequests(states: OPEN, first: 100, after: null, orderBy: {field: UPDATED_AT, direction: DESC}) { pageInfo { hasNextPage endCursor } nodes { number headRefName }' "$STUB_CALLS")" -eq 2
+# repository; the other read is the reclaim's, which shares nothing.
+check "the open pull requests are read once for the reclaim and once for the budget" \
+  test "$(grep -cF "$OPEN_PR_READ" "$STUB_CALLS")" -eq 2
 
 setup "a live worker whose pull request merged this pass is released, not escalated"
 # #103's case. `merged-set` carries #201 merged on `agent-loop-issue-17`, and
@@ -4777,13 +4889,16 @@ setup "a refused write flags its object with one comment, and a second attempt a
 # write targeted gets the flag and one record of why, and every other project
 # keeps running.
 #
-# Close-out runs twice in a --once run — at startup and again in the pass — so
-# one run attempts the close twice, and the second attempt is the second pass
+# Two runs attempt the close twice, and the second attempt is the second pass
 # the marker gate exists for.
 export STUB_MERGED=set STUB_GH_FAIL=close STUB_GH_ERROR=404
 run_once
 check_status 0 "$STATUS"
-check "the close was attempted on both close-outs" \
+check "the flag is said once, on the attempt that posted the record" \
+  test "$(grep -cF 'nywleswoey/automation#17 flagged agent-escalated' "$OUT")" -eq 1
+run_once
+check_status 0 "$STATUS"
+check "the close was attempted on both passes" \
   test "$(grep -cF 'gh-axi issue close 17 --repo nywleswoey/automation' "$STUB_CALLS")" -eq 2
 check_grep "close failed for nywleswoey/automation#17, leaving it claimed class=refused" "$OUT"
 check "exactly one comment across both attempts" \
@@ -4795,8 +4910,8 @@ check "the comment is posted before the flag goes on" \
   test "$(call_line 'gh-axi issue comment 17 ')" -lt "$(call_line 'gh-axi issue edit 17 --repo nywleswoey/automation --add-label agent-escalated')"
 # The gate is a read of the object's own comments, not a memory of this run.
 check_grep "gh-axi api /repos/nywleswoey/automation/issues/17/comments" "$STUB_CALLS"
-check "the flag is said once, on the attempt that posted the record" \
-  test "$(grep -cF 'nywleswoey/automation#17 flagged agent-escalated' "$OUT")" -eq 1
+check "the flag is not said again on the attempt that found the record" \
+  test "$(grep -cF 'nywleswoey/automation#17 flagged agent-escalated' "$OUT")" -eq 0
 REFUSED_RECORD="$STUB_STATE/issue-body-17.txt"
 check "the record was captured" test -f "$REFUSED_RECORD"
 check_grep "<!-- agent-loop-write-refused: close -->" "$REFUSED_RECORD"
@@ -4829,8 +4944,8 @@ check "the flag came off once" \
 # write attempt, so it comes off on that same pass and nowhere else.
 
 setup "a reclaim that lands does not take down the flag a refused close raised"
-# Startup runs close-out and then the reclaim over the same claims. A close
-# refused at startup flags #17, and the reclaim then hands #17 back — a landed
+# Close-out's merged path and then the reclaim run over the same claims. A close
+# refused on the merged path flags #17, and the reclaim then hands #17 back — a landed
 # write on the same issue, but not the refused one. The flag must survive it,
 # or it comes down with the close still refused and goes up again next pass.
 export STUB_CLAIMED=17 STUB_MERGED=set STUB_GH_FAIL=close STUB_GH_ERROR=404
@@ -4882,26 +4997,28 @@ check_grep "gh-axi issue edit 92 --repo nywleswoey/automation --remove-label age
 check_grep "nywleswoey/automation#92 withdrew agent-escalated: its refused write landed" "$OUT"
 
 setup "a failed unclaim leaves a closed issue for the next close-out to finish"
-# Every label edit fails, so every unclaim does. Close-out runs twice in a
-# --once run — at startup, before the reclaim, and again inside the pass — which
-# is what makes the recovery visible in a single run.
+# Every label edit fails, so every unclaim does. Two passes make the recovery
+# visible.
 #
-# The startup close-out closes #17, #40, #11 and #43 and cannot unclaim them:
-# the close is what stops the re-dispatch, so it still counts as a close-out.
-# #44 GitHub had already closed, so the unclaim is the whole of the work there
-# and losing it is a skip rather than a partial success — no `closed out` line.
+# The first close-out closes #17, #40, #11 and #43 and cannot unclaim them: the
+# close is what stops the re-dispatch, so it still counts as a close-out. #44
+# GitHub had already closed, so the unclaim is the whole of the work there and
+# losing it is a skip rather than a partial success — no `closed out` line.
 #
-# The pass's close-out then reads all five back closed and still claimed, which
+# The second close-out then reads all five back closed and still claimed, which
 # is the state the guard now keys on, and retries every one of them. That is the
 # self-heal: a lost unclaim is retried until it lands, and until then it is five
 # skips rather than five issues quietly stranded.
 export STUB_MERGED=set STUB_GH_FAIL=claim
 run_once
 check_status 0 "$STATUS"
-check_grep "unclaim failed for nywleswoey/automation#17, leaving the label on a closed issue class=transient" "$OUT"
-check_grep "closed out nywleswoey/automation#17: pull request #201 merged" "$OUT"
-check_grep "unclaim failed for nywleswoey/automation#44, leaving the label on a closed issue" "$OUT"
-check_no_grep "closed out nywleswoey/automation#44" "$OUT"
+cp "$OUT" "$WORK/pass-1.log"
+check_grep "unclaim failed for nywleswoey/automation#17, leaving the label on a closed issue class=transient" "$WORK/pass-1.log"
+check_grep "closed out nywleswoey/automation#17: pull request #201 merged" "$WORK/pass-1.log"
+check_grep "unclaim failed for nywleswoey/automation#44, leaving the label on a closed issue" "$WORK/pass-1.log"
+check_no_grep "closed out nywleswoey/automation#44" "$WORK/pass-1.log"
+run_once
+check_status 0 "$STATUS"
 check_grep "pass end dispatches=0 skips=5" "$OUT"
 # The retry is an unclaim and never a second close: #17 is closed once, by the
 # close-out that found it open.
@@ -4981,7 +5098,7 @@ check_no_grep "decomposed nywleswoey/automation#17" "$OUT"
 check_grep "left claimed nywleswoey/automation#93: a to-tickets issue is never reclaimed" "$OUT"
 check_no_grep "reclaimed nywleswoey/automation#93" "$OUT"
 # An `implement` claim in the same state still is, exactly as before.
-check_grep "reclaimed nywleswoey/automation#17: no live worker, returned to ready-for-agent" "$OUT"
+check_grep "reclaimed nywleswoey/automation#17: no worktree, returned to ready-for-agent" "$OUT"
 
 # A flagged spec is in no loop query at all on the pass that follows — the claim
 # label is off, the ready label was taken at claim and never restored. So the
@@ -5005,7 +5122,10 @@ check_no_grep "issue edit 11" "$STUB_CALLS"
 check_no_grep "gh-axi api /repos/nywleswoey/automation/issues/11 " "$STUB_CALLS"
 # Orca holds a `waiting` agent as live, so a worker parked for a human's
 # approval is held by every existing liveness question with no new machinery.
-check_grep "left claimed nywleswoey/automation#11: a to-tickets issue is never reclaimed" "$OUT"
+# Liveness is asked before the verb, so a live decomposition says who holds it
+# and does not announce its exemption.
+check_grep "left claimed nywleswoey/automation#11: a live worker holds it" "$OUT"
+check_no_grep "a to-tickets issue is never reclaimed" "$OUT"
 
 setup "a child count that will not answer leaves the spec claimed"
 # Fails closed. A stranded spec costs a human glance; a duplicate costs a
@@ -5063,7 +5183,7 @@ setup "the pass-end line names the build and reports no drift on a matching chec
 run_once
 check_status 0 "$STATUS"
 check_grep "pass end dispatches=0 skips=0 sweeps=1 refusals=0 failures=0 build=headsha0 drift=none" "$OUT"
-check "build is measured before startup closeout" \
+check "build is measured before the first pass's close-out" \
   test "$(call_line "git -C $ROOT rev-parse HEAD")" -lt "$(call_line "is:pr is:merged")"
 
 setup "a dirty script directory stops build= naming a commit and leaves drift unanswerable"
