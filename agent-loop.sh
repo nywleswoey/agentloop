@@ -6131,16 +6131,18 @@ closeout_claim() {
 # its children by prose alone leaves the count at zero too, so they look for
 # those first, then re-apply the ready label or abandon the spec.
 #
-# **No new read.** The gate is the claimed query's own flag word, not a marker
-# in the comments: an unflagged spec past the bound gets the record and the
-# flag, and a flagged one gets no write and no line. So the record and the line
-# are written only on the pass that adds the flag. What that costs, named:
+# **No read after success.** The first gate is the claimed query's own flag word:
+# a flagged spec gets no comment read, no write and no line. An unflagged spec
+# past the bound reads its comments for the handover's stable marker. If the
+# record is already there after a failed flag write, the next pass retries only
+# the flag. So each spec gets at most one record, and the line is written only
+# on the pass that adds the flag. What that costs, named:
 #
 # - **A spec already flagged by the sweep's Row B that then dies gets no second
 #   record.** The hung-worker record already names its worktree, and the flag
 #   stays up.
-# - A flag write that fails after its record landed writes the record again on
-#   the next pass, since nothing but the flag says it went up.
+# - Until the flag lands, each pass pays one paged comment read to distinguish a
+#   missing record from a record whose flag write failed.
 #
 # The flag comes off with the claim — the `agent-decomposed` swap takes it down,
 # and so does a claim after a human re-arms the spec — and the sweep leaves it
@@ -6148,8 +6150,11 @@ closeout_claim() {
 #
 # Its writes are escalation writes, and fail like `escalate_hung_worker`'s: a
 # refused one dies, and a transient one is logged, counted and tried again.
+SPEC_HANDOVER_MARKER='<!-- agent-loop-spec-handover -->'
+
 hand_over_spec() {
   local github="$1" number="$2" escalation="$3" hold kind='' detail='' why file="" status=0 class
+  local comments seen
   # A hold that would not answer leaves `kind` empty, which the last arm holds.
   hold=$(claim_hold "$github" "$number") || hold=''
   IFS=$'\t' read -r kind detail <<< "$hold"
@@ -6177,29 +6182,44 @@ hand_over_spec() {
   PASS_HANDED_OVER+=" $github#$number "
   [[ "$escalation" == "unflagged" ]] || return 0
 
-  if ! file=$(mktemp "${TMPDIR:-/tmp}/agent-loop-spec-handover.XXXXXX"); then
-    FAILURE_TEXT=""
-    status=1
-  elif ! spec_handover_body "$why" > "$file"; then
-    FAILURE_TEXT=""
-    status=1
-  else
-    axi_write issue comment "$number" --repo "$github" --body-file "$file" || status=1
-  fi
-  [[ -z "$file" ]] || rm -f "$file"
-  if (( status != 0 )); then
-    class=$(gh_error_class "$FAILURE_TEXT")
-    [[ "$class" != "refused" ]] \
-      || die "spec handover record refused on $github#$number class=refused project=$github"
-    write_failed "$class" - "" "" record "spec handover record failed on $github#$number, flagging nothing this pass"
+  if ! comments=$(gh_json "/repos/$github/issues/$number/comments" --paginate); then
+    read_failed "$(gh_error_class "$comments")" "$github" \
+      "spec handover record unreadable on $github#$number, flagging nothing this pass"
     return 0
+  fi
+  if ! seen=$(jq -r --arg me "$ME" --arg marker "$SPEC_HANDOVER_MARKER" \
+       'any(.[]?; (.user.login // "") == $me and ((.body // "") | contains($marker)))' \
+       <<< "$comments" 2>/dev/null) || [[ "$seen" != "true" && "$seen" != "false" ]]; then
+    read_failed "$(gh_error_class "")" "$github" \
+      "spec handover record unreadable on $github#$number, flagging nothing this pass"
+    return 0
+  fi
+
+  if [[ "$seen" == "false" ]]; then
+    if ! file=$(mktemp "${TMPDIR:-/tmp}/agent-loop-spec-handover.XXXXXX"); then
+      FAILURE_TEXT=""
+      status=1
+    elif ! spec_handover_body "$why" > "$file"; then
+      FAILURE_TEXT=""
+      status=1
+    else
+      axi_write issue comment "$number" --repo "$github" --body-file "$file" || status=1
+    fi
+    [[ -z "$file" ]] || rm -f "$file"
+    if (( status != 0 )); then
+      class=$(gh_error_class "$FAILURE_TEXT")
+      [[ "$class" != "refused" ]] \
+        || die "spec handover record refused on $github#$number class=refused project=$github"
+      write_failed "$class" - "" "" record "spec handover record failed on $github#$number, flagging nothing this pass"
+      return 0
+    fi
   fi
 
   if ! axi_write issue edit "$number" --repo "$github" --add-label "$LABEL_ESCALATED"; then
     class=$(gh_error_class "$FAILURE_TEXT")
     [[ "$class" != "refused" ]] \
       || die "spec handover flag refused on $github#$number class=refused project=$github"
-    write_failed "$class" - "" "" flag "spec handover flag failed on $github#$number, the next pass writes the record and the flag again"
+    write_failed "$class" - "" "" flag "spec handover flag failed on $github#$number, the record is up and the next pass adds it"
     return 0
   fi
   set_claim_flag "$github" "$number" flagged
@@ -6213,7 +6233,8 @@ spec_handover_body() {
   printf 'The loop keeps `%s` on it and will not hand it back by itself: a worker that linked its children by prose alone leaves the sub-issue count at zero too, and handing this spec back would decompose it a second time.\n\n' "$LABEL_CLAIMED"
   printf '**What to do** — first look for child issues that point here by prose, such as a `## Parent` section. If there are some, link them to this issue as sub-issues, and the next pass unclaims it as `%s`. If there are none, swap `%s` for `%s` to decompose it again, or abandon the spec.\n\n' "$LABEL_DECOMPOSED" "$LABEL_CLAIMED" "$LABEL_READY"
   printf 'The loop takes `%s` off by itself on the pass it unclaims or claims this spec again. This comment is a record and stays.\n\n' "$LABEL_ESCALATED"
-  printf 'What close-out derived: %s\n' "$why"
+  printf 'What close-out derived: %s\n\n' "$why"
+  printf '%s\n' "$SPEC_HANDOVER_MARKER"
 }
 
 # Close out a single merged pull request: tick the checklist in the linked

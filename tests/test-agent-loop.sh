@@ -5161,13 +5161,15 @@ check_no_grep "-agent-in-progress" "$STUB_STATE/labels-93"
 check_grep "prose" "$STUB_STATE/issue-body-93.txt"
 check_grep "ready-for-agent" "$STUB_STATE/issue-body-93.txt"
 check_grep "abandon" "$STUB_STATE/issue-body-93.txt"
-# No new read: the flag is the claimed query's own column, off labels it already
-# selects, and no comment read gates the record.
+check_grep "<!-- agent-loop-spec-handover -->" "$STUB_STATE/issue-body-93.txt"
+# The unflagged path reads the comments once to distinguish a missing record
+# from one whose flag write failed.
 check_grep "$SPEC_CLAIMED_READ" "$STUB_CALLS"
-check_no_grep "issues/93/comments" "$STUB_CALLS"
-check "one read of the spec, as before" \
-  test "$(grep -cF 'api /repos/nywleswoey/automation/issues/93' "$STUB_CALLS")" -eq 1
-# The next pass reads the flag back off the claimed query and writes nothing.
+check_grep "gh-axi api /repos/nywleswoey/automation/issues/93/comments --paginate" "$STUB_CALLS"
+check "one issue read of the spec, as before" \
+  test "$(grep -cF 'api /repos/nywleswoey/automation/issues/93 --full' "$STUB_CALLS")" -eq 1
+# The next pass reads the flag back off the claimed query and writes nothing,
+# including no comment read after the successful label write.
 : > "$STUB_CALLS"
 run_once
 check_status 0 "$STATUS"
@@ -5176,7 +5178,40 @@ check_no_grep "issue edit 93 " "$STUB_CALLS"
 check_no_grep "nywleswoey/automation#93" "$OUT"
 check_no_grep "issues/93/comments" "$STUB_CALLS"
 check "steady state reads the spec once, as before" \
-  test "$(grep -cF 'api /repos/nywleswoey/automation/issues/93' "$STUB_CALLS")" -eq 1
+  test "$(grep -cF 'api /repos/nywleswoey/automation/issues/93 --full' "$STUB_CALLS")" -eq 1
+
+setup "a spec handover whose flag write fails retries the flag without duplicating its record"
+export STUB_CLAIMED=specs STUB_ORCA_PS=idle STUB_GH_FAIL=claim
+run_once
+check_status 0 "$STATUS"
+check_grep "spec handover flag failed on nywleswoey/automation#93, the record is up and the next pass adds it class=transient" "$OUT"
+check "the first attempt posts one marked record" \
+  test "$(grep -cF 'issue comment 93 ' "$STUB_CALLS")" -eq 1
+check_grep "<!-- agent-loop-spec-handover -->" "$STUB_STATE/issue-body-93.txt"
+# The record survives the failed flag write. A second failing pass finds its
+# marker and retries only the label.
+run_once
+check_status 0 "$STATUS"
+check "the retry does not duplicate the record" \
+  test "$(grep -cF 'issue comment 93 ' "$STUB_CALLS")" -eq 1
+check "the retry attempts the flag again" \
+  test "$(grep -cF 'issue edit 93 --repo nywleswoey/automation --add-label agent-escalated' "$STUB_CALLS")" -eq 2
+# Once the write is allowed, the marked record still suppresses a comment and
+# the label lands. The pass after that takes the no-read-after-success path.
+unset STUB_GH_FAIL
+run_once
+check_status 0 "$STATUS"
+check "the successful retry still has one record" \
+  test "$(grep -cF 'issue comment 93 ' "$STUB_CALLS")" -eq 1
+check "the flag lands on the third attempt" \
+  test "$(grep -cF 'issue edit 93 --repo nywleswoey/automation --add-label agent-escalated' "$STUB_CALLS")" -eq 3
+check_grep "handed over nywleswoey/automation#93: its to-tickets worker is gone with no sub-issue (no worktree), flagged agent-escalated, claim kept" "$OUT"
+: > "$STUB_CALLS"
+run_once
+check_status 0 "$STATUS"
+check_no_grep "issue comment 93 " "$STUB_CALLS"
+check_no_grep "issue edit 93 " "$STUB_CALLS"
+check_no_grep "issues/93/comments" "$STUB_CALLS"
 
 # `orca-ps-spec` carries #93's decomposition worktree, its agent `done`, its
 # `createdAt` 1789301200000. DISPATCH_GRACE_SECONDS is 900.
