@@ -19,14 +19,15 @@
 #                                the ready-issue query, answered from
 #                                issues-$STUB_ISSUES.json (default: none)
 #                              issues(labels: ["agent-in-progress"])
-#                                the claimed-issue query the startup reclaim
-#                                makes, from claimed-$STUB_CLAIMED.json
+#                                the claimed-issue query close-out and the
+#                                reclaim make, from claimed-$STUB_CLAIMED.json
 #                                (default: none)
 #                              pullRequests(states: OPEN
 #                                the per-repository open-pull-request
 #                                enumerations — the PR phase's, and the
-#                                delivery guard's, which is the only one that
-#                                pages. Answered out of the world directory —
+#                                delivery guard's, which the reclaim and the
+#                                issue phase each make and which is the only
+#                                one that pages. Answered out of the world directory —
 #                                see $STUB_WORLD below
 #                              pullRequest(number: N) ... statusCheckRollup
 #                                everything the PR phase derives one pull
