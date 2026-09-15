@@ -755,7 +755,7 @@ setup "a workable issue is claimed and dispatched"
 export STUB_ISSUES=workable
 run_once
 check_status 0 "$STATUS"
-check_grep 'gh-axi api POST graphql --field query={ repository(owner: "nywleswoey", name: "automation") { issues(labels: ["ready-for-agent"], states: OPEN, first: 100)' "$STUB_CALLS"
+check_grep 'gh-axi api POST graphql --field query={ repository(owner: "nywleswoey", name: "automation") { issues(labels: ["ready-for-agent"], states: OPEN, first: 100, orderBy: {field: CREATED_AT, direction: ASC})' "$STUB_CALLS"
 check_grep "$CLAIM_CALL" "$STUB_CALLS"
 check_grep "$CREATE_CALL" "$STUB_CALLS"
 check "the claim precedes the dispatch" test "$(call_line "$CLAIM_CALL")" -lt "$(call_line "$CREATE_CALL")"
@@ -1437,7 +1437,7 @@ setup "a candidate arriving at a full budget is deferred, not dispatched"
 export STUB_ISSUES=workable STUB_ORCA_PS=busy STUB_CLAIMED=busy STUB_NOW=2026-08-27T12:00:00Z
 run_once
 check_status 0 "$STATUS"
-check_grep "issue nywleswoey/automation#17 deferred: worker budget full (3/3)" "$OUT"
+check_grep "issue nywleswoey/automation#17 deferred: worker budget full (3/3) queue=1/1" "$OUT"
 check_no_grep "issue edit" "$STUB_CALLS"
 check_no_grep "worktree create" "$STUB_CALLS"
 check_grep "pass end dispatches=0 skips=1 sweeps=0" "$OUT"
@@ -1451,9 +1451,50 @@ run_once
 check_status 0 "$STATUS"
 check_grep "issue nywleswoey/automation#18 skipped: blocked by 1 open blocker" "$OUT"
 check_grep "dispatched nywleswoey/automation#17" "$OUT"
-check_grep "issue nywleswoey/automation#19 deferred: worker budget full (3/3)" "$OUT"
+# The position counts every candidate ahead of it, the blocked and the
+# dispatched alike: #19 is third of three.
+check_grep "issue nywleswoey/automation#19 deferred: worker budget full (3/3) queue=3/3" "$OUT"
+# The blocker skip is exactly what it was: no position rides on it (#123).
+check "the blocker skip line is unchanged" \
+  grep -qE 'issue nywleswoey/automation#18 skipped: blocked by 1 open blocker$' "$OUT"
 check "exactly one worktree was created" test "$(grep -cF 'worktree create' "$STUB_CALLS")" -eq 1
 check_grep "pass end dispatches=1 skips=2 sweeps=0" "$OUT"
+
+# --- issue phase: the ready queue's cap has a canary (#123) --------------------
+
+# write_deep_queue <count> — a ready fixture of <count> workable issues, written
+# into the case's scratch dir because a queue this deep is not worth committing.
+write_deep_queue() {
+  DEEP_QUEUE="$WORK/issues-deep-$1.json"
+  jq -n --argjson count "$1" '{ data: { repository: { issues: { nodes: [
+    range(1000; 1000 + $count) | { number: ., title: "Deep queue \(.)",
+      url: "https://github.com/nywleswoey/automation/issues/\(.)",
+      labels: { nodes: [ { name: "implement" }, { name: "ready-for-agent" } ] } }
+  ] } } } }' > "$DEEP_QUEUE"
+}
+
+setup "a ready queue at the query's cap logs the truncation canary"
+# Past `first: 100` the rest are never seen at all, so a queue of exactly 100 is
+# the one depth that cannot tell a full page from a truncated one — and it errs
+# towards saying so. The budget is full so no candidate dispatches.
+write_deep_queue 100
+export STUB_ISSUES="$DEEP_QUEUE" STUB_ORCA_PS=busy STUB_CLAIMED=busy STUB_NOW=2026-08-27T12:00:00Z
+run_once
+check_status 0 "$STATUS"
+check_grep "issue queue nywleswoey/automation truncated: 100 candidates" "$OUT"
+check "the canary is logged once" \
+  test "$(grep -cF 'issue queue nywleswoey/automation truncated' "$OUT")" -eq 1
+check_grep "issue nywleswoey/automation#1099 deferred: worker budget full (3/3) queue=100/100" "$OUT"
+
+setup "a ready queue one short of the cap logs no canary"
+# 99 is under the cap, so GitHub cut nothing: every candidate has a position
+# and there is nothing unseen to report.
+write_deep_queue 99
+export STUB_ISSUES="$DEEP_QUEUE" STUB_ORCA_PS=busy STUB_CLAIMED=busy STUB_NOW=2026-08-27T12:00:00Z
+run_once
+check_status 0 "$STATUS"
+check_no_grep "issue queue nywleswoey/automation truncated" "$OUT"
+check_grep "issue nywleswoey/automation#1098 deferred: worker budget full (3/3) queue=99/99" "$OUT"
 
 # --- issue phase: failures are logged, the pass survives -----------------------
 
@@ -1610,7 +1651,7 @@ setup "the reclaim asks for open claimed issues alone"
 export STUB_CLAIMED=mixed STUB_ORCA_PS=busy
 run_once
 check_status 0 "$STATUS"
-check_grep 'gh-axi api POST graphql --field query={ repository(owner: "nywleswoey", name: "automation") { issues(labels: ["agent-in-progress"], states: OPEN, first: 100)' "$STUB_CALLS"
+check_grep 'gh-axi api POST graphql --field query={ repository(owner: "nywleswoey", name: "automation") { issues(labels: ["agent-in-progress"], states: OPEN, first: 100, orderBy: {field: CREATED_AT, direction: ASC})' "$STUB_CALLS"
 
 setup "no claimed issues means no reclaim traffic"
 run_once
@@ -5226,7 +5267,7 @@ check_no_grep "handed over nywleswoey/automation#11" "$OUT"
 
 # --- a spec whose worker published no child is handed over (#140) ----------------
 
-SPEC_CLAIMED_READ='issues(labels: ["agent-in-progress"], states: OPEN, first: 100) { nodes { number title url body labels(first: 100) { nodes { name } } } }'
+SPEC_CLAIMED_READ='issues(labels: ["agent-in-progress"], states: OPEN, first: 100, orderBy: {field: CREATED_AT, direction: ASC}) { nodes { number title url body labels(first: 100) { nodes { name } } } }'
 
 setup "a spec whose worker published no child, with no worktree, is handed over once and keeps its claim"
 # `claimed-specs`' #93 has no sub-issue, and `orca-ps-idle` carries no worktree
