@@ -1,0 +1,8 @@
+{ "data": { "repository": { "issues": { "nodes": [
+  { "number": 12, "title": "A claim whose worker names no origin",
+    "url": "https://github.com/nywleswoey/automation/issues/12",
+    "labels": { "nodes": [ { "name": "agent-in-progress" } ] } },
+  { "number": 17, "title": "A claim whose worker is still going",
+    "url": "https://github.com/nywleswoey/automation/issues/17",
+    "labels": { "nodes": [ { "name": "agent-in-progress" } ] } }
+] } } } }

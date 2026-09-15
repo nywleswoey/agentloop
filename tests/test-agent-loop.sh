@@ -57,7 +57,7 @@ setup() {
   write_config "nywleswoey/automation" "repo-aaa"
 }
 
-# write_config <github-full-name> <orca-repo-id> [poll-interval-seconds] [max-workers] [autofix-timeout] [merge-gate-timeout] [merge-method] [review-retry-timeout]
+# write_config <github-full-name> <orca-repo-id> [poll-interval-seconds] [max-workers] [autofix-timeout] [merge-gate-timeout] [merge-method] [review-retry-timeout] [worker-timeout]
 write_config() {
   cat > "$CONFIG" <<JSON
 {
@@ -66,6 +66,7 @@ write_config() {
   "autofixTimeoutSeconds": ${5:-5400},
   "mergeGateTimeoutSeconds": ${6:-3600},
   "reviewRetryTimeoutSeconds": ${8:-5400},
+  "workerTimeoutSeconds": ${9:-86400},
   "logPath": "$LOG",
   "deathRepo": "nywleswoey/deaths",
   "labels": { "ready": "ready-for-agent", "claimed": "agent-in-progress" },
@@ -213,6 +214,32 @@ check_grep "project does not resolve: nywleswoey/typo-project" "$OUT"
 check_no_grep "gh-axi issue create" "$STUB_CALLS"
 check "no pass ran" test "$(grep -cF 'pass start' "$OUT")" -eq 0
 check "lockfile released" test ! -f "$LOCK"
+
+# --- config: the worker bound (#122) -------------------------------------------
+
+# The one key with a default, because the ticket that decided it gave it one. A
+# default is still validated: a bad value stops start-up like every timeout.
+setup "a bad workerTimeoutSeconds fails startup"
+write_config "nywleswoey/automation" "repo-aaa" 300 3 5400 3600 squash 5400 0
+run_once
+check_status nonzero "$STATUS"
+check_grep "config workerTimeoutSeconds must be a positive integer, got: 0" "$OUT"
+check "no pass ran" test "$(grep -cF 'pass start' "$OUT")" -eq 0
+
+setup "a non-numeric workerTimeoutSeconds fails startup"
+write_config "nywleswoey/automation" "repo-aaa" 300 3 5400 3600 squash 5400 '"a day"'
+run_once
+check_status nonzero "$STATUS"
+check_grep "config workerTimeoutSeconds must be a positive integer, got: a day" "$OUT"
+
+setup "an absent workerTimeoutSeconds starts on its default"
+jq 'del(.workerTimeoutSeconds)' "$CONFIG" > "$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
+run_once
+check_status 0 "$STATUS"
+check_grep "pass end" "$OUT"
+
+setup "the README setup block carries workerTimeoutSeconds"
+check_grep '"workerTimeoutSeconds": 86400,' "$ROOT/README.md"
 
 # --- unresolvable orcaRepoId -------------------------------------------------
 
@@ -1405,7 +1432,9 @@ check_grep "issue nywleswoey/automation#72 skipped: blocked by 1 open blocker" "
 # --- issue phase: the worker budget is global ----------------------------------
 
 setup "a candidate arriving at a full budget is deferred, not dispatched"
-export STUB_ISSUES=workable STUB_ORCA_PS=busy
+# A live worker counts only while it holds its claim with no pull request
+# (#122), so #11 and #12 are claimed, and the clock sits before their origins.
+export STUB_ISSUES=workable STUB_ORCA_PS=busy STUB_CLAIMED=busy STUB_NOW=2026-08-27T12:00:00Z
 run_once
 check_status 0 "$STATUS"
 check_grep "issue nywleswoey/automation#17 deferred: worker budget full (3/3)" "$OUT"
@@ -1415,8 +1444,9 @@ check_grep "pass end dispatches=0 skips=1 sweeps=0" "$OUT"
 
 setup "the budget counts loop workers across phases and spends the last slot once"
 # Two live loop workers, one of them a PR worker: the budget is one pool, so
-# only one of the two workable issues gets the remaining slot.
-export STUB_ISSUES=mixed STUB_ORCA_PS=one-free
+# only one of the two workable issues gets the remaining slot. #11 holds its
+# claim; the PR worker names no issue, so nothing releases it.
+export STUB_ISSUES=mixed STUB_ORCA_PS=one-free STUB_CLAIMED=busy STUB_NOW=2026-08-27T12:00:00Z
 run_once
 check_status 0 "$STATUS"
 check_grep "issue nywleswoey/automation#18 skipped: blocked by 1 open blocker" "$OUT"
@@ -1551,7 +1581,9 @@ check_grep "branch hotfix nywleswoey/automation: foreign-clean /Users/stub/dev/a
 # --- startup reclaim -----------------------------------------------------------
 
 setup "startup returns a claimed issue with no live worker to the ready label"
-export STUB_CLAIMED=mixed STUB_ORCA_PS=busy
+# The clock sits before #11's and #12's origins, so the worker bound does not
+# write to them either.
+export STUB_CLAIMED=mixed STUB_ORCA_PS=busy STUB_NOW=2026-08-27T12:00:00Z
 run_once
 check_status 0 "$STATUS"
 check_grep "reclaimed nywleswoey/automation#21" "$OUT"
@@ -1822,6 +1854,177 @@ run_once
 check_status 0 "$STATUS"
 check_grep "sweep failed for /tmp/stub/automation/agent-loop-issue-31, leaving it in place class=transient" "$OUT"
 check_grep "pass end dispatches=0 skips=0 sweeps=0 refusals=0 failures=1" "$OUT"
+
+# --- a worker that is still going (#122) ----------------------------------------
+
+# The workers fixture carries three live loop workers: #17 working since
+# `createdAt` 1789300000000, #12 waiting with no `createdAt` at all, and #21
+# working since 1789301200000. `claimed-workers` holds #12 and #17, so #21's
+# claim is gone; the `open-issue-branch` world delivers #17 with #401.
+
+setup "a delivered, still-live worker is released and a dispatch fills its slot in the same pass"
+# Two slots and three live workers: without the release #19 would be deferred.
+# #17 is delivered and #21's claim is gone, so only #12 is still counted, and
+# #19 takes the slot. #18 is blocked in `issues-mixed`.
+export STUB_ORCA_PS=workers STUB_CLAIMED=workers STUB_ISSUES=mixed
+export STUB_WORLD=open-issue-branch STUB_NOW=2026-08-27T12:00:00Z
+write_config "nywleswoey/automation" "repo-aaa" 300 2
+run_once
+check_status 0 "$STATUS"
+check_grep "sweep skipped /tmp/stub/automation/agent-loop-issue-17: its agent is still going, released: pull request #401 delivers nywleswoey/automation#17" "$OUT"
+check_grep "sweep skipped /tmp/stub/automation/agent-loop-issue-21: its agent is still going, released: nywleswoey/automation#21 is no longer claimed" "$OUT"
+check_grep "sweep skipped /tmp/stub/automation/agent-loop-issue-12: its agent is still going, still counted: nywleswoey/automation#12" "$OUT"
+check_grep "dispatched nywleswoey/automation#19" "$OUT"
+check_no_grep "deferred: worker budget full" "$OUT"
+check "exactly one worktree was created" test "$(grep -cF 'worktree create' "$STUB_CALLS")" -eq 1
+# The release writes nothing and touches nothing: no label, no comment, no
+# removal of a live worktree.
+check_no_grep "issue edit 17 " "$STUB_CALLS"
+check_no_grep "issue edit 21 " "$STUB_CALLS"
+check_no_grep "issue comment" "$STUB_CALLS"
+check_no_grep "worktree rm" "$STUB_CALLS"
+# The delivery read is the issue phase's own, made once in the pass for the
+# repository; the other read is the startup reclaim's.
+check "the open pull requests are read once in the pass and once at startup" \
+  test "$(grep -cF 'pullRequests(states: OPEN, first: 100, after: null, orderBy: {field: UPDATED_AT, direction: DESC}) { pageInfo { hasNextPage endCursor } nodes { number headRefName }' "$STUB_CALLS")" -eq 2
+
+setup "a live worker whose pull request merged this pass is released, not escalated"
+# #103's case. `merged-set` carries #201 merged on `agent-loop-issue-17`, and
+# close-out unclaims #17 before it reads the claims, so the worker is released
+# on the pass its pull request lands, even past its bound.
+export STUB_ORCA_PS=workers STUB_CLAIMED=workers STUB_MERGED=set STUB_NOW=1789386401
+run_once
+check_status 0 "$STATUS"
+check_grep "closed out nywleswoey/automation#17: pull request #201 merged" "$OUT"
+check_grep "sweep skipped /tmp/stub/automation/agent-loop-issue-17: its agent is still going, released: nywleswoey/automation#17 is no longer claimed" "$OUT"
+check_no_grep "issue comment 17 " "$STUB_CALLS"
+check_no_grep "issue edit 17 --repo nywleswoey/automation --add-label agent-escalated" "$STUB_CALLS"
+
+setup "a live worker that is not delivered and still holds its claim is still counted"
+export STUB_ORCA_PS=workers STUB_CLAIMED=workers STUB_ISSUES=mixed
+# One second inside the bound for #17.
+export STUB_NOW=1789386399
+write_config "nywleswoey/automation" "repo-aaa" 300 2
+run_once
+check_status 0 "$STATUS"
+check_grep "sweep skipped /tmp/stub/automation/agent-loop-issue-17: its agent is still going, still counted: nywleswoey/automation#17 is claimed with no pull request, live 86399s of 86400s" "$OUT"
+check_grep "sweep skipped /tmp/stub/automation/agent-loop-issue-21: its agent is still going, released: nywleswoey/automation#21 is no longer claimed" "$OUT"
+check_grep "issue nywleswoey/automation#19 deferred: worker budget full (2/2)" "$OUT"
+check_no_grep "--add-label agent-escalated" "$STUB_CALLS"
+check_no_grep "issue comment" "$STUB_CALLS"
+
+setup "a worker whose worktree has no createdAt falls through to the unbounded skip and says so"
+export STUB_ORCA_PS=workers STUB_CLAIMED=workers
+# Far past any bound: a missing origin must not read as an expired one.
+export STUB_NOW=1799999999
+run_once
+check_status 0 "$STATUS"
+check_grep "sweep skipped /tmp/stub/automation/agent-loop-issue-12: its agent is still going, still counted: nywleswoey/automation#12 is claimed with no pull request, and its worktree has no createdAt, so nothing bounds it" "$OUT"
+check_no_grep "issue comment 12 " "$STUB_CALLS"
+check_no_grep "issue edit 12 " "$STUB_CALLS"
+
+setup "a live worker that names no issue is still counted"
+export STUB_ORCA_PS=sweep STUB_DIRTY="$SWEEP_DIRTY" STUB_UNPUSHED="$SWEEP_UNPUSHED"
+run_once
+check_status 0 "$STATUS"
+check_grep "sweep skipped /tmp/stub/automation/agent-loop-pr-34: its agent is still going, still counted: its worktree names no issue" "$OUT"
+
+setup "an unreadable claim leaves a live worker counted"
+export STUB_ORCA_PS=workers STUB_CLAIMED=workers STUB_GH_FAIL=issues STUB_NOW=1799999999
+run_once
+check_status 0 "$STATUS"
+check_grep "sweep skipped /tmp/stub/automation/agent-loop-issue-21: its agent is still going, still counted: the claims on nywleswoey/automation could not be read" "$OUT"
+check_no_grep "released" "$OUT"
+check_no_grep "issue comment" "$STUB_CALLS"
+
+setup "an unreadable delivery read leaves a claimed live worker counted and unflagged"
+export STUB_ORCA_PS=workers STUB_CLAIMED=workers STUB_GH_FAIL=prs STUB_NOW=1799999999
+run_once
+check_status 0 "$STATUS"
+check_grep "sweep skipped /tmp/stub/automation/agent-loop-issue-17: its agent is still going, still counted: the open pull requests on nywleswoey/automation could not be read" "$OUT"
+check_no_grep "issue comment" "$STUB_CALLS"
+check_no_grep "--add-label agent-escalated" "$STUB_CALLS"
+
+# #17's `createdAt` is 1789300000000, so the default bound of 86400 runs out
+# after 1789386400.
+setup "a hung worker past its bound escalates once, holds, and is withdrawn when it delivers"
+export STUB_ORCA_PS=workers STUB_CLAIMED=workers STUB_ISSUES=mixed
+write_config "nywleswoey/automation" "repo-aaa" 300 2
+replay none 1789386401
+check_status 0 "$STATUS"
+check_grep "sweep skipped /tmp/stub/automation/agent-loop-issue-17: its agent is still going, still counted: nywleswoey/automation#17 is claimed with no pull request, live 86401s of 86400s, past its bound" "$PASS_LOG"
+check_grep "gh-axi issue comment 17 --repo nywleswoey/automation --body-file" "$STUB_CALLS"
+check_grep "gh-axi issue edit 17 --repo nywleswoey/automation --add-label agent-escalated" "$STUB_CALLS"
+check "the record goes up before the flag" \
+  test "$(call_line 'issue comment 17 ')" -lt "$(call_line 'issue edit 17 --repo nywleswoey/automation --add-label agent-escalated')"
+check_grep "nywleswoey/automation#17 flagged agent-escalated: its worker is past workerTimeoutSeconds" "$PASS_LOG"
+# The comment names the worktree and what to do there.
+check_grep "/tmp/stub/automation/agent-loop-issue-17" "$STUB_STATE/issue-body-17.txt"
+check_grep "answer it or kill it" "$STUB_STATE/issue-body-17.txt"
+# The slot stays spent, and nothing is removed or killed.
+check_grep "issue nywleswoey/automation#19 deferred: worker budget full (2/2)" "$PASS_LOG"
+check_no_grep "worktree rm" "$STUB_CALLS"
+# #12 has no origin, so no clock runs out on it.
+check_no_grep "issue comment 12 " "$STUB_CALLS"
+
+# The next pass reads the flag off the claimed query and holds.
+replay none 1789386701
+check_status 0 "$STATUS"
+check_grep "live 86701s of 86400s, past its bound" "$PASS_LOG"
+check_no_grep "flagged agent-escalated" "$PASS_LOG"
+check "one comment across both passes" test "$(grep -cF 'issue comment 17 ' "$STUB_CALLS")" -eq 1
+check "one flag across both passes" \
+  test "$(grep -cF 'issue edit 17 --repo nywleswoey/automation --add-label agent-escalated' "$STUB_CALLS")" -eq 1
+check_no_grep "--remove-label agent-escalated" "$STUB_CALLS"
+
+# #401 now delivers #17: the worker is released and the flag comes off.
+replay open-issue-branch 1789386761
+check_status 0 "$STATUS"
+check_grep "sweep skipped /tmp/stub/automation/agent-loop-issue-17: its agent is still going, released: pull request #401 delivers nywleswoey/automation#17" "$PASS_LOG"
+check_grep "gh-axi issue edit 17 --repo nywleswoey/automation --remove-label agent-escalated" "$STUB_CALLS"
+check_grep "nywleswoey/automation#17 withdrew agent-escalated: pull request #401 delivers it" "$PASS_LOG"
+check "still one comment" test "$(grep -cF 'issue comment 17 ' "$STUB_CALLS")" -eq 1
+
+# Mutant twins on a configured bound, so a hard-coded 86400 or a `>=` fails one
+# of them.
+setup "the worker bound is pinned one second either side"
+export STUB_ORCA_PS=workers STUB_CLAIMED=workers
+write_config "nywleswoey/automation" "repo-aaa" 300 3 5400 3600 squash 5400 600
+replay none 1789300599
+check_status 0 "$STATUS"
+check_grep "nywleswoey/automation#17 is claimed with no pull request, live 599s of 600s" "$PASS_LOG"
+check_no_grep "past its bound" "$PASS_LOG"
+check_no_grep "issue comment 17 " "$STUB_CALLS"
+replay none 1789300600
+check_status 0 "$STATUS"
+check_grep "nywleswoey/automation#17 is claimed with no pull request, live 600s of 600s" "$PASS_LOG"
+check_no_grep "issue comment 17 " "$STUB_CALLS"
+replay none 1789300601
+check_status 0 "$STATUS"
+check_grep "nywleswoey/automation#17 is claimed with no pull request, live 601s of 600s, past its bound" "$PASS_LOG"
+check_grep "gh-axi issue comment 17 --repo nywleswoey/automation --body-file" "$STUB_CALLS"
+
+# `claimed-flagged` holds #11 and #40 wearing the flag, #40 as a spec: the
+# reclaim never hands a spec back, so its claim is still held when the pass
+# finds its worker gone. `orca-ps-gone` carries #40's idle worktree alone.
+setup "a flagged claim whose worker has gone has its flag withdrawn"
+export STUB_ORCA_PS=gone STUB_CLAIMED=flagged STUB_NOW=1799999999
+run_once
+check_status 0 "$STATUS"
+check_grep "gh-axi issue edit 40 --repo nywleswoey/automation --remove-label agent-escalated" "$STUB_CALLS"
+check_grep "nywleswoey/automation#40 withdrew agent-escalated: its worker is gone" "$OUT"
+check "withdrawn once" \
+  test "$(grep -cF 'issue edit 40 --repo nywleswoey/automation --remove-label agent-escalated' "$STUB_CALLS")" -eq 1
+
+setup "a flagged claim whose live worker is still undelivered keeps its flag"
+# The busy fixture's #11 is live. #40 has no worktree at all, which is the named
+# residual: a worktree removed by hand leaves the flag standing.
+export STUB_ORCA_PS=busy STUB_CLAIMED=flagged STUB_NOW=1799999999
+run_once
+check_status 0 "$STATUS"
+check_grep "nywleswoey/automation#11 is claimed with no pull request, live" "$OUT"
+check_no_grep "--remove-label agent-escalated" "$STUB_CALLS"
+check_no_grep "issue comment 11 " "$STUB_CALLS"
 
 setup "an inventory that stops reading before a pass dies rather than sweeping blindly"
 export STUB_ORCA_PS=sweep STUB_DIRTY="$SWEEP_DIRTY" STUB_UNPUSHED="$SWEEP_UNPUSHED"
@@ -4153,8 +4356,9 @@ check "and each names its own repository's commit" \
 setup "a full worker budget does not stop the PR phase"
 # orca-ps-busy carries maxWorkers live loop workers, so the issue phase has
 # nothing left to spend — and the PR phase spends none of it, because it opens
-# no worktree, no checkout and no agent.
-export STUB_ORCA_PS=busy STUB_ISSUES=workable
+# no worktree, no checkout and no agent. #11 and #12 hold their claims, so
+# they stay counted.
+export STUB_ORCA_PS=busy STUB_ISSUES=workable STUB_CLAIMED=busy
 export STUB_WORLD=states STUB_NOW=2026-08-27T12:00:00Z
 run_once
 check_status 0 "$STATUS"
@@ -4746,8 +4950,9 @@ setup "a decomposition still in flight is left claimed"
 # `/to-tickets` publishes its children one at a time, so the child count goes
 # above zero on the first one. Without the liveness guard a pass landing in that
 # window unclaims a spec whose worker is still running — and #11's fixture has
-# four children, so the count is not what stops it here.
-export STUB_CLAIMED=spec-live STUB_ORCA_PS=busy
+# four children, so the count is not what stops it here. The clock sits before
+# #11's origin, so the worker bound does not write to it either.
+export STUB_CLAIMED=spec-live STUB_ORCA_PS=busy STUB_NOW=2026-08-27T12:00:00Z
 run_once
 check_status 0 "$STATUS"
 check_no_grep "decomposed nywleswoey/automation#11" "$OUT"

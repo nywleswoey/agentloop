@@ -149,10 +149,19 @@ which no capture produces. The inventory still skips a null path, and
 `orca-ps-origins.json` keeps one such row, so a pass is still shown to survive
 it.
 
-Two fixtures are not captures, on purpose:
+Three fixtures depart from a capture, on purpose:
 
 - **`orca-ps-malformed.json`** is a failure shape — `worktrees` an object — for
   the readiness cases.
 - **`orca-ps-origins.json`** is captured rows with `createdAt` broken four ways:
   absent, a string, `null`, and negative, plus one empty `worktreeId` and one
   null `path`. It pins that none of them costs a consumer a row.
+- **`orca-ps-workers.json`** carries three live workers, #17, #12 and #21, cut
+  from `orca-ps-busy.json` rows with the path-derived fields (`worktreeId`,
+  `path`, `branch`, `displayName`) substituted. #12's `createdAt` is dropped
+  from a non-main row on purpose, so a live worker with no origin can be shown
+  to fall through to the unbounded skip (#157).
+
+`orca-ps-gone.json` is a capture-derived fixture like the rest: one idle worker,
+#40, cut from `orca-ps-idle.json`'s #11 row with the same path-derived fields
+substituted.
