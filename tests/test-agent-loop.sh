@@ -1676,6 +1676,31 @@ run_once
 check_status 0 "$STATUS"
 check_grep "left claimed nywleswoey/automation#11: a live worker holds it" "$OUT"
 
+setup "a live worker in another repository does not hold the same issue number"
+cat > "$CONFIG" <<JSON
+{
+  "pollIntervalSeconds": 300,
+  "maxWorkers": 3,
+  "autofixTimeoutSeconds": 5400,
+  "mergeGateTimeoutSeconds": 3600,
+  "reviewRetryTimeoutSeconds": 5400,
+  "workerTimeoutSeconds": 86400,
+  "logPath": "$LOG",
+  "deathRepo": "nywleswoey/deaths",
+  "labels": { "ready": "ready-for-agent", "claimed": "agent-in-progress" },
+  "projects": [
+    { "github": "nywleswoey/automation", "orcaRepoId": "repo-aaa", "mergeMethod": "squash" },
+    { "github": "nywleswoey/other", "orcaRepoId": "repo-bbb", "mergeMethod": "squash" }
+  ]
+}
+JSON
+export STUB_CLAIMED=busy STUB_ORCA_PS=busy STUB_NOW=2026-08-27T12:00:00Z
+run_once
+check_status 0 "$STATUS"
+check_grep "left claimed nywleswoey/automation#11: a live worker holds it" "$OUT"
+check_grep "reclaimed nywleswoey/other#11: no live worker, returned to ready-for-agent" "$OUT"
+check_grep "gh-axi issue edit 11 --repo nywleswoey/other --add-label ready-for-agent --remove-label agent-in-progress" "$STUB_CALLS"
+
 setup "the issue phase skips a ready issue whose pull request is open"
 export STUB_ISSUES=workable STUB_WORLD=open-issue-branch STUB_NOW=2026-08-27T12:00:00Z
 run_once
@@ -1961,6 +1986,7 @@ check_grep "nywleswoey/automation#17 flagged agent-escalated: its worker is past
 # The comment names the worktree and what to do there.
 check_grep "/tmp/stub/automation/agent-loop-issue-17" "$STUB_STATE/issue-body-17.txt"
 check_grep "answer it or kill it" "$STUB_STATE/issue-body-17.txt"
+check_grep "<!-- agent-loop-hung-worker: /tmp/stub/automation/agent-loop-issue-17 -->" "$STUB_STATE/issue-body-17.txt"
 # The slot stays spent, and nothing is removed or killed.
 check_grep "issue nywleswoey/automation#19 deferred: worker budget full (2/2)" "$PASS_LOG"
 check_no_grep "worktree rm" "$STUB_CALLS"
@@ -1984,6 +2010,21 @@ check_grep "sweep skipped /tmp/stub/automation/agent-loop-issue-17: its agent is
 check_grep "gh-axi issue edit 17 --repo nywleswoey/automation --remove-label agent-escalated" "$STUB_CALLS"
 check_grep "nywleswoey/automation#17 withdrew agent-escalated: pull request #401 delivers it" "$PASS_LOG"
 check "still one comment" test "$(grep -cF 'issue comment 17 ' "$STUB_CALLS")" -eq 1
+
+setup "a hung-worker record survives a failed flag write without being reposted"
+export STUB_ORCA_PS=workers STUB_CLAIMED=workers STUB_NOW=1799999999 STUB_GH_FAIL=claim
+write_config "nywleswoey/automation" "repo-aaa" 300 2
+replay none 1799999999
+check_status 0 "$STATUS"
+check_grep "hung-worker flag failed on nywleswoey/automation#17, the record is up and the next pass adds it class=transient" "$PASS_LOG"
+check_grep "<!-- agent-loop-hung-worker: /tmp/stub/automation/agent-loop-issue-17 -->" "$STUB_STATE/issue-body-17.txt"
+export STUB_GH_FAIL=""
+replay none 1800000000
+check_status 0 "$STATUS"
+check "one worktree-specific comment across the retry" \
+  test "$(grep -cF 'issue comment 17 --repo nywleswoey/automation' "$STUB_CALLS")" -eq 1
+check "the failed flag was retried" \
+  test "$(grep -cF 'issue edit 17 --repo nywleswoey/automation --add-label agent-escalated' "$STUB_CALLS")" -eq 2
 
 # Mutant twins on a configured bound, so a hard-coded 86400 or a `>=` fails one
 # of them.
@@ -2016,15 +2057,18 @@ check_grep "nywleswoey/automation#40 withdrew agent-escalated: its worker is gon
 check "withdrawn once" \
   test "$(grep -cF 'issue edit 40 --repo nywleswoey/automation --remove-label agent-escalated' "$STUB_CALLS")" -eq 1
 
-setup "a flagged claim whose live worker is still undelivered keeps its flag"
+setup "a flagged claim whose live worker is still undelivered gets its own record"
 # The busy fixture's #11 is live. #40 has no worktree at all, which is the named
-# residual: a worktree removed by hand leaves the flag standing.
+# residual: a worktree removed by hand leaves the flag standing. The shared
+# flag does not stand in for #11's worktree-specific marker.
 export STUB_ORCA_PS=busy STUB_CLAIMED=flagged STUB_NOW=1799999999
 run_once
 check_status 0 "$STATUS"
 check_grep "nywleswoey/automation#11 is claimed with no pull request, live" "$OUT"
 check_no_grep "--remove-label agent-escalated" "$STUB_CALLS"
-check_no_grep "issue comment 11 " "$STUB_CALLS"
+check_grep "issue comment 11 --repo nywleswoey/automation" "$STUB_CALLS"
+check_grep "<!-- agent-loop-hung-worker: /tmp/stub/automation/agent-loop-issue-11 -->" "$STUB_STATE/issue-body-11.txt"
+check_no_grep "issue edit 11 --repo nywleswoey/automation --add-label agent-escalated" "$STUB_CALLS"
 
 setup "an inventory that stops reading before a pass dies rather than sweeping blindly"
 export STUB_ORCA_PS=sweep STUB_DIRTY="$SWEEP_DIRTY" STUB_UNPUSHED="$SWEEP_UNPUSHED"

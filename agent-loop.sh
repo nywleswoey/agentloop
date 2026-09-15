@@ -1275,14 +1275,15 @@ is_loop_worktree() {
   [[ "${1##*/}" == agent-loop-* ]]
 }
 
-# Count live workers in worktrees whose directory name matches the given regex.
-# Prints the count. count_live_workers <basename-regex> — live agents sitting
-# in a worktree whose directory name matches.
+# Count live workers in one repository whose directory name matches the given
+# regex. Prints the count. count_live_workers <github> <basename-regex> — live
+# agents sitting in a matching worktree belonging to that repository.
 count_live_workers() {
-  local state path count=0
-  while IFS=$'\t' read -r state _ _ path; do
+  local github="$1" pattern="$2" state worktree_id path count=0
+  while IFS=$'\t' read -r state _ worktree_id path; do
     [[ "$state" == "live" ]] || continue
-    if [[ "${path##*/}" =~ $1 ]]; then
+    [[ "$(project_for_orca_id "${worktree_id%%::*}")" == "$github" ]] || continue
+    if [[ "${path##*/}" =~ $pattern ]]; then
       count=$((count + 1))
     fi
   done < <(orca_worktrees)
@@ -1562,7 +1563,7 @@ open_pr_for_issue() {
 # unbounded skip, and the line says so, because a bound that silently vanishes
 # is worse than none.
 #
-# `issue_has_live_worker` is untouched: it asks *is anyone on this issue*, and
+# `issue_has_live_worker` asks *is anyone in this repository on this issue*, and
 # this asks *how much is the loop spending*.
 #
 # The claims come off close-out's claimed-issue query. Delivery comes off the
@@ -1706,51 +1707,77 @@ set_claim_flag() {
   PASS_CLAIMS+="$1"$'\t'"$2"$'\t'"$3"$'\n'
 }
 
+HUNG_WORKER_MARKER_PREFIX='<!-- agent-loop-hung-worker: '
+HUNG_WORKER_MARKER_SUFFIX=' -->'
+
 hung_worker_body() {
   local path="$1" reason="$2"
   printf '**Escalated — this issue'"'"'s worker has been live past `workerTimeoutSeconds` with no pull request.**\n\n'
   printf 'Its worktree is `%s`. Look at the agent there, and answer it or kill it.\n\n' "$path"
   printf 'The loop cannot tell a hung agent from a slow one, so it never kills a worker, and it keeps this one'"'"'s slot spent. It takes `%s` off by itself on the pass the work delivers, the claim goes, or the worker goes. A worktree removed by hand leaves the flag standing. This comment is a record and stays.\n\n' "$LABEL_ESCALATED"
-  printf 'What the sweep derived: %s\n' "$reason"
+  printf 'What the sweep derived: %s\n\n' "$reason"
+  printf '%s%s%s\n' "$HUNG_WORKER_MARKER_PREFIX" "$path" "$HUNG_WORKER_MARKER_SUFFIX"
 }
 
 # escalate_hung_worker <github> <number> <path> <reason>
 #
 # Record, then flag, for the handover's reason: a flag with no record behind it
-# is the one state its reader cannot act on. **The dedup is the flag itself**,
-# read off the claimed query at no cost, so a flag write that fails after its
-# record landed posts the record again on the next pass. That is the cheaper
-# failure: a second comment, never a flag with nothing to say why.
+# is the one state its reader cannot act on. The record has its own marker keyed
+# to the worktree, because `agent-escalated` is shared by every kind of human
+# intervention and cannot say whether this worker has its record. A failed flag
+# write therefore retries the flag without posting the comment again.
 #
 # These are escalation writes, and fail like `escalate_refused_write`'s: a
 # refused one dies, and a transient one is logged, counted and tried again.
 escalate_hung_worker() {
-  local github="$1" number="$2" path="$3" reason="$4" file="" status=0 class
-  if ! file=$(mktemp "${TMPDIR:-/tmp}/agent-loop-hung-worker.XXXXXX"); then
-    FAILURE_TEXT=""
-    status=1
-  elif ! hung_worker_body "$path" "$reason" > "$file"; then
-    FAILURE_TEXT=""
-    status=1
-  else
-    axi_write issue comment "$number" --repo "$github" --body-file "$file" || status=1
-  fi
-  [[ -z "$file" ]] || rm -f "$file"
-  if (( status != 0 )); then
-    class=$(gh_error_class "$FAILURE_TEXT")
-    [[ "$class" != "refused" ]] \
-      || die "hung-worker record refused on $github#$number class=refused project=$github"
-    write_failed "$class" - "" "" record "hung-worker record failed on $github#$number, flagging nothing this pass"
+  local github="$1" number="$2" path="$3" reason="$4"
+  local marker comments seen flag file="" status=0 class
+  marker="$HUNG_WORKER_MARKER_PREFIX$path$HUNG_WORKER_MARKER_SUFFIX"
+
+  if ! comments=$(gh_json "/repos/$github/issues/$number/comments" --paginate); then
+    read_failed "$(gh_error_class "$comments")" "$github" \
+      "hung-worker record unreadable on $github#$number, flagging nothing this pass"
     return 0
   fi
-  # Taken as flagged once the record is up, whether or not the flag lands, so a
-  # `-2` sibling worktree does not post a second record this pass.
+  if ! seen=$(jq -r --arg me "$ME" --arg marker "$marker" \
+       'any(.[]?; (.user.login // "") == $me and ((.body // "") | contains($marker)))' \
+       <<< "$comments" 2>/dev/null) || [[ "$seen" != "true" && "$seen" != "false" ]]; then
+    read_failed "$(gh_error_class "")" "$github" \
+      "hung-worker record unreadable on $github#$number, flagging nothing this pass"
+    return 0
+  fi
+
+  if [[ "$seen" == "false" ]]; then
+    if ! file=$(mktemp "${TMPDIR:-/tmp}/agent-loop-hung-worker.XXXXXX"); then
+      FAILURE_TEXT=""
+      status=1
+    elif ! hung_worker_body "$path" "$reason" > "$file"; then
+      FAILURE_TEXT=""
+      status=1
+    else
+      axi_write issue comment "$number" --repo "$github" --body-file "$file" || status=1
+    fi
+    [[ -z "$file" ]] || rm -f "$file"
+    if (( status != 0 )); then
+      class=$(gh_error_class "$FAILURE_TEXT")
+      [[ "$class" != "refused" ]] \
+        || die "hung-worker record refused on $github#$number class=refused project=$github"
+      write_failed "$class" - "" "" record "hung-worker record failed on $github#$number, flagging nothing this pass"
+      return 0
+    fi
+  fi
+
+  flag=$(claim_flag "$github" "$number") || flag=unflagged
+  [[ "$flag" == "unflagged" ]] || return 0
+
+  # Taken as flagged once this worktree's record is up, whether or not the flag
+  # lands, so siblings do not make redundant flag writes in the same pass.
   set_claim_flag "$github" "$number" flagged
   if ! axi_write issue edit "$number" --repo "$github" --add-label "$LABEL_ESCALATED"; then
     class=$(gh_error_class "$FAILURE_TEXT")
     [[ "$class" != "refused" ]] \
       || die "hung-worker flag refused on $github#$number class=refused project=$github"
-    write_failed "$class" - "" "" flag "hung-worker flag failed on $github#$number, the record is up and the next pass posts it again"
+    write_failed "$class" - "" "" flag "hung-worker flag failed on $github#$number, the record is up and the next pass adds it"
     return 0
   fi
   log "$github#$number flagged $LABEL_ESCALATED: its worker is past workerTimeoutSeconds ($path)"
@@ -1788,10 +1815,10 @@ withdraw_hung_worker_flag() {
 # type was part of it, and still names live workers.
 ISSUE_BRANCH_TYPES='feat|fix|chore|docs|refactor|test|perf|build|ci|issue'
 
-# Check whether an issue number has a live worker already running. Returns 0 if
-# a worker exists, non-zero otherwise.
+# Check whether an issue in a repository has a live worker already running.
+# Returns 0 if a worker exists, non-zero otherwise.
 issue_has_live_worker() {
-  [[ "$(count_live_workers '^agent-loop-('"$ISSUE_BRANCH_TYPES"')-'"$1"'(-.*)?$')" != "0" ]]
+  [[ "$(count_live_workers "$1" '^agent-loop-('"$ISSUE_BRANCH_TYPES"')-'"$2"'(-.*)?$')" != "0" ]]
 }
 
 # The claim label is written before the dispatch, so a crash in between leaves an
@@ -1848,7 +1875,7 @@ reclaim_stale_claims() {
       [[ -n "$number" ]] || continue
       if [[ "$verb" == "$VERB_TO_TICKETS" ]]; then
         log "left claimed $github#$number: a $VERB_TO_TICKETS issue is never reclaimed"
-      elif issue_has_live_worker "$number"; then
+      elif issue_has_live_worker "$github" "$number"; then
         log "left claimed $github#$number: a live worker holds it"
       elif prnumber=$(open_pr_for_issue "$number"); then
         log "left claimed $github#$number: pull request #$prnumber already delivers it"
@@ -2816,7 +2843,7 @@ sweep_worktrees() {
       # Row B's flag, raised past the bound and withdrawn once Row A holds. A
       # released worker whose claim is gone carries no flag word: close-out and
       # the reclaim already withdraw the flag with the claim they drop.
-      if [[ "$verdict" == "expired" && "$flag" == "unflagged" ]]; then
+      if [[ "$verdict" == "expired" ]]; then
         escalate_hung_worker "$github" "$number" "$path" "$reason" < /dev/null
       elif [[ "$verdict" == "released" && "$flag" == "flagged" ]]; then
         withdraw_hung_worker_flag "$github" "$number" \
@@ -2834,7 +2861,7 @@ sweep_worktrees() {
        && [[ "$(claim_flag "$github" "$number")" == "flagged" ]]; then
       if prnumber=$(delivering_pr "$github" "$number"); then
         withdraw_hung_worker_flag "$github" "$number" "pull request #$prnumber delivers it" < /dev/null
-      elif ! issue_has_live_worker "$number"; then
+      elif ! issue_has_live_worker "$github" "$number"; then
         withdraw_hung_worker_flag "$github" "$number" "its worker is gone" < /dev/null
       fi
     fi
@@ -5895,7 +5922,7 @@ closeout_claim() {
   # landing in that window unclaims a spec whose worker is still running and
   # logs that it closed it out. Orca holds a `waiting` agent as live, so a
   # worker parked for a human's approval is held here with no new machinery.
-  ! issue_has_live_worker "$number" || return 0
+  ! issue_has_live_worker "$github" "$number" || return 0
 
   if ! issue=$(query_issue "$github" "$number"); then
     read_failed "$(gh_error_class "$issue")" "$github" "close-out query failed: $github#$number"
