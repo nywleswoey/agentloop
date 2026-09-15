@@ -770,6 +770,7 @@ load_config() {
   AUTOFIX_TIMEOUT=$(jq -r '.autofixTimeoutSeconds // empty' "$CONFIG_PATH")
   MERGE_GATE_TIMEOUT=$(jq -r '.mergeGateTimeoutSeconds // empty' "$CONFIG_PATH")
   REVIEW_RETRY_TIMEOUT=$(jq -r '.reviewRetryTimeoutSeconds // empty' "$CONFIG_PATH")
+  WORKER_TIMEOUT=$(jq -r 'if has("workerTimeoutSeconds") then .workerTimeoutSeconds else 86400 end' "$CONFIG_PATH")
   LABEL_READY=$(jq -r '.labels.ready // empty' "$CONFIG_PATH")
   LABEL_CLAIMED=$(jq -r '.labels.claimed // empty' "$CONFIG_PATH")
   PROJECT_COUNT=$(jq -r '.projects | length' "$CONFIG_PATH" 2>/dev/null || echo 0)
@@ -777,10 +778,10 @@ load_config() {
 
   require_positive_int pollIntervalSeconds "$POLL_INTERVAL"
   require_positive_int maxWorkers "$MAX_WORKERS"
-  # Required, not defaulted. This config has no defaults anywhere — every key in
-  # it is required and a missing one is fatal — and the number itself is an
-  # admitted guess off a single seventeen-minute sample, so defaulting it would
-  # add the file's first default *and* hide the guess behind it.
+  # Required, not defaulted. Every key in this config but the worker bound is
+  # required and a missing one is fatal, and the number itself is an admitted
+  # guess off a single seventeen-minute sample, so defaulting it would hide the
+  # guess behind a default.
   require_positive_int autofixTimeoutSeconds "$AUTOFIX_TIMEOUT"
   # Required for the same reason, and on thinner evidence still: this key bounds
   # the risk gate's `defer`, and there is **no sample at all** behind that use of
@@ -800,6 +801,14 @@ load_config() {
   # ships 5400, which clears that window with thirty minutes of margin and is
   # about seventeen retries at a five-minute poll.
   require_positive_int reviewRetryTimeoutSeconds "$REVIEW_RETRY_TIMEOUT"
+  # How long a worker may stay live on a claim with no pull request before the
+  # loop asks a human to look at it, from its worktree's `createdAt` (#122).
+  # **The file's one default**, and not a guess hidden behind one: #122 derived
+  # 86400 from the dispatch-to-pull-request population — about 2.6 times the
+  # longest observed, nine hours ten — and decided it with the default. A key
+  # that is present is validated like every other timeout, so `0`, `null` or a
+  # string still stops start-up.
+  require_positive_int workerTimeoutSeconds "$WORKER_TIMEOUT"
   require_field labels.ready "$LABEL_READY"
   require_field labels.claimed "$LABEL_CLAIMED"
   [[ "$PROJECT_COUNT" -gt 0 ]] || die "config lists no projects: $CONFIG_PATH"
@@ -1266,14 +1275,15 @@ is_loop_worktree() {
   [[ "${1##*/}" == agent-loop-* ]]
 }
 
-# Count live workers in worktrees whose directory name matches the given regex.
-# Prints the count. count_live_workers <basename-regex> — live agents sitting
-# in a worktree whose directory name matches.
+# Count live workers in one repository whose directory name matches the given
+# regex. Prints the count. count_live_workers <github> <basename-regex> — live
+# agents sitting in a matching worktree belonging to that repository.
 count_live_workers() {
-  local state path count=0
-  while IFS=$'\t' read -r state _ _ path; do
+  local github="$1" pattern="$2" state worktree_id path count=0
+  while IFS=$'\t' read -r state _ worktree_id path; do
     [[ "$state" == "live" ]] || continue
-    if [[ "${path##*/}" =~ $1 ]]; then
+    [[ "$(project_for_orca_id "${worktree_id%%::*}")" == "$github" ]] || continue
+    if [[ "${path##*/}" =~ $pattern ]]; then
       count=$((count + 1))
     fi
   done < <(orca_worktrees)
@@ -1287,9 +1297,18 @@ count_live_workers() {
 # budget would be a category error — and worse, a long-running issue would
 # stall every pull request in every repository behind it. A worker is a
 # worktree the loop created (`agent-loop-` prefix) whose agent is still going;
-# `done` agents are finished work waiting to be swept, not spent budget.
+# `done` agents are finished work waiting to be swept, not spent budget. So is a
+# live worker whose issue is delivered or no longer claimed: see
+# `worker_disposition`.
 count_active_workers() {
-  count_live_workers '^agent-loop-'
+  local state created worktree_id path count=0
+  while IFS=$'\t' read -r state created worktree_id path; do
+    [[ "$state" == "live" ]] || continue
+    is_loop_worktree "$path" || continue
+    [[ "$(worker_disposition "$created" "$worktree_id" "$path")" == released$'\t'* ]] && continue
+    count=$((count + 1))
+  done < <(orca_worktrees)
+  printf '%s' "$count"
 }
 
 # `git worktree list` is the authority on who holds a branch: it is local, it
@@ -1472,9 +1491,20 @@ OPEN_PR_ISSUES=''
 # Both callers call it bare, because it fills a global, so a failure's text is
 # left in `$FAILURE_TEXT` rather than on stdout.
 load_open_pr_issues() {
-  local branches prnumber branch number loaded=''
+  local branches prnumber branch number loaded='' kept=''
   OPEN_PR_ISSUES=''
   FAILURE_TEXT=''
+  # **Once per repository per pass.** The worker budget asks this read before
+  # the issue phase does (#122), and both are answered by the one read; a failed
+  # read is not kept, so the next caller asks again.
+  if [[ "$PASS_OPEN_PRS_READ" == *" $1 "* ]]; then
+    while IFS=$'\t' read -r branch number prnumber; do
+      [[ "$branch" == "$1" ]] || continue
+      loaded+="$number"$'\t'"$prnumber"$'\n'
+    done <<< "$PASS_OPEN_PRS"
+    OPEN_PR_ISSUES="$loaded"
+    return 0
+  fi
   if ! branches=$(query_repo_open_pr_branches "$1"); then
     FAILURE_TEXT="$branches"
     return 1
@@ -1488,8 +1518,11 @@ load_open_pr_issues() {
     # and one an editor expanded would leave every line unsplittable — read back
     # as an issue number that matches nothing, which fails open.
     loaded+="$number"$'\t'"$prnumber"$'\n'
+    kept+="$1"$'\t'"$number"$'\t'"$prnumber"$'\n'
   done <<< "$branches"
   OPEN_PR_ISSUES="$loaded"
+  PASS_OPEN_PRS+="$kept"
+  PASS_OPEN_PRS_READ+=" $1 "
 }
 
 # open_pr_for_issue <number> — prints the number of an open pull request that
@@ -1506,6 +1539,270 @@ open_pr_for_issue() {
   return 1
 }
 
+# --- a worker that is still going --------------------------------------------
+
+# Decided in #122. A live loop worker used to be spent budget until its agent
+# went idle, and nothing else ever looked at it: `#103`'s worker delivered, its
+# pull request merged, and its slot stayed counted against `maxWorkers` for
+# 7h20m. A hung worker would have held its slot *and* its claim, silently.
+#
+# **Row A — delivered and still live.** A live worker whose issue an open pull
+# request delivers, or whose claim is gone, is finished agent-phase work: it is
+# released from `count_active_workers`. That writes nothing to GitHub and
+# touches nothing on disk, so a session a human adopted is never disturbed, and
+# nothing is killed. The skip itself stays unbounded on purpose: with the slot
+# released it costs nothing. The accepted imprecision is `closeout_claims`'
+# own: a worker that opens a draft pull request early stops being counted while
+# it still works.
+#
+# **Row B — live, claim held, no pull request.** Bounded by
+# `workerTimeoutSeconds` from the worktree's `createdAt`. Past it the sweep
+# flags the claimed issue `agent-escalated` with one comment naming the
+# worktree, and the slot stays spent: releasing it would stack fresh agents on
+# one that may still be working. A missing `createdAt` falls through to the
+# unbounded skip, and the line says so, because a bound that silently vanishes
+# is worse than none.
+#
+# `issue_has_live_worker` asks *is anyone in this repository on this issue*, and
+# this asks *how much is the loop spending*.
+#
+# The claims come off close-out's claimed-issue query. Delivery comes off the
+# issue phase's open-pull-request read, which the budget now asks first. That
+# costs a read the pass did not make before on one kind of pass: an empty
+# backlog in a repository with a claimed live worker, because Row B cannot say
+# *no pull request* without it. Neither read is ever a guess: a repository
+# whose read failed keeps its workers counted and flags nothing, for the whole
+# pass, even if the issue phase's own retry lands — so the budget and the sweep
+# line never tell different stories.
+PASS_CLAIMS=''
+PASS_CLAIMS_READ=''
+PASS_OPEN_PRS=''
+PASS_OPEN_PRS_READ=''
+PASS_OPEN_PRS_FAILED=''
+WORKERS_NOW=0
+
+# forget_claim <github> <number> — a claim close-out dropped this pass, after
+# the read that recorded it.
+forget_claim() {
+  local github number escalation kept=''
+  while IFS=$'\t' read -r github number escalation; do
+    [[ -n "$github" ]] || continue
+    [[ "$github" == "$1" && "$number" == "$2" ]] && continue
+    kept+="$github"$'\t'"$number"$'\t'"$escalation"$'\n'
+  done <<< "$PASS_CLAIMS"
+  PASS_CLAIMS="$kept"
+}
+
+# claim_flag <github> <number> — prints `flagged` or `unflagged` for an issue
+# this pass read as claimed, and fails for one it did not.
+claim_flag() {
+  local github number escalation
+  while IFS=$'\t' read -r github number escalation; do
+    [[ "$github" == "$1" && "$number" == "$2" ]] || continue
+    printf '%s' "$escalation"
+    return 0
+  done <<< "$PASS_CLAIMS"
+  return 1
+}
+
+# delivering_pr <github> <number> — prints the open pull request this pass read
+# as delivering the issue, and fails when none does.
+delivering_pr() {
+  local github number prnumber
+  while IFS=$'\t' read -r github number prnumber; do
+    [[ "$github" == "$1" && "$number" == "$2" ]] || continue
+    printf '%s' "$prnumber"
+    return 0
+  done <<< "$PASS_OPEN_PRS"
+  return 1
+}
+
+# project_for_orca_id <orcaRepoId> — the first configured repository that maps
+# to it, which is how a worktree's `worktreeId` names its repository.
+project_for_orca_id() {
+  local i
+  for (( i = 0; i < PROJECT_COUNT; i++ )); do
+    if [[ "$(jq -r ".projects[$i].orcaRepoId" "$CONFIG_PATH")" == "$1" ]]; then
+      jq -r ".projects[$i].github" "$CONFIG_PATH"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# The pass's clock, and the delivery reads the budget needs before the issue
+# phase runs. Asked after close-out, whose claim read it depends on. A delivery
+# read is made only for a repository holding a claimed loop worker that is live,
+# or whose issue wears the flag, since those are the only workers it decides.
+load_worker_facts() {
+  local state path worktree_id github number flag tried=''
+  WORKERS_NOW=$(date -u +%s)
+  while IFS=$'\t' read -r state _ worktree_id path; do
+    is_loop_worktree "$path" || continue
+    number=$(issue_for_branch "${path##*/}") || continue
+    github=$(project_for_orca_id "${worktree_id%%::*}") || continue
+    flag=$(claim_flag "$github" "$number") || continue
+    [[ "$state" == "live" || "$flag" == "flagged" ]] || continue
+    [[ "$PASS_OPEN_PRS_READ$tried" != *" $github "* ]] || continue
+    tried+=" $github "
+    # stdin is closed for the read: gh-axi must not swallow the inventory.
+    if ! load_open_pr_issues "$github" < /dev/null; then
+      PASS_OPEN_PRS_FAILED+=" $github "
+      read_failed "$(gh_error_class "$FAILURE_TEXT")" "$github" "open-pr query failed: $github, counting its live workers"
+    fi
+  done < <(orca_worktrees)
+}
+
+# worker_disposition <createdAt> <worktreeId> <path> — for a live loop worker,
+# `<released|counted|expired>\t<github>\t<number>\t<flag>\t<reason>`, with `-`
+# for a field that does not apply. Pure: it reads only what `load_worker_facts`
+# and close-out left for the pass, so the budget and the sweep cannot disagree.
+worker_disposition() {
+  local created="$1" worktree_id="$2" path="$3" github number flag prnumber age
+  if ! number=$(issue_for_branch "${path##*/}"); then
+    printf 'counted\t-\t-\t-\tits worktree names no issue'
+    return 0
+  fi
+  if ! github=$(project_for_orca_id "${worktree_id%%::*}"); then
+    printf 'counted\t-\t%s\t-\tits worktree names no configured repository' "$number"
+    return 0
+  fi
+  if [[ "$PASS_CLAIMS_READ" != *" $github "* ]]; then
+    printf 'counted\t%s\t%s\t-\tthe claims on %s could not be read' "$github" "$number" "$github"
+    return 0
+  fi
+  if ! flag=$(claim_flag "$github" "$number"); then
+    printf 'released\t%s\t%s\t-\t%s#%s is no longer claimed' "$github" "$number" "$github" "$number"
+    return 0
+  fi
+  if [[ "$PASS_OPEN_PRS_READ" != *" $github "* || "$PASS_OPEN_PRS_FAILED" == *" $github "* ]]; then
+    printf 'counted\t%s\t%s\t%s\tthe open pull requests on %s could not be read' "$github" "$number" "$flag" "$github"
+    return 0
+  fi
+  if prnumber=$(delivering_pr "$github" "$number"); then
+    printf 'released\t%s\t%s\t%s\tpull request #%s delivers %s#%s' "$github" "$number" "$flag" "$prnumber" "$github" "$number"
+    return 0
+  fi
+  if [[ "$created" == "-" ]]; then
+    printf 'counted\t%s\t%s\t%s\t%s#%s is claimed with no pull request, and its worktree has no createdAt, so nothing bounds it' \
+      "$github" "$number" "$flag" "$github" "$number"
+    return 0
+  fi
+  # `createdAt` is epoch-ms; the bound is in seconds.
+  age=$(( WORKERS_NOW - created / 1000 ))
+  if (( age > WORKER_TIMEOUT )); then
+    printf 'expired\t%s\t%s\t%s\t%s#%s is claimed with no pull request, live %ss of %ss, past its bound' \
+      "$github" "$number" "$flag" "$github" "$number" "$age" "$WORKER_TIMEOUT"
+  else
+    printf 'counted\t%s\t%s\t%s\t%s#%s is claimed with no pull request, live %ss of %ss' \
+      "$github" "$number" "$flag" "$github" "$number" "$age" "$WORKER_TIMEOUT"
+  fi
+}
+
+# set_claim_flag <github> <number> <flagged|unflagged> — what this pass wrote,
+# so a `-2` sibling worktree of the same issue neither posts a second record
+# nor withdraws twice.
+set_claim_flag() {
+  forget_claim "$1" "$2"
+  PASS_CLAIMS+="$1"$'\t'"$2"$'\t'"$3"$'\n'
+}
+
+HUNG_WORKER_MARKER_PREFIX='<!-- agent-loop-hung-worker: '
+HUNG_WORKER_MARKER_SUFFIX=' -->'
+
+hung_worker_body() {
+  local path="$1" reason="$2"
+  printf '**Escalated — this issue'"'"'s worker has been live past `workerTimeoutSeconds` with no pull request.**\n\n'
+  printf 'Its worktree is `%s`. Look at the agent there, and answer it or kill it.\n\n' "$path"
+  printf 'The loop cannot tell a hung agent from a slow one, so it never kills a worker, and it keeps this one'"'"'s slot spent. It takes `%s` off by itself on the pass the work delivers, the claim goes, or the worker goes. A worktree removed by hand leaves the flag standing. This comment is a record and stays.\n\n' "$LABEL_ESCALATED"
+  printf 'What the sweep derived: %s\n\n' "$reason"
+  printf '%s%s%s\n' "$HUNG_WORKER_MARKER_PREFIX" "$path" "$HUNG_WORKER_MARKER_SUFFIX"
+}
+
+# escalate_hung_worker <github> <number> <path> <reason>
+#
+# Record, then flag, for the handover's reason: a flag with no record behind it
+# is the one state its reader cannot act on. The record has its own marker keyed
+# to the worktree, because `agent-escalated` is shared by every kind of human
+# intervention and cannot say whether this worker has its record. A failed flag
+# write therefore retries the flag without posting the comment again.
+#
+# These are escalation writes, and fail like `escalate_refused_write`'s: a
+# refused one dies, and a transient one is logged, counted and tried again.
+escalate_hung_worker() {
+  local github="$1" number="$2" path="$3" reason="$4"
+  local marker comments seen flag file="" status=0 class
+  marker="$HUNG_WORKER_MARKER_PREFIX$path$HUNG_WORKER_MARKER_SUFFIX"
+
+  if ! comments=$(gh_json "/repos/$github/issues/$number/comments" --paginate); then
+    read_failed "$(gh_error_class "$comments")" "$github" \
+      "hung-worker record unreadable on $github#$number, flagging nothing this pass"
+    return 0
+  fi
+  if ! seen=$(jq -r --arg me "$ME" --arg marker "$marker" \
+       'any(.[]?; (.user.login // "") == $me and ((.body // "") | contains($marker)))' \
+       <<< "$comments" 2>/dev/null) || [[ "$seen" != "true" && "$seen" != "false" ]]; then
+    read_failed "$(gh_error_class "")" "$github" \
+      "hung-worker record unreadable on $github#$number, flagging nothing this pass"
+    return 0
+  fi
+
+  if [[ "$seen" == "false" ]]; then
+    if ! file=$(mktemp "${TMPDIR:-/tmp}/agent-loop-hung-worker.XXXXXX"); then
+      FAILURE_TEXT=""
+      status=1
+    elif ! hung_worker_body "$path" "$reason" > "$file"; then
+      FAILURE_TEXT=""
+      status=1
+    else
+      axi_write issue comment "$number" --repo "$github" --body-file "$file" || status=1
+    fi
+    [[ -z "$file" ]] || rm -f "$file"
+    if (( status != 0 )); then
+      class=$(gh_error_class "$FAILURE_TEXT")
+      [[ "$class" != "refused" ]] \
+        || die "hung-worker record refused on $github#$number class=refused project=$github"
+      write_failed "$class" - "" "" record "hung-worker record failed on $github#$number, flagging nothing this pass"
+      return 0
+    fi
+  fi
+
+  flag=$(claim_flag "$github" "$number") || flag=unflagged
+  [[ "$flag" == "unflagged" ]] || return 0
+
+  # Taken as flagged once this worktree's record is up, whether or not the flag
+  # lands, so siblings do not make redundant flag writes in the same pass.
+  set_claim_flag "$github" "$number" flagged
+  if ! axi_write issue edit "$number" --repo "$github" --add-label "$LABEL_ESCALATED"; then
+    class=$(gh_error_class "$FAILURE_TEXT")
+    [[ "$class" != "refused" ]] \
+      || die "hung-worker flag refused on $github#$number class=refused project=$github"
+    write_failed "$class" - "" "" flag "hung-worker flag failed on $github#$number, the record is up and the next pass adds it"
+    return 0
+  fi
+  log "$github#$number flagged $LABEL_ESCALATED: its worker is past workerTimeoutSeconds ($path)"
+}
+
+# withdraw_hung_worker_flag <github> <number> <why>
+#
+# **Kind-blind, as `withdraw_write_flag` is**, and for the same reason it is
+# safe: the other kind a claimed issue can wear is a refused write, whose own
+# write raises the flag again on the pass it is refused. Not on a pass where a
+# refused write escalated this same issue.
+withdraw_hung_worker_flag() {
+  local github="$1" number="$2" why="$3" class
+  ! write_escalated "$github" "$number" || return 0
+  if axi_write issue edit "$number" --repo "$github" --remove-label "$LABEL_ESCALATED"; then
+    set_claim_flag "$github" "$number" unflagged
+    log "$github#$number withdrew $LABEL_ESCALATED: $why"
+    return 0
+  fi
+  class=$(gh_error_class "$FAILURE_TEXT")
+  [[ "$class" != "refused" ]] \
+    || die "hung-worker flag withdrawal refused on $github#$number class=refused project=$github"
+  write_failed "$class" - "" "" withdraw "hung-worker flag withdrawal failed on $github#$number"
+}
+
 # --- startup reclaim ---------------------------------------------------------
 
 # The worktree a dispatch asked for is `agent-loop-<type>-<number>-<title-slug>`,
@@ -1518,10 +1815,10 @@ open_pr_for_issue() {
 # type was part of it, and still names live workers.
 ISSUE_BRANCH_TYPES='feat|fix|chore|docs|refactor|test|perf|build|ci|issue'
 
-# Check whether an issue number has a live worker already running. Returns 0 if
-# a worker exists, non-zero otherwise.
+# Check whether an issue in a repository has a live worker already running.
+# Returns 0 if a worker exists, non-zero otherwise.
 issue_has_live_worker() {
-  [[ "$(count_live_workers '^agent-loop-('"$ISSUE_BRANCH_TYPES"')-'"$1"'(-.*)?$')" != "0" ]]
+  [[ "$(count_live_workers "$1" '^agent-loop-('"$ISSUE_BRANCH_TYPES"')-'"$2"'(-.*)?$')" != "0" ]]
 }
 
 # The claim label is written before the dispatch, so a crash in between leaves an
@@ -1578,7 +1875,7 @@ reclaim_stale_claims() {
       [[ -n "$number" ]] || continue
       if [[ "$verb" == "$VERB_TO_TICKETS" ]]; then
         log "left claimed $github#$number: a $VERB_TO_TICKETS issue is never reclaimed"
-      elif issue_has_live_worker "$number"; then
+      elif issue_has_live_worker "$github" "$number"; then
         log "left claimed $github#$number: a live worker holds it"
       elif prnumber=$(open_pr_for_issue "$number"); then
         log "left claimed $github#$number: pull request #$prnumber already delivers it"
@@ -2527,15 +2824,46 @@ issue_phase_project() {
 # its tree is clean, and everything committed is on the remote. Anything else is
 # left exactly where it is, with a line saying why.
 sweep_worktrees() {
-  local state path dirty unpushed
-  while IFS=$'\t' read -r state _ _ path; do
+  local state created worktree_id path dirty unpushed disposition verdict github number flag reason prnumber
+  while IFS=$'\t' read -r state created worktree_id path; do
     # Ownership is asked first: a worktree of mine is out of scope before any
     # other question is put to it, and before git is run against it at all.
     is_loop_worktree "$path" || continue
 
     if [[ "$state" == "live" ]]; then
-      log "sweep skipped $path: its agent is still going"
+      # The line goes down every pass, naming its disposition, so `released`
+      # and `still counted` are told apart by `grep` rather than by arithmetic.
+      disposition=$(worker_disposition "$created" "$worktree_id" "$path")
+      IFS=$'\t' read -r verdict github number flag reason <<< "$disposition"
+      if [[ "$verdict" == "released" ]]; then
+        log "sweep skipped $path: its agent is still going, released: $reason"
+      else
+        log "sweep skipped $path: its agent is still going, still counted: $reason"
+      fi
+      # Row B's flag, raised past the bound and withdrawn once Row A holds. A
+      # released worker whose claim is gone carries no flag word: close-out and
+      # the reclaim already withdraw the flag with the claim they drop.
+      if [[ "$verdict" == "expired" ]]; then
+        escalate_hung_worker "$github" "$number" "$path" "$reason" < /dev/null
+      elif [[ "$verdict" == "released" && "$flag" == "flagged" ]]; then
+        withdraw_hung_worker_flag "$github" "$number" \
+          "pull request #$(delivering_pr "$github" "$number") delivers it" < /dev/null
+      fi
       continue
+    fi
+
+    # The worker goes: a flagged claim with no live worker left on it, or one
+    # its work now delivers, is no longer Row B, so its flag comes off. Asked
+    # of the issue rather than of this worktree, because a `-2` sibling may
+    # still be live and holding the flag up.
+    if number=$(issue_for_branch "${path##*/}") \
+       && github=$(project_for_orca_id "${worktree_id%%::*}") \
+       && [[ "$(claim_flag "$github" "$number")" == "flagged" ]]; then
+      if prnumber=$(delivering_pr "$github" "$number"); then
+        withdraw_hung_worker_flag "$github" "$number" "pull request #$prnumber delivers it" < /dev/null
+      elif ! issue_has_live_worker "$github" "$number"; then
+        withdraw_hung_worker_flag "$github" "$number" "its worker is gone" < /dev/null
+      fi
     fi
 
     # git has no classifier and passes no text: empty text, transient, and a
@@ -5521,7 +5849,7 @@ closeout_phase() {
 # `maxWorkers` because a spec drops out of the claimed set the moment it is
 # flagged.
 closeout_claims() {
-  local i github rows number verb
+  local i github rows number verb escalation
   for (( i = 0; i < PROJECT_COUNT; i++ )); do
     github=$(jq -r ".projects[$i].github" "$CONFIG_PATH")
     if ! rows=$(query_claimed_issues "$github"); then
@@ -5529,15 +5857,19 @@ closeout_claims() {
       SKIPS=$((SKIPS + 1))
       continue
     fi
+    # Kept for the pass: whether a live worker's claim is gone, and whether its
+    # issue wears the flag, are asked of this read and of no second one (#122).
+    PASS_CLAIMS_READ+=" $github "
     # Nothing claimed here: no second question to ask, and no read to spend
     # asking it.
     [[ -n "$rows" ]] || continue
     # stdin is closed for the body: gh-axi must not swallow the issue list.
     #
-    # The flag word is read so the verb stays whole and is otherwise unused
-    # here: the spec's own REST read carries its labels.
-    while IFS=$'\t' read -r number verb _escalation; do
+    # The flag word is kept for the pass and is otherwise unused here: the
+    # spec's own REST read carries its labels.
+    while IFS=$'\t' read -r number verb escalation; do
       [[ -n "$number" ]] || continue
+      PASS_CLAIMS+="$github"$'\t'"$number"$'\t'"$escalation"$'\n'
       # **Verb scope**, and it is load-bearing rather than tidy: without it this
       # fires on any claimed issue that happens to have children — a wayfinder
       # map wearing a ready label by accident, or any epic-shaped ticket.
@@ -5590,7 +5922,7 @@ closeout_claim() {
   # landing in that window unclaims a spec whose worker is still running and
   # logs that it closed it out. Orca holds a `waiting` agent as live, so a
   # worker parked for a human's approval is held here with no new machinery.
-  ! issue_has_live_worker "$number" || return 0
+  ! issue_has_live_worker "$github" "$number" || return 0
 
   if ! issue=$(query_issue "$github" "$number"); then
     read_failed "$(gh_error_class "$issue")" "$github" "close-out query failed: $github#$number"
@@ -5609,6 +5941,7 @@ closeout_claim() {
   # spec is now in no loop query at all. Steady-state cost zero.
   if swap_labels "$github" "$number" "$LABEL_DECOMPOSED" "$LABEL_CLAIMED"; then
     log "decomposed $github#$number: $total sub-issues, unclaimed and flagged $LABEL_DECOMPOSED, left open"
+    forget_claim "$github" "$number"
     wore=$(jq -r --arg esc "$LABEL_ESCALATED" \
       'if any(.labels[]?.name; . == $esc) then "flagged" else "unflagged" end' <<< "$issue") \
       || wore=unflagged
@@ -5828,13 +6161,22 @@ run_pass() {
   # head still matches as a substring.
   FAILURES=0
   WRITE_ESCALATED_OBJECTS=""
-  # Counted off the snapshot the readiness check before this pass took, so the
-  # budget has no unreadable branch to fail open or closed through: the pass
-  # never starts on an inventory readiness could not read (#124).
-  ACTIVE_WORKERS=$(count_active_workers)
+  PASS_CLAIMS=''
+  PASS_CLAIMS_READ=''
+  PASS_OPEN_PRS=''
+  PASS_OPEN_PRS_READ=''
+  PASS_OPEN_PRS_FAILED=''
   # Close-out first: an issue whose pull request has merged must be off the
   # board before the issue phase looks at the backlog again.
   closeout_phase
+  # Counted off the snapshot the readiness check before this pass took, so the
+  # budget has no unreadable branch to fail open or closed through: the pass
+  # never starts on an inventory readiness could not read (#124). After
+  # close-out, whose claim read releases a worker whose claim is gone, and
+  # before the issue phase, so a released slot is dispatched into this pass
+  # (#122).
+  load_worker_facts
+  ACTIVE_WORKERS=$(count_active_workers)
   issue_phase
   pr_phase
   # The snapshot is the one the pass opened with, so a worker that finished

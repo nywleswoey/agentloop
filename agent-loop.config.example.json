@@ -4,6 +4,7 @@
   "autofixTimeoutSeconds": 5400,
   "mergeGateTimeoutSeconds": 3600,
   "reviewRetryTimeoutSeconds": 5400,
+  "workerTimeoutSeconds": 86400,
   "logPath": "~/.agent-loop/agent-loop.log",
   "deathRepo": "your-owner/your-repo",
   "labels": {

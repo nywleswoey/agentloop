@@ -1,0 +1,8 @@
+{ "data": { "repository": { "issues": { "nodes": [
+  { "number": 11, "title": "A claim flagged for its worker",
+    "url": "https://github.com/nywleswoey/automation/issues/11",
+    "labels": { "nodes": [ { "name": "agent-in-progress" }, { "name": "agent-escalated" } ] } },
+  { "number": 40, "title": "A flagged spec, which the reclaim never hands back",
+    "url": "https://github.com/nywleswoey/automation/issues/40",
+    "labels": { "nodes": [ { "name": "agent-in-progress" }, { "name": "to-tickets" }, { "name": "agent-escalated" } ] } }
+] } } } }

@@ -67,8 +67,9 @@ case "$cmd" in
         # Derived from real captures against Orca 1.4.200, not hand-cut: see
         # docs/orca-worktree-ps-capture.md. Every row carries the whole payload
         # Orca returns, `createdAt` absent only on the main worktree, with the
-        # stub's paths, repo ids and agent states substituted in. `malformed`
-        # is the one exception — a failure shape, not a capture — and
+        # stub's paths, repo ids and agent states substituted in. Three depart
+        # on purpose: `workers` drops `createdAt` from one live row,
+        # `malformed` is a failure shape rather than a capture, and
         # `origins` breaks `createdAt` on purpose.
         _ps_reads=$(( $(cat "$STUB_STATE/orca-ps-reads" 2>/dev/null || echo 0) + 1 ))
         printf '%s\n' "$_ps_reads" > "$STUB_STATE/orca-ps-reads"
