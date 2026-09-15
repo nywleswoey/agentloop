@@ -680,7 +680,7 @@ escalate_refused_write() {
   fi
 }
 
-# withdraw_write_flag <github> <number> <flagged|unflagged>
+# withdraw_write_flag <github> <number> <flagged|unflagged> [why]
 #
 # The other half of the live flag, on an issue: called where a family write on
 # it landed, with whether the issue wore the flag — the word the label streams
@@ -696,18 +696,19 @@ escalate_refused_write() {
 # **The flag is kind-blind**, and on an issue that is safe by construction
 # rather than by luck: every other *a human must look* kind on an issue is
 # withdrawn when the claim goes or the work delivers, which are exactly the
-# writes that call this. The line names the refused write because that is the
-# only kind that raises it on an issue today.
+# writes that call this. The line names the refused write unless the caller
+# names a cause of its own: the decomposition swap is also what takes down the
+# spec handover's flag (#140).
 #
 # The withdrawal is an escalation write, and fails like one: refused dies,
 # transient is retried by the next pass that lands the same write — and where
 # no later pass will, the flag stands until a human takes it off.
 withdraw_write_flag() {
-  local github="$1" number="$2" wore="$3" class
+  local github="$1" number="$2" wore="$3" why="${4:-its refused write landed}" class
   [[ "$wore" == "flagged" ]] || return 0
   ! write_escalated "$github" "$number" || return 0
   if axi_write issue edit "$number" --repo "$github" --remove-label "$LABEL_ESCALATED"; then
-    log "$github#$number withdrew $LABEL_ESCALATED: its refused write landed"
+    log "$github#$number withdrew $LABEL_ESCALATED: $why"
     return 0
   fi
   class=$(gh_error_class "$FAILURE_TEXT")
@@ -1604,6 +1605,16 @@ PASS_OPEN_PRS_FAILED=''
 # The pass's clock, read once at the top of the pass: the reclaim's grace, its
 # dirty-tree bound and the worker bound are all measured against it.
 PASS_NOW=0
+# Every claimed spec past the handover's bound this pass, as ` <github>#<number> `
+# words (#140). Its flag is the handover's, so neither the budget nor the sweep
+# asks anything of it.
+PASS_HANDED_OVER=''
+
+# spec_handed_over <github> <number> — whether close-out found the spec past
+# the handover's bound this pass.
+spec_handed_over() {
+  [[ "$PASS_HANDED_OVER" == *" $1#$2 "* ]]
+}
 
 # forget_claim <github> <number> — a claim close-out dropped this pass, after
 # the read that recorded it.
@@ -1665,7 +1676,11 @@ load_worker_facts() {
     number=$(issue_for_branch "${path##*/}") || continue
     github=$(project_for_orca_id "${worktree_id%%::*}") || continue
     flag=$(claim_flag "$github" "$number") || continue
-    [[ "$state" == "live" || "$flag" == "flagged" ]] || continue
+    # A flag the spec handover holds up decides nothing here, and reading for
+    # it would be a read on every pass the spec waits for a human.
+    if [[ "$state" != "live" ]] && { [[ "$flag" != "flagged" ]] || spec_handed_over "$github" "$number"; }; then
+      continue
+    fi
     [[ "$PASS_OPEN_PRS_READ$tried" != *" $github "* ]] || continue
     tried+=" $github "
     # stdin is closed for the read: gh-axi must not swallow the inventory.
@@ -1880,20 +1895,22 @@ DISPATCH_GRACE_SECONDS=900
 # left on disk. There is no `agent-escalated` exemption, because that flag is
 # un-latching: it is already off by the pass the reclaim can fire.
 #
-# **A claimed `to-tickets` issue is never reclaimed.** Neither question can be
+# **A claimed `to-tickets` issue is never handed back.** Neither question can be
 # asked of a decomposition — it produces issues rather than a pull request, so
 # the second is answered `no` by construction — and handing a spec back means
 # decomposing it a second time, into a duplicate set of child tickets a human
 # may approve without noticing it is the second batch. The exemption is on the
 # **verb** and not on the child count: a worker that links its children by prose
 # alone leaves the count at zero, and the duplication would arrive by the other
-# door. **Close-out is therefore the only path that clears a spec's claim.**
+# door. **Close-out is therefore the only path that clears a spec's claim**, and
+# what bounds a spec nothing clears is a handover to a human, not a hand-back:
+# see `hand_over_spec` (#140).
 #
 # **Liveness is asked before the verb**, and the order is about what the line
 # means rather than what it costs: neither order saves a read. A live
 # decomposition logs `a live worker holds it` like anything else, and only a
-# spec that is exempt *and* has nobody on it logs the exemption, which is the
-# one case with a reader.
+# spec that is exempt *and* has nobody on it *and* is inside the grace logs the
+# exemption, which is the one case with a reader and an end.
 
 # claim_hold <github> <number> — for a claim no matching worktree reads live on,
 # what still holds it, as one `<kind>\t<detail>` line — a dirty tree inside the
@@ -2635,9 +2652,9 @@ issue_slug() {
 # Clause 4 is load-bearing and is phrased as the **situation** rather than as
 # "step 4", so a reworded or renumbered upstream skill cannot strand it pointing
 # at nothing. Left unsaid, a dispatched agent with no immediate user very often
-# answers its own quiz — and a worker that self-approves badly is a permanent
-# stall rather than a retry, because a claimed `to-tickets` issue is never
-# reclaimed.
+# answers its own quiz — and a worker that self-approves badly costs a human's
+# handover rather than a retry, because a claimed `to-tickets` issue is never
+# handed back (#140).
 issue_prompt() {
   local verb="$1" weburl="$2"
   case "$verb" in
@@ -2901,7 +2918,8 @@ issue_phase_project() {
     withdraw_write_flag "$github" "$number" "$escalation" < /dev/null
 
     # The claim is already written, so a failed dispatch leaves the issue
-    # claimed with no worktree. The next pass's reclaim hands it back.
+    # claimed with no worktree. The next pass's reclaim hands it back, or, for
+    # a spec, the handover hands it to a human.
     #
     # Orca passes no text, so this is transient by construction: the issue is
     # named as the write's object, and nothing can ever flag it from here.
@@ -2956,9 +2974,15 @@ sweep_worktrees() {
     # its work now delivers, is no longer Row B, so its flag comes off. Asked
     # of the issue rather than of this worktree, because a `-2` sibling may
     # still be live and holding the flag up.
+    #
+    # Not of a spec close-out handed over: its flag is the handover's now, and
+    # taking it down would post the handover's record again on the next pass.
+    # That is #140's named residual — a spec Row B flagged that then dies gets
+    # no second record.
     if number=$(issue_for_branch "${path##*/}") \
        && github=$(project_for_orca_id "${worktree_id%%::*}") \
-       && [[ "$(claim_flag "$github" "$number")" == "flagged" ]]; then
+       && [[ "$(claim_flag "$github" "$number")" == "flagged" ]] \
+       && ! spec_handed_over "$github" "$number"; then
       if prnumber=$(delivering_pr "$github" "$number"); then
         withdraw_hung_worker_flag "$github" "$number" "pull request #$prnumber delivers it" < /dev/null
       elif ! issue_has_live_worker "$github" "$number"; then
@@ -6015,12 +6039,8 @@ closeout_claims() {
         fi
         continue
       fi
-      closeout_claim "$github" "$number" < /dev/null
-      # Still claimed, so exempt with nobody on it: the one spec the exemption
-      # line has a reader for.
-      if claim_flag "$github" "$number" > /dev/null; then
-        log "left claimed $github#$number: a $VERB_TO_TICKETS issue is never reclaimed"
-      fi
+      # The exemption is said by the handover, and only while it has an end.
+      closeout_claim "$github" "$number" "$escalation" < /dev/null
     done <<< "$rows"
   done
 }
@@ -6048,8 +6068,10 @@ closeout_claims() {
 # not: its entire evidence is `sub_issues_summary`, which GitHub already renders
 # as a sub-issue list with a progress bar, and a comment saying *I found 8
 # children* beneath a panel listing 8 children is a conclusion on its own.
+#
+# **At zero children the spec is handed over**, not left: see `hand_over_spec`.
 closeout_claim() {
-  local github="$1" number="$2" issue total wore
+  local github="$1" number="$2" escalation="$3" issue total wore
   # The caller has already asked liveness, of the snapshot readiness took, and
   # comes here only when nobody is on it. `/to-tickets` publishes its issues one
   # at a time in dependency order, so `total > 0` goes true on the **first**
@@ -6063,11 +6085,13 @@ closeout_claim() {
     SKIPS=$((SKIPS + 1))
     return 0
   fi
-  # A payload with no such key reads as zero, which is what keeps every issue
-  # that is not a decomposition silent here.
+  # A payload with no such key reads as zero: no child to exit on.
   total=$(jq -r '.sub_issues_summary.total // 0' <<< "$issue")
   [[ "$total" =~ ^[0-9]+$ ]] || total=0
-  (( total > 0 )) || return 0
+  if (( total == 0 )); then
+    hand_over_spec "$github" "$number" "$escalation"
+    return 0
+  fi
 
   # One swap, the same delta shape the claim uses: the marker on, the
   # claim off. The verb label stays — it is a modifier and nothing removes it —
@@ -6079,13 +6103,138 @@ closeout_claim() {
     wore=$(jq -r --arg esc "$LABEL_ESCALATED" \
       'if any(.labels[]?.name; . == $esc) then "flagged" else "unflagged" end' <<< "$issue") \
       || wore=unflagged
-    withdraw_write_flag "$github" "$number" "$wore"
+    # The swap also takes down the handover's flag, so a spec that gains
+    # children stops asking for attention.
+    withdraw_write_flag "$github" "$number" "$wore" "it has $total sub-issues"
   else
     # Refused, *leaving it claimed* is forever, so it flags the spec.
     write_failed "$(gh_error_class "$FAILURE_TEXT")" issue "$github" "$number" decomposition-swap \
       "decomposition close-out failed for $github#$number, leaving it claimed"
     SKIPS=$((SKIPS + 1))
   fi
+}
+
+# **The spec handover** (#140, under #121). A claimed spec close-out found no
+# live worker on and no sub-issue under. The reclaim never hands a spec back and
+# close-out's exit needs a child, so nothing else in the file frees this claim,
+# and without an end the exemption would be said on every pass, forever.
+#
+# **Bound:** the reclaim's DISPATCH_GRACE_SECONDS, against the youngest matching
+# worktree's `createdAt`, or the pass that sees it when there is no worktree at
+# all. The hold is the reclaim's own `claim_hold`, so a dirty tree inside the
+# worker bound holds it too — that is still a worker — and so does a worktree
+# with no `createdAt`, which says so every pass exactly as it does for a reclaim:
+# that row is #136's, inherited here rather than decided again.
+#
+# **Expiry:** one record and `agent-escalated`, and **the claim is kept**. The
+# reader's move is the one the reclaim will not make blind: a worker that linked
+# its children by prose alone leaves the count at zero too, so they look for
+# those first, then re-apply the ready label or abandon the spec.
+#
+# **No read after success.** The first gate is the claimed query's own flag word:
+# a flagged spec gets no comment read, no write and no line. An unflagged spec
+# past the bound reads its comments for the handover's stable marker. If the
+# record is already there after a failed flag write, the next pass retries only
+# the flag. So each spec gets at most one record, and the line is written only
+# on the pass that adds the flag. What that costs, named:
+#
+# - **A spec already flagged by the sweep's Row B that then dies gets no second
+#   record.** The hung-worker record already names its worktree, and the flag
+#   stays up.
+# - Until the flag lands, each pass pays one paged comment read to distinguish a
+#   missing record from a record whose flag write failed.
+#
+# The flag comes off with the claim — the `agent-decomposed` swap takes it down,
+# and so does a claim after a human re-arms the spec — and the sweep leaves it
+# alone meanwhile, which is what `PASS_HANDED_OVER` is for.
+#
+# Its writes are escalation writes, and fail like `escalate_hung_worker`'s: a
+# refused one dies, and a transient one is logged, counted and tried again.
+SPEC_HANDOVER_MARKER='<!-- agent-loop-spec-handover -->'
+
+hand_over_spec() {
+  local github="$1" number="$2" escalation="$3" hold kind='' detail='' why file="" status=0 class
+  local comments seen
+  # A hold that would not answer leaves `kind` empty, which the last arm holds.
+  hold=$(claim_hold "$github" "$number") || hold=''
+  IFS=$'\t' read -r kind detail <<< "$hold"
+  case "$kind" in
+    none) why="no worktree" ;;
+    gone) why="worker gone $(( detail / 60 ))m after dispatch" ;;
+    dirty)
+      log "left claimed $github#$number: a $VERB_TO_TICKETS issue is never handed back, and a dirty worktree holds it"
+      return 0
+      ;;
+    young)
+      log "left claimed $github#$number: a $VERB_TO_TICKETS issue is never handed back, and a worktree inside the dispatch grace holds it (${detail}s of ${DISPATCH_GRACE_SECONDS}s)"
+      return 0
+      ;;
+    unborn)
+      log "left claimed $github#$number: a $VERB_TO_TICKETS issue is never handed back, and a worktree with no createdAt holds it"
+      return 0
+      ;;
+    *)
+      # `unreadable`, or nothing at all: never a handover.
+      read_failed "$(gh_error_class "")" - "left claimed $github#$number: could not read the status of ${detail:-its worktrees}"
+      return 0
+      ;;
+  esac
+  PASS_HANDED_OVER+=" $github#$number "
+  [[ "$escalation" == "unflagged" ]] || return 0
+
+  if ! comments=$(gh_json "/repos/$github/issues/$number/comments" --paginate); then
+    read_failed "$(gh_error_class "$comments")" "$github" \
+      "spec handover record unreadable on $github#$number, flagging nothing this pass"
+    return 0
+  fi
+  if ! seen=$(jq -r --arg me "$ME" --arg marker "$SPEC_HANDOVER_MARKER" \
+       'any(.[]?; (.user.login // "") == $me and ((.body // "") | contains($marker)))' \
+       <<< "$comments" 2>/dev/null) || [[ "$seen" != "true" && "$seen" != "false" ]]; then
+    read_failed "$(gh_error_class "")" "$github" \
+      "spec handover record unreadable on $github#$number, flagging nothing this pass"
+    return 0
+  fi
+
+  if [[ "$seen" == "false" ]]; then
+    if ! file=$(mktemp "${TMPDIR:-/tmp}/agent-loop-spec-handover.XXXXXX"); then
+      FAILURE_TEXT=""
+      status=1
+    elif ! spec_handover_body "$why" > "$file"; then
+      FAILURE_TEXT=""
+      status=1
+    else
+      axi_write issue comment "$number" --repo "$github" --body-file "$file" || status=1
+    fi
+    [[ -z "$file" ]] || rm -f "$file"
+    if (( status != 0 )); then
+      class=$(gh_error_class "$FAILURE_TEXT")
+      [[ "$class" != "refused" ]] \
+        || die "spec handover record refused on $github#$number class=refused project=$github"
+      write_failed "$class" - "" "" record "spec handover record failed on $github#$number, flagging nothing this pass"
+      return 0
+    fi
+  fi
+
+  if ! axi_write issue edit "$number" --repo "$github" --add-label "$LABEL_ESCALATED"; then
+    class=$(gh_error_class "$FAILURE_TEXT")
+    [[ "$class" != "refused" ]] \
+      || die "spec handover flag refused on $github#$number class=refused project=$github"
+    write_failed "$class" - "" "" flag "spec handover flag failed on $github#$number, the record is up and the next pass adds it"
+    return 0
+  fi
+  set_claim_flag "$github" "$number" flagged
+  log "handed over $github#$number: its $VERB_TO_TICKETS worker is gone with no sub-issue ($why), flagged $LABEL_ESCALATED, claim kept"
+}
+
+# spec_handover_body <why> — the handover's record, with what close-out derived.
+spec_handover_body() {
+  local why="$1"
+  printf '**Escalated — this spec'"'"'s decomposition worker is gone, and no sub-issue is linked to it.**\n\n'
+  printf 'The loop keeps `%s` on it and will not hand it back by itself: a worker that linked its children by prose alone leaves the sub-issue count at zero too, and handing this spec back would decompose it a second time.\n\n' "$LABEL_CLAIMED"
+  printf '**What to do** — first look for child issues that point here by prose, such as a `## Parent` section. If there are some, link them to this issue as sub-issues, and the next pass unclaims it as `%s`. If there are none, swap `%s` for `%s` to decompose it again, or abandon the spec.\n\n' "$LABEL_DECOMPOSED" "$LABEL_CLAIMED" "$LABEL_READY"
+  printf 'The loop takes `%s` off by itself on the pass it unclaims or claims this spec again. This comment is a record and stays.\n\n' "$LABEL_ESCALATED"
+  printf 'What close-out derived: %s\n\n' "$why"
+  printf '%s\n' "$SPEC_HANDOVER_MARKER"
 }
 
 # Close out a single merged pull request: tick the checklist in the linked
@@ -6297,6 +6446,7 @@ run_pass() {
   WRITE_ESCALATED_OBJECTS=""
   PASS_CLAIMS=''
   PASS_CLAIMS_READ=''
+  PASS_HANDED_OVER=''
   PASS_OPEN_PRS=''
   PASS_OPEN_PRS_READ=''
   PASS_OPEN_PRS_FAILED=''

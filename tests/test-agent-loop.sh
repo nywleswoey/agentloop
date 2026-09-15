@@ -1797,7 +1797,7 @@ check "the hold is read on every pass" \
   test "$(grep -cF 'left claimed nywleswoey/automation#11: a live worker holds it' "$OUT")" -ge 2
 check "no reclaim line comes before the first pass starts" \
   test "$(grep -nF 'left claimed' "$OUT" | head -1 | cut -d: -f1)" -gt "$(grep -nF 'pass start' "$OUT" | head -1 | cut -d: -f1)"
-check_no_grep "a to-tickets issue is never reclaimed" "$OUT"
+check_no_grep "a to-tickets issue is never handed back" "$OUT"
 check_no_grep "reclaims=" "$OUT"
 
 setup "the reclaim's open-pull-request read is its own, and only a project with claims pays it"
@@ -2160,14 +2160,22 @@ check_grep "gh-axi issue comment 17 --repo nywleswoey/automation --body-file" "$
 # `claimed-flagged` holds #11 and #40 wearing the flag, #40 as a spec: the
 # reclaim never hands a spec back, so its claim is still held when the pass
 # finds its worker gone. `orca-ps-gone` carries #40's idle worktree alone.
-setup "a flagged claim whose worker has gone has its flag withdrawn"
+#
+# #40 has no sub-issue, so its worker going is the spec handover (#140), and
+# the flag Row B raised is the handover's now. That is the named residual: the
+# spec keeps the flag and gets no second record, and the sweep does not take it
+# down, which would re-arm the handover's record on the pass after.
+setup "a spec flagged for its hung worker keeps the flag when the worker goes, with no second record"
 export STUB_ORCA_PS=gone STUB_CLAIMED=flagged STUB_NOW=1799999999
 run_once
 check_status 0 "$STATUS"
-check_grep "gh-axi issue edit 40 --repo nywleswoey/automation --remove-label agent-escalated" "$STUB_CALLS"
-check_grep "nywleswoey/automation#40 withdrew agent-escalated: its worker is gone" "$OUT"
-check "withdrawn once" \
-  test "$(grep -cF 'issue edit 40 --repo nywleswoey/automation --remove-label agent-escalated' "$STUB_CALLS")" -eq 1
+check_no_grep "issue edit 40 --repo nywleswoey/automation --remove-label agent-escalated" "$STUB_CALLS"
+# The sweep did reach #40's worktree, so the flag stands by the guard and not
+# for want of a pass that looked.
+check_grep "swept /tmp/stub/automation/agent-loop-issue-40" "$OUT"
+check_no_grep "nywleswoey/automation#40 withdrew agent-escalated" "$OUT"
+check_no_grep "issue comment 40 " "$STUB_CALLS"
+check_no_grep "handed over nywleswoey/automation#40" "$OUT"
 
 setup "a flagged claim whose live worker is still undelivered gets its own record"
 # The busy fixture's #11 is live. #40 has no worktree at all, which is the named
@@ -4994,7 +5002,7 @@ run_once
 check_status 0 "$STATUS"
 check_grep "decomposed nywleswoey/automation#92: 5 sub-issues, unclaimed and flagged agent-decomposed, left open" "$OUT"
 check_grep "gh-axi issue edit 92 --repo nywleswoey/automation --remove-label agent-escalated" "$STUB_CALLS"
-check_grep "nywleswoey/automation#92 withdrew agent-escalated: its refused write landed" "$OUT"
+check_grep "nywleswoey/automation#92 withdrew agent-escalated: it has 5 sub-issues" "$OUT"
 
 setup "a failed unclaim leaves a closed issue for the next close-out to finish"
 # Every label edit fails, so every unclaim does. Two passes make the recovery
@@ -5080,9 +5088,10 @@ check_no_grep "gh-axi issue close 92" "$STUB_CALLS"
 # five children would be a conclusion on its own.
 check_no_grep "gh-axi issue comment 92" "$STUB_CALLS"
 
-# #93 — a spec with no children is not finished. Read, and left exactly as it is.
+# #93 — a spec with no children is not finished. Read, and never unclaimed: it
+# is handed over instead (#140), which the cases below assert.
 check_grep "gh-axi api /repos/nywleswoey/automation/issues/93" "$STUB_CALLS"
-check_no_grep "issue edit 93" "$STUB_CALLS"
+check_no_grep "issue edit 93 --repo nywleswoey/automation --add-label agent-decomposed" "$STUB_CALLS"
 check_no_grep "decomposed nywleswoey/automation#93" "$OUT"
 
 # #17 — the verb scope. An `implement` claim is not a decomposition however many
@@ -5095,8 +5104,8 @@ check_no_grep "decomposed nywleswoey/automation#17" "$OUT"
 # back — a worker that linked its children by prose alone leaves the count at
 # zero, and the child-count form of this exemption would hand #93 back and
 # decompose it a second time.
-check_grep "left claimed nywleswoey/automation#93: a to-tickets issue is never reclaimed" "$OUT"
 check_no_grep "reclaimed nywleswoey/automation#93" "$OUT"
+check_no_grep "issue edit 93 --repo nywleswoey/automation --add-label ready-for-agent" "$STUB_CALLS"
 # An `implement` claim in the same state still is, exactly as before.
 check_grep "reclaimed nywleswoey/automation#17: no worktree, returned to ready-for-agent" "$OUT"
 
@@ -5125,7 +5134,116 @@ check_no_grep "gh-axi api /repos/nywleswoey/automation/issues/11 " "$STUB_CALLS"
 # Liveness is asked before the verb, so a live decomposition says who holds it
 # and does not announce its exemption.
 check_grep "left claimed nywleswoey/automation#11: a live worker holds it" "$OUT"
-check_no_grep "a to-tickets issue is never reclaimed" "$OUT"
+check_no_grep "a to-tickets issue is never handed back" "$OUT"
+check_no_grep "handed over nywleswoey/automation#11" "$OUT"
+
+# --- a spec whose worker published no child is handed over (#140) ----------------
+
+SPEC_CLAIMED_READ='issues(labels: ["agent-in-progress"], states: OPEN, first: 100) { nodes { number title url body labels(first: 100) { nodes { name } } } }'
+
+setup "a spec whose worker published no child, with no worktree, is handed over once and keeps its claim"
+# `claimed-specs`' #93 has no sub-issue, and `orca-ps-idle` carries no worktree
+# for it: nothing can be starting up, so the bound is the pass that sees it.
+export STUB_CLAIMED=specs STUB_ORCA_PS=idle
+run_once
+check_status 0 "$STATUS"
+check_grep "gh-axi issue comment 93 --repo nywleswoey/automation --body-file" "$STUB_CALLS"
+check_grep "gh-axi issue edit 93 --repo nywleswoey/automation --add-label agent-escalated" "$STUB_CALLS"
+# Record, then flag: a flag with no record behind it is the one state its
+# reader cannot act on.
+check "the record goes up before the flag" \
+  test "$(call_line 'issue comment 93 ')" -lt "$(call_line 'issue edit 93 --repo nywleswoey/automation --add-label agent-escalated')"
+check_grep "handed over nywleswoey/automation#93: its to-tickets worker is gone with no sub-issue (no worktree), flagged agent-escalated, claim kept" "$OUT"
+# The claim is kept: handing a spec back decomposes it a second time.
+check_no_grep "issue edit 93 --repo nywleswoey/automation --add-label ready-for-agent" "$STUB_CALLS"
+check_no_grep "-agent-in-progress" "$STUB_STATE/labels-93"
+# The record's action: prose-linked children first, then re-arm or abandon.
+check_grep "prose" "$STUB_STATE/issue-body-93.txt"
+check_grep "ready-for-agent" "$STUB_STATE/issue-body-93.txt"
+check_grep "abandon" "$STUB_STATE/issue-body-93.txt"
+check_grep "<!-- agent-loop-spec-handover -->" "$STUB_STATE/issue-body-93.txt"
+# The unflagged path reads the comments once to distinguish a missing record
+# from one whose flag write failed.
+check_grep "$SPEC_CLAIMED_READ" "$STUB_CALLS"
+check_grep "gh-axi api /repos/nywleswoey/automation/issues/93/comments --paginate" "$STUB_CALLS"
+check "one issue read of the spec, as before" \
+  test "$(grep -cF 'api /repos/nywleswoey/automation/issues/93 --full' "$STUB_CALLS")" -eq 1
+# The next pass reads the flag back off the claimed query and writes nothing,
+# including no comment read after the successful label write.
+: > "$STUB_CALLS"
+run_once
+check_status 0 "$STATUS"
+check_no_grep "issue comment 93 " "$STUB_CALLS"
+check_no_grep "issue edit 93 " "$STUB_CALLS"
+check_no_grep "nywleswoey/automation#93" "$OUT"
+check_no_grep "issues/93/comments" "$STUB_CALLS"
+check "steady state reads the spec once, as before" \
+  test "$(grep -cF 'api /repos/nywleswoey/automation/issues/93 --full' "$STUB_CALLS")" -eq 1
+
+setup "a spec handover whose flag write fails retries the flag without duplicating its record"
+export STUB_CLAIMED=specs STUB_ORCA_PS=idle STUB_GH_FAIL=claim
+run_once
+check_status 0 "$STATUS"
+check_grep "spec handover flag failed on nywleswoey/automation#93, the record is up and the next pass adds it class=transient" "$OUT"
+check "the first attempt posts one marked record" \
+  test "$(grep -cF 'issue comment 93 ' "$STUB_CALLS")" -eq 1
+check_grep "<!-- agent-loop-spec-handover -->" "$STUB_STATE/issue-body-93.txt"
+# The record survives the failed flag write. A second failing pass finds its
+# marker and retries only the label.
+run_once
+check_status 0 "$STATUS"
+check "the retry does not duplicate the record" \
+  test "$(grep -cF 'issue comment 93 ' "$STUB_CALLS")" -eq 1
+check "the retry attempts the flag again" \
+  test "$(grep -cF 'issue edit 93 --repo nywleswoey/automation --add-label agent-escalated' "$STUB_CALLS")" -eq 2
+# Once the write is allowed, the marked record still suppresses a comment and
+# the label lands. The pass after that takes the no-read-after-success path.
+unset STUB_GH_FAIL
+run_once
+check_status 0 "$STATUS"
+check "the successful retry still has one record" \
+  test "$(grep -cF 'issue comment 93 ' "$STUB_CALLS")" -eq 1
+check "the flag lands on the third attempt" \
+  test "$(grep -cF 'issue edit 93 --repo nywleswoey/automation --add-label agent-escalated' "$STUB_CALLS")" -eq 3
+check_grep "handed over nywleswoey/automation#93: its to-tickets worker is gone with no sub-issue (no worktree), flagged agent-escalated, claim kept" "$OUT"
+: > "$STUB_CALLS"
+run_once
+check_status 0 "$STATUS"
+check_no_grep "issue comment 93 " "$STUB_CALLS"
+check_no_grep "issue edit 93 " "$STUB_CALLS"
+check_no_grep "issues/93/comments" "$STUB_CALLS"
+
+# `orca-ps-spec` carries #93's decomposition worktree, its agent `done`, its
+# `createdAt` 1789301200000. DISPATCH_GRACE_SECONDS is 900.
+setup "a spec's handover waits out the dispatch grace, and is written on the pass past it"
+export STUB_CLAIMED=specs STUB_ORCA_PS=spec
+replay none 1789302099
+check_status 0 "$STATUS"
+check_grep "left claimed nywleswoey/automation#93: a to-tickets issue is never handed back, and a worktree inside the dispatch grace holds it (899s of 900s)" "$PASS_LOG"
+check_no_grep "issue comment 93 " "$STUB_CALLS"
+check_no_grep "issue edit 93 " "$STUB_CALLS"
+check_no_grep "handed over" "$PASS_LOG"
+replay none 1789302101
+check_status 0 "$STATUS"
+check_grep "handed over nywleswoey/automation#93: its to-tickets worker is gone with no sub-issue (worker gone 15m after dispatch), flagged agent-escalated, claim kept" "$PASS_LOG"
+check_grep "gh-axi issue comment 93 --repo nywleswoey/automation --body-file" "$STUB_CALLS"
+check_grep "gh-axi issue edit 93 --repo nywleswoey/automation --add-label agent-escalated" "$STUB_CALLS"
+replay none 1789302102
+check_status 0 "$STATUS"
+check "the record is written once" \
+  test "$(grep -cF 'issue comment 93 ' "$STUB_CALLS")" -eq 1
+check "the flag is added once" \
+  test "$(grep -cF 'issue edit 93 --repo nywleswoey/automation --add-label agent-escalated' "$STUB_CALLS")" -eq 1
+check_no_grep "nywleswoey/automation#93" "$PASS_LOG"
+
+# The hold is the reclaim's: a dirty tree inside the worker bound is a worker.
+setup "a dirty worktree past the grace holds a spec's handover"
+export STUB_CLAIMED=specs STUB_ORCA_PS=spec STUB_DIRTY=/tmp/stub/automation/agent-loop-feat-93
+replay none 1789302101
+check_status 0 "$STATUS"
+check_grep "left claimed nywleswoey/automation#93: a to-tickets issue is never handed back, and a dirty worktree holds it" "$PASS_LOG"
+check_no_grep "issue comment 93 " "$STUB_CALLS"
+check_no_grep "issue edit 93 " "$STUB_CALLS"
 
 setup "a child count that will not answer leaves the spec claimed"
 # Fails closed. A stranded spec costs a human glance; a duplicate costs a
