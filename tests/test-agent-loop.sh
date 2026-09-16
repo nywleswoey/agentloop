@@ -241,6 +241,15 @@ check_grep "pass end" "$OUT"
 setup "the README setup block carries workerTimeoutSeconds"
 check_grep '"workerTimeoutSeconds": 86400,' "$ROOT/README.md"
 
+# --- the wait register (#121, #162) ------------------------------------------
+
+setup "the README carries one wait register, with its clauses"
+check "exactly one wait register" \
+  test "$(grep -cF '| Wait | During | Bound | Origin | Expiry | What the expiry costs its reader |' "$ROOT/README.md")" -eq 1
+check_grep '**Adding a wait means adding a row.**' "$ROOT/README.md"
+check_grep '**A handover with no action for its reader is a defect.**' "$ROOT/README.md"
+check_grep 'the loop'"'"'s own death is recorded at `deathRepo`' "$ROOT/README.md"
+
 # --- unresolvable orcaRepoId -------------------------------------------------
 
 setup "an unresolvable orcaRepoId fails startup"
