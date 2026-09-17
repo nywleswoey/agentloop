@@ -136,10 +136,13 @@ RISK_BLOCK_PARSE='def risk_block:
 # loop will and will not merge unattended, and unlike everything above them a
 # change here is a change of mind rather than a change of surface.
 #
-# The only level that clears V1. There is no documented ladder — searches across
-# CodeRabbit's own documentation found the feature described nowhere at all — so
-# an ordering cannot be assumed and anything that is not exactly this escalates.
-RISK_LEVEL_MINIMAL='minimal'
+# The levels that clear V1, space-separated. There is no documented ladder —
+# searches across CodeRabbit's own documentation found the feature described
+# nowhere at all — so an ordering cannot be assumed: this is an **allowlist**,
+# and a level not named here escalates, however low it sounds. `low` joined
+# `minimal` because the observed levels run Minimal, Low, Moderate, High, and
+# `low` alone was handing over pull requests nothing else vetoed.
+RISK_LEVELS_CLEAR='minimal low'
 # V4's blast radius: never minimal if merging it changes what runs unattended.
 # The CI directory because a workflow is what runs on the next push, and these
 # three files because they *are* the unattended machine — `gh.sh` included, which
@@ -4791,7 +4794,7 @@ risk_gate() {
 
   # V1 — CodeRabbit's verdict. The abbreviation must be a **prefix of the head**,
   # which is what scopes the verdict to the code being merged, and the level
-  # exactly minimal. Anything else escalates: an unrecognised level, an
+  # one of the allowlisted few. Anything else escalates: an unrecognised level, an
   # unparseable line, a block that is not there. There is no documented ladder of
   # levels to order, so this is the tripwire for CodeRabbit changing shape.
   #
@@ -4808,10 +4811,10 @@ risk_gate() {
   # asymmetry is for the stricter reader to escalate rather than to fall
   # through. The parse itself is shared, so the one thing they cannot disagree
   # about is which commit a verdict names.
-  if [[ "$block" == "parsed" && "$level" == "$RISK_LEVEL_MINIMAL" \
+  if [[ "$block" == "parsed" && -n "$level" && " $RISK_LEVELS_CLEAR " == *" $level "* \
         && -n "$abbrev" && "$head" == "$abbrev"* ]]; then
     v1=ok
-    GATE_REASONS+=("$(reason ok "CodeRabbit puts merge risk at minimal for this commit" \
+    GATE_REASONS+=("$(reason ok "CodeRabbit puts merge risk at $level for this commit" \
       "level=$level abbrev=$abbrev head=$head")")
   else
     v1=no
