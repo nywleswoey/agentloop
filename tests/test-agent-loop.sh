@@ -3805,8 +3805,8 @@ check "the diverted pull request was nudged rather than handed over" \
   test "$(grep -cF 'pr comment 221 --repo nywleswoey/automation --body @coderabbitai review' "$STUB_CALLS")" -eq 1
 check "no handover was posted for it" test ! -f "$STUB_STATE/pr-body-221.txt"
 
-# A level that is not minimal. There is no documented ladder of levels anywhere,
-# so nothing may be inferred about ordering: anything but minimal escalates.
+# A level off the allowlist. There is no documented ladder of levels anywhere,
+# so nothing may be inferred about ordering: anything but minimal or low escalates.
 check_grep "$GATE_PR#222 222c222c222c222c222c222c222c222c222c222c assessable $GATE_TAIL verdict=escalate risk=no checks=ok mergeability=ok blast=ok action=escalated kind=escalate label=added" "$OUT"
 check_grep "| no | CodeRabbit's merge-risk verdict does not clear this commit | \`block=parsed level=high abbrev=222c2 head=222c222c222c222c222c222c222c222c222c222c\` |" "$STUB_STATE/pr-body-222.txt"
 
@@ -3876,6 +3876,9 @@ check_grep "$GATE_PR#227 227b227b227b227b227b227b227b227b227b227b assessable $GA
 # do — which is a deliberate widening of the ticket's "either of the loop's own
 # scripts", and the assertion is where that widening is visible.
 check_grep "| no | this pull request changes what runs unattended | \`files=4 guarded=agent-loop.sh,gh.sh,pr-writeback.sh\` |" "$STUB_STATE/pr-body-227.txt"
+# 227's verdict is **Low**, which clears V1 as minimal does — the allowlist's
+# second member, proven by the row V4's veto puts in the handover beside it.
+check_grep "| ok | CodeRabbit puts merge risk at low for this commit | \`level=low abbrev=227b2 head=227b227b227b227b227b227b227b227b227b227b\` |" "$STUB_STATE/pr-body-227.txt"
 LOOP_GUARDED=$(sed -n "s/^UNATTENDED_SCRIPTS='\(.*\)'$/\1/p" "$SCRIPT")
 check "the guard list is exactly the three files the fixture touches" \
   test "$LOOP_GUARDED" = "agent-loop.sh,pr-writeback.sh,gh.sh"
